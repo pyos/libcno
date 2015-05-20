@@ -11,7 +11,10 @@ x.data_received b'Host: localhost\r\ntransfer-encoding: chunked\r\n\r\n'
 x.data_received b'4\r\ntest\r\n3\r\nasd\r\n0\r\n\r\n'
 x.data_received b'GET /index.html HTTP/1.1\r\n'
 x.data_received b'Host: localhost\r\ncontent-length: 4\r\n\r\n'
-x.data_received b'test'
+x.data_received b'test\r\n'
+x.data_received b'GET /index.html HTTP/1.1\r\n'
+x.data_received b'Host: localhost\r\ncontent-length: 4\r\n\r\n'
+x.data_received b'test\r\n'
 
 
 y = test.CNO server: False
@@ -22,6 +25,6 @@ y.on_message_end   = *: xs -> print 'client end'   xs
 y.data_received b'HTTP/1.1 200 OK\r\n'
 y.data_received b'cookie: norm\r\n'
 y.data_received b'content-length: 4\r\n\r\n'
-y.data_received b'test'
+y.data_received b'test\r\n'
 y.connection_lost None
 x.connection_lost None

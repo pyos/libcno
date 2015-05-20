@@ -183,12 +183,17 @@ int cno_connection_fire (cno_connection_t *conn)
             }
 
             case CNO_CONNECTION_HTTP1_READY: {
+                // Ignore leading CRLFs.
+                const char *ign = conn->buffer.data;
+                const char *end = conn->buffer.size + ign;
+                while (ign != end && (*ign == '\r' || *ign == '\n')) ++ign;
+                cno_io_vector_shift(&conn->buffer, ign - conn->buffer.data);
+
                 if (!conn->buffer.size) {
                     STOP(CNO_OK);
                 }
 
                 int ok;
-                const char * ign;
                 // Should be exactly one stream right now.
                 cno_stream_t *stream = conn->streams;
                 struct phr_header headers[100];
