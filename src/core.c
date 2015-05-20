@@ -1,116 +1,98 @@
 #include "core.h"
 #include "error.h"
+#include "write.h"
 #include "picohttpparser/picohttpparser.h"
 #include <stdlib.h>
 #include <string.h>
 
 
-cno_connection_t * cno_connection_new (int server, int upgrade)
-{
-    cno_connection_t *conn = malloc(sizeof(cno_connection_t));
-
-    if (conn == NULL) {
-        (void) CNO_ERROR_NOMEMORY;
-        return NULL;
-    }
-
-    memset(conn, 0, sizeof(cno_connection_t));
-
-    conn->state  = upgrade ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
-    conn->server = server;
-
-    if (cno_connection_fire(conn)) {
-        cno_connection_destroy(conn);
-        return NULL;
-    }
-
-    return conn;
-}
-
-
-int cno_connection_destroy (cno_connection_t *conn)
-{
-    int ok = CNO_OK;
-
-    if (!conn->closed) {
-        ok = cno_connection_lost(conn);
-    }
-
-    free(conn);
-    return ok;
-}
-
-
-static int cno_connection_stream_new (cno_connection_t *conn, size_t id)
+static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
 {
     cno_stream_t *stream = malloc(sizeof(cno_stream_t));
 
     if (!stream) {
-        return CNO_ERROR_NOMEMORY;
+        (void) CNO_ERROR_NO_MEMORY;
+        return NULL;
     }
 
-    memset(stream, 0, sizeof(cno_stream_t));
-    stream->id        = id;
-    stream->next      = conn->streams;
-    stream->msg.major = conn->state == CNO_CONNECTION_HTTP1_READY ? 1 : 2;
-    stream->msg.code  = 0;
-    stream->open      = 1;
+    CNO_ZERO(stream);
+    stream->id   = id;
+    stream->next = conn->streams;
+    stream->open = 1;
     conn->streams = stream;
     CNO_FIRE(conn, on_stream_start, id);
-    return CNO_OK;
+    return stream;
 }
 
 
-static int cno_connection_stream_find (cno_connection_t *conn, size_t id, cno_stream_t **it, cno_stream_t **p)
+static cno_stream_t * cno_stream_find(cno_connection_t *conn, size_t id)
 {
-    cno_stream_t *parent  = NULL;
     cno_stream_t *current = conn->streams;
 
-    while (current->id != id) {
-        parent  = current;
-        current = current->next;
-
-        if (!current) {
-            return CNO_ERROR_NOSTREAM(id);
-        }
+    while (current->id != id) if (!(current = current->next)) {
+        // XXX Maybe a hashmap? Definitely not an array - stream ids are sparse
+        //     because they can be closed in different order.
+        (void) CNO_ERROR_INVALID_STREAM(id);
+        return NULL;
     }
 
-    if (it) *it = current;
-    if (p)  *p  = parent;
-    return CNO_OK;
+    return current;
 }
 
 
-static int cno_connection_stream_destroy (cno_connection_t *conn, size_t id)
+static int cno_stream_destroy(cno_connection_t *conn, size_t id)
 {
-    cno_stream_t *parent;
-    cno_stream_t *stream;
+    cno_stream_t *stream = cno_stream_find(conn, id);
 
-    if (cno_connection_stream_find(conn, id, &stream, &parent)) {
+    if (!stream) {
         return CNO_PROPAGATE;
     }
 
     if (stream->active) {
+        // Note that second argument is `1`. Callback should know that the stream
+        // is dead, but shouldn't try to actually do anything with the message.
         CNO_FIRE(conn, on_message_end, stream->id, 1);
     }
 
     CNO_FIRE(conn, on_stream_end, id);
 
-    if (!parent) {
-        conn->streams = stream->next;
-    } else {
-        parent->next = stream->next;
-    }
+    if (stream->next) stream->next->prev = stream->prev;
+    if (stream->prev) stream->prev->next = stream->next;
+    else conn->streams = stream->next;
 
     free(stream);
     return CNO_OK;
 }
 
 
-int cno_connection_data_received (cno_connection_t *conn, const char *data, size_t length)
+cno_connection_t * cno_connection_new(int server, int upgrade)
+{
+    cno_connection_t *conn = malloc(sizeof(cno_connection_t));
+
+    if (conn == NULL) {
+        (void) CNO_ERROR_NO_MEMORY;
+        return NULL;
+    }
+
+    CNO_ZERO(conn);
+    conn->state  = upgrade ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
+    conn->server = server;
+    return conn;
+}
+
+
+int cno_connection_destroy(cno_connection_t *conn)
+{
+    int ok = conn->closed ? CNO_OK : cno_connection_lost(conn);
+    free(conn);
+    return ok;
+}
+
+
+int cno_connection_data_received(cno_connection_t *conn, const char *data, size_t length)
 {
     if (conn->closed) {
-        return CNO_ERROR_CLOSED;
+        return CNO_ERROR_INVALID_STATE("already closed");
     }
 
     if (cno_io_vector_extend_tmp(&conn->buffer, data, length)) {
@@ -121,10 +103,10 @@ int cno_connection_data_received (cno_connection_t *conn, const char *data, size
 }
 
 
-int cno_connection_lost (cno_connection_t *conn)
+int cno_connection_lost(cno_connection_t *conn)
 {
     if (conn->closed) {
-        return CNO_ERROR_CLOSED;
+        return CNO_ERROR_INVALID_STATE("already closed");
     }
 
     conn->closed = 1;
@@ -132,109 +114,128 @@ int cno_connection_lost (cno_connection_t *conn)
 }
 
 
-int cno_connection_fire (cno_connection_t *conn)
+int cno_connection_fire(cno_connection_t *conn)
 {
-    int retcode = -1;
-
-    #define STOP(code) do { retcode = code; goto done; } while (0)
+    int __retcode = CNO_OK;
+    #define STOP(code) do              { __retcode = code;   goto done; } while (0)
+    #define WAIT(cond) do if (!(cond)) { __retcode = CNO_OK; goto done; } while (0)
 
     while (1) {
         if (conn->closed) {
-            cno_io_vector_clear_tmp(&conn->buffer);
-
-            if (conn->frame.payload) {
-                free(conn->frame.payload);
-            }
+            // Since previous `data_received` had finished, the data in the buffer
+            // is incomplete (and useless).
+            cno_io_vector_reset(&conn->buffer);
+            cno_io_vector_clear((cno_io_vector_t *) &conn->buffer);
+            cno_io_vector_clear((cno_io_vector_t *) &conn->frame.payload);
 
             while (conn->streams) {
-                cno_connection_stream_destroy(conn, conn->streams->id);
+                // Guaranteed to succeed. This stream definitely exists.
+                cno_stream_destroy(conn, conn->streams->id);
             }
 
             conn->state = CNO_CONNECTION_CLOSED;
-            conn->buffer.data   = NULL;
-            conn->buffer.size   = 0;
-            conn->buffer.offset = 0;
-            CNO_FIRE(conn, on_close);
+            CNO_ZERO(&conn->buffer);
+            CNO_FIRE( conn, on_close);
             return CNO_OK;
         }
 
         switch (conn->state) {
             case CNO_CONNECTION_HTTP1_INIT: {
-                conn->state = CNO_CONNECTION_HTTP1_READY;
-
-                if (cno_connection_stream_new(conn, 0)) {
+                if (cno_stream_new(conn, 1) == NULL) {
                     STOP(CNO_PROPAGATE);
                 }
 
+                conn->state = CNO_CONNECTION_HTTP1_READY;
+                CNO_FIRE(conn, on_ready);
                 break;
             }
 
             case CNO_CONNECTION_HTTP1_READY: {
-                // Ignore leading CRLFs.
+                // Ignore leading CR/LFs.
                 const char *ign = conn->buffer.data;
                 const char *end = conn->buffer.size + ign;
                 while (ign != end && (*ign == '\r' || *ign == '\n')) ++ign;
                 cno_io_vector_shift(&conn->buffer, ign - conn->buffer.data);
 
-                if (!conn->buffer.size) {
-                    STOP(CNO_OK);
-                }
-
-                int ok;
                 // Should be exactly one stream right now.
                 cno_stream_t *stream = conn->streams;
+                CNO_ZERO(&stream->msg);
+                stream->msg.major = 1;
+
+                int may_be_http2 = strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size) == 0;
+                // The HTTP 2 preface starts with pseudo-broken HTTP/1.x.
+                // PicoHTTPParser will reject it, but we want to know if the client
+                // speaks HTTP 2. (This also waits for a non-empty buffer, which
+                // is a good thing because PicoHTTPParser breaks if length == 0.)
+                WAIT(conn->buffer.size >= CNO_PREFACE.size || !may_be_http2);
+                if  (conn->buffer.size >= CNO_PREFACE.size &&  may_be_http2) {
+                    // Definitely HTTP2. Stream 1 should be recycled, though.
+                    cno_stream_destroy(conn, stream->id);
+                    conn->state = CNO_CONNECTION_INIT;
+                    break;
+                }
+
                 struct phr_header headers[100];
                 size_t header_num = 100;
                 size_t it;
 
-                stream->msg.remaining = 0;
+                int ok = conn->server
+                  ? phr_parse_request(conn->buffer.data, conn->buffer.size,
+                        (const char **) &stream->msg.method.data,
+                                        &stream->msg.method.size,
+                        (const char **) &stream->msg.path.data,
+                                        &stream->msg.path.size,
+                                        &stream->msg.minor,
+                                        headers, &header_num, 1)
+                  : phr_parse_response(conn->buffer.data, conn->buffer.size,
+                                        &stream->msg.minor, &stream->msg.code,
+                        (const char **) &stream->msg.method.data,
+                                        &stream->msg.method.size,
+                                        headers, &header_num, 1);
 
-                if (conn->server) {
-                    ok = phr_parse_request(conn->buffer.data, conn->buffer.size,
-                      (const char **) &stream->msg.method.data,
-                                      &stream->msg.method.size,
-                      (const char **) &stream->msg.path.data,
-                                      &stream->msg.path.size,
-                      &stream->msg.minor,
-                      headers, &header_num, stream->msg.read);
-                } else {
-                    ok = phr_parse_response(conn->buffer.data, conn->buffer.size,
-                      &stream->msg.minor,
-                      &stream->msg.code,
-                      &ign, &it,  // the status message is redundant => ignored
-                      headers, &header_num, stream->msg.read);
-                }
-
-                if (ok == -2) {
-                    // Not enough data.
-                    stream->msg.read = conn->buffer.size;
-                    STOP(CNO_OK);
-                }
+                WAIT(ok != -2);
 
                 if (ok == -1) {
-                    // Bad request/response.
-                    STOP(CNO_ERROR_BAD_REQ);
+                    STOP(CNO_ERROR_TRANSPORT("bad HTTP/1.x request"));
                 }
 
-                conn->state = CNO_CONNECTION_HTTP1_READING;
                 stream->msg.headers_len = header_num;
-                stream->msg.headers = malloc(sizeof(cno_header_t) * header_num);
-                stream->msg.chunked = 0;
-                stream->msg.read    = 0;
+                stream->msg.headers     = calloc(sizeof(cno_header_t), header_num);
+                if (!stream->msg.headers) STOP(CNO_ERROR_NO_MEMORY);
 
-                if (!stream->msg.headers) {
-                    STOP(CNO_ERROR_NOMEMORY);
-                }
+                conn->streams->active = 1;
+                conn->state = CNO_CONNECTION_HTTP1_READING;
 
                 for (it = 0; it < header_num; ++it) {
-                    char * name = (char *) headers[it].name;
-                    size_t size = headers[it].name_len;
-                    // TODO lowercase
+                    char * name  = (char *) headers[it].name;
+                    size_t size  = (size_t) headers[it].name_len;
+                    char * value = (char *) headers[it].value;
+                    size_t vsize = (size_t) headers[it].value_len;
+                    // TODO convert name to lowercase
+
+                    if (strncmp(name, "upgrade", size) == 0 && strncmp(value, "h2c", vsize) == 0) {
+                        cno_header_t upgrade_headers[] = {
+                            { { "connection", 10 }, { "upgrade", 7 } },
+                            { { "upgrade",     7 }, { "h2c",     3 } },
+                        };
+
+                        cno_message_t upgrade_msg = {
+                            stream->msg.major, stream->msg.minor, 101,
+                            /* chunked */  0,  /* ignored */  0,  /* headers_len */ 2,
+                            /* method  */ {0}, /* path    */ {0}, upgrade_headers
+                        };
+
+                        if (cno_write_message(conn, stream->id, &upgrade_msg)) {
+                            STOP(CNO_PROPAGATE);
+                        }
+
+                        // TODO `HTTP2-Settings` header contains a base64-d SETTINGS payload.
+                        conn->state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
+                    } else
 
                     if (strncmp(name, "content-length", size) == 0) {
-                        if (stream->msg.remaining || stream->msg.chunked) {
-                            // Cannot have both length and chunked TE/multiple content-lengths.
-                            STOP(CNO_ERROR_BAD_REQ);
+                        if (stream->msg.remaining) {
+                            STOP(CNO_ERROR_TRANSPORT("bad HTTP/1.x request: multiple content-lengths"));
                         }
 
                         stream->msg.remaining = (size_t) atoi(headers[it].value);
@@ -242,13 +243,11 @@ int cno_connection_fire (cno_connection_t *conn)
 
                     if (strncmp(name, "transfer-encoding", size) == 0) {
                         if (strncmp(headers[it].value, "chunked", headers[it].value_len) != 0) {
-                            // Unsupported TE.
-                            STOP(CNO_ERROR_BAD_REQ);
+                            STOP(CNO_ERROR_TRANSPORT("bad HTTP/1.x request: unknown transfer-encoding"));
                         }
 
                         if (stream->msg.remaining) {
-                            // Cannot have both length and chunked TE.
-                            STOP(CNO_ERROR_BAD_REQ);
+                            STOP(CNO_ERROR_TRANSPORT("bad HTTP/1.x request: chunked encoding w/ fixed length"));
                         }
 
                         stream->msg.chunked   = 1;
@@ -259,117 +258,97 @@ int cno_connection_fire (cno_connection_t *conn)
                 memcpy(stream->msg.headers, headers, sizeof(cno_header_t) * header_num);
 
                 CNO_FIRE(conn, on_message_start, stream->id, &stream->msg);
-                stream->active = 1;
-                cno_io_vector_clear_nofree(&stream->msg.method);
-                cno_io_vector_clear_nofree(&stream->msg.path);
+                CNO_ZERO(&stream->msg.method);
+                CNO_ZERO(&stream->msg.path);
                 cno_io_vector_shift(&conn->buffer, (size_t) ok);
                 continue;
             }
 
-            case CNO_CONNECTION_HTTP1_READING: {
+            case CNO_CONNECTION_HTTP1_READING:
+            case CNO_CONNECTION_HTTP1_READING_UPGRADE: {
                 cno_stream_t *stream = conn->streams;
-                size_t limit  = stream->msg.remaining;
-                char * buffer = conn->buffer.data;
 
-                if (!conn->buffer.size && stream->msg.remaining) {
-                    STOP(CNO_OK);
-                }
+                WAIT(conn->buffer.size || !stream->msg.remaining);
 
                 if (stream->msg.chunked) {
                     char *it  = conn->buffer.data;
                     char *lim = conn->buffer.size + it;
                     char *eol = it; while (eol != lim && *eol != '\n') ++eol;
                     char *end = it; while (end != eol && *end != ';')  ++end;
+                    WAIT(eol != lim);
 
-                    if (eol == lim) {
-                        // Wait for a chunk header.
-                        STOP(CNO_OK);
-                    }
-
-                    limit = 0;
-
-                    size_t chunk_len = (eol - it) + 3;  // + \r\n
+                    size_t data_len = 0;
+                    size_t head_len = (eol - it) + 3;  // + \r\n
 
                     for (; it != end; ++it) {
-                        limit = '0' <= *it && *it <= '9' ? (limit << 4) | (*it - '0') :
-                                'A' <= *it && *it <= 'F' ? (limit << 4) | (*it - 'A') :
-                                'a' <= *it && *it <= 'f' ? (limit << 4) | (*it - 'a') : limit;
+                        data_len = '0' <= *it && *it <= '9' ? (data_len << 4) | (*it - '0'     ) :
+                                   'A' <= *it && *it <= 'F' ? (data_len << 4) | (*it - 'A' + 10) :
+                                   'a' <= *it && *it <= 'f' ? (data_len << 4) | (*it - 'a'     ) : data_len;
                     }
 
-                    chunk_len += limit;
+                    WAIT(conn->buffer.size >= data_len + head_len);
+                    cno_io_vector_shift(&conn->buffer, data_len + head_len);
 
-                    if (conn->buffer.size < chunk_len) {
-                        // Wait for a complete chunk, with a line break.
-                        STOP(CNO_OK);
-                    }
-
-                    buffer = eol + 1;
-
-                    cno_io_vector_shift(&conn->buffer, chunk_len);
-
-                    if (limit == 0) {
+                    if (data_len) {
+                        CNO_FIRE(conn, on_message_data, stream->id, eol + 1, data_len);
+                    } else {
                         // That was the last chunk.
                         stream->msg.remaining = 0;
                     }
-                } else {
-                    if (limit > conn->buffer.size) {
-                        limit = conn->buffer.size;
-                        stream->msg.remaining -= limit;
-                    } else {
-                        stream->msg.remaining = 0;
+                } else if (stream->msg.remaining) {
+                    size_t data_len = stream->msg.remaining;
+                    char * data_buf = conn->buffer.data;
+
+                    if (data_len > conn->buffer.size) {
+                        data_len = conn->buffer.size;
                     }
 
-                    cno_io_vector_shift(&conn->buffer, limit);
-                }
+                    stream->msg.remaining -= data_len;
 
-                if (limit) {
-                    CNO_FIRE(conn, on_message_data, stream->id, buffer, limit);
+                    cno_io_vector_shift(&conn->buffer, data_len);
+                    CNO_FIRE(conn, on_message_data, stream->id, data_buf, data_len);
                 }
 
                 if (!stream->msg.remaining) {
-                    // TODO switch to HTTP 2 if request ended and was an upgrade request
-                    conn->state = CNO_CONNECTION_HTTP1_READY;
-                    stream->active = 0;
+                    conn->state = conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE
+                        ? CNO_CONNECTION_INIT  // upgrade to full duplex HTTP 2
+                        : CNO_CONNECTION_HTTP1_READY;
+                    conn->streams->active = 0;
                     CNO_FIRE(conn, on_message_end, stream->id, 0);
                 }
 
-                continue;
+                break;
             }
 
             case CNO_CONNECTION_INIT: {
-                if (conn->buffer.size < CNO_PREFACE.size) {
-                    // Wait until preface is available
-                    STOP(CNO_OK);
-                }
+                CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size);
+
+                WAIT(conn->buffer.size >= CNO_PREFACE.size);
 
                 if (strncmp(conn->buffer.data, CNO_PREFACE.data, CNO_PREFACE.size)) {
-                    // Bad request
-                    STOP(CNO_ERROR_BAD_REQ);
+                    STOP(CNO_ERROR_TRANSPORT("HTTP 2 did not start with valid preface"));
                 }
 
                 conn->state = CNO_CONNECTION_PREFACE;
+                // TODO send a SETTINGS frame
                 cno_io_vector_shift(&conn->buffer, CNO_PREFACE.size);
                 break;
             }
 
             case CNO_CONNECTION_READY:
             case CNO_CONNECTION_PREFACE: {
-                if (conn->buffer.size < 9) {
-                    // Wait for a frame header.
-                    STOP(CNO_OK);
-                }
+                WAIT(conn->buffer.size >= 9);
 
                 char *base = conn->buffer.data;
-                conn->frame.length = base[0] << 16
-                                   | base[1] << 8
-                                   | base[2];
-                conn->frame.type   = base[3];
-                conn->frame.flags  = base[4];
-                conn->frame.stream = base[5] << 24
-                                   | base[6] << 16
-                                   | base[7] << 8
-                                   | base[8];
-                // TODO if state is CONNECTION_PREFACE, check that this is a SETTINGS frame.
+                conn->frame.payload.size = base[0] << 16 | base[1] << 8 | base[2];
+                conn->frame.type         = base[3];
+                conn->frame.flags        = base[4];
+                conn->frame.stream       = base[5] << 24 | base[6] << 16 | base[7] << 8 | base[8];
+
+                if (conn->state == CNO_CONNECTION_PREFACE) {
+                    // TODO check that we got a SETTINGS frame
+                    CNO_FIRE(conn, on_ready);
+                }
 
                 cno_io_vector_shift(&conn->buffer, 9);
                 conn->state = CNO_CONNECTION_READING;
@@ -377,22 +356,23 @@ int cno_connection_fire (cno_connection_t *conn)
             }
 
             case CNO_CONNECTION_READING: {
-                if (conn->buffer.size < conn->frame.length) {
-                    // Wait for a full frame.
-                    STOP(CNO_OK);
-                }
+                WAIT(conn->buffer.size >= conn->frame.payload.size);
 
-                conn->frame.payload = cno_io_vector_slice(&conn->buffer, conn->frame.length);
+                conn->frame.payload.data = cno_io_vector_slice(&conn->buffer, conn->frame.payload.size);
                 conn->state = CNO_CONNECTION_READY;
                 CNO_FIRE(conn, on_frame, &conn->frame);
+                cno_io_vector_clear(&conn->frame.payload);
                 break;
             }
 
-            default: STOP(CNO_ERROR_GENERIC("invalid connection state"));
+            default: {
+                STOP(CNO_ERROR_INVALID_STATE("fell to the bottom of the DFA"));
+            }
         }
     }
 
     #undef STOP
+    #undef WAIT
 
 done:
 
@@ -400,5 +380,5 @@ done:
         return CNO_PROPAGATE;
     }
 
-    return retcode;
+    return __retcode;
 }

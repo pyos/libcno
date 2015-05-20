@@ -7,7 +7,7 @@
 int cno_io_vector_shift (struct cno_st_io_vector_tmp_t *vec, size_t offset)
 {
     if (offset > vec->size) {
-        return CNO_ERROR_GENERIC("string offset out of bounds");
+        return CNO_ERROR_ASSERTION("string offset out of bounds", offset);
     }
 
     vec->data   += offset;
@@ -28,28 +28,15 @@ void cno_io_vector_reset (struct cno_st_io_vector_tmp_t *vec)
 void cno_io_vector_clear (struct cno_st_io_vector_t *vec)
 {
     free(vec->data);
-    cno_io_vector_clear_nofree(vec);
-}
-
-
-void cno_io_vector_clear_nofree (struct cno_st_io_vector_t *vec)
-{
     vec->data = NULL;
     vec->size = 0;
-}
-
-
-void cno_io_vector_clear_tmp (struct cno_st_io_vector_tmp_t *vec)
-{
-    cno_io_vector_reset(vec);
-    cno_io_vector_clear((struct cno_st_io_vector_t *) vec);
 }
 
 
 char * cno_io_vector_slice (struct cno_st_io_vector_tmp_t *vec, size_t size)
 {
     if (size > vec->size) {
-        (void) CNO_ERROR_GENERIC("string offset out of bounds");
+        (void) CNO_ERROR_ASSERTION("string offset out of bounds", size);
         return NULL;
     }
 
@@ -58,7 +45,7 @@ char * cno_io_vector_slice (struct cno_st_io_vector_tmp_t *vec, size_t size)
     if (mem) {
         memcpy(mem, vec->data, size);
     } else {
-        (void) CNO_ERROR_NOMEMORY;
+        (void) CNO_ERROR_NO_MEMORY;
     }
 
     cno_io_vector_shift(vec, size);
@@ -71,7 +58,7 @@ int cno_io_vector_strip (struct cno_st_io_vector_tmp_t *vec)
     char *ptr = malloc(vec->size);
 
     if (ptr == NULL) {
-        return CNO_ERROR_NOMEMORY;
+        return CNO_ERROR_NO_MEMORY;
     }
 
     memcpy(ptr, vec->data, vec->size);
@@ -88,7 +75,7 @@ int cno_io_vector_extend (struct cno_st_io_vector_t *vec, const char *data, size
     char * region = realloc(vec->data, offset + length);
 
     if (region == NULL) {
-        return CNO_ERROR_NOMEMORY;
+        return CNO_ERROR_NO_MEMORY;
     }
 
     vec->size += length;

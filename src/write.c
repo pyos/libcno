@@ -60,18 +60,19 @@ static const char *cno_response_literal(int status)
 static int cno_is_http1(cno_connection_t *conn, size_t id, cno_stream_t **stream)
 {
     switch (conn->state) {
+        case CNO_CONNECTION_CLOSED:
+            return CNO_ERROR_INVALID_STATE("connection already closed");
+
         case CNO_CONNECTION_INIT:
         case CNO_CONNECTION_PREFACE:
         case CNO_CONNECTION_HTTP1_INIT:
-            return CNO_ERROR_INVSTATE("connection not yet initialized");
-
-        case CNO_CONNECTION_CLOSED:
-            return CNO_ERROR_CLOSED;
+        case CNO_CONNECTION_HTTP1_READING_UPGRADE:
+            return CNO_ERROR_INVALID_STATE("connection not yet initialized");
 
         case CNO_CONNECTION_HTTP1_READY:
         case CNO_CONNECTION_HTTP1_READING:
-            if (id != 0) {
-                return CNO_ERROR_NOSTREAM(id);
+            if (id != conn->streams->id) {
+                return CNO_ERROR_INVALID_STREAM(id);
             }
 
             if (stream) {
@@ -89,114 +90,103 @@ static int cno_is_http1(cno_connection_t *conn, size_t id, cno_stream_t **stream
 int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
 {
     cno_stream_t *streamobj;
-    int http1 = cno_is_http1(conn, stream, &streamobj);
 
-    if (http1 == -1) {
-        return CNO_PROPAGATE;
-    }
+    switch (cno_is_http1(conn, stream, &streamobj)) {
+        case -1: return CNO_PROPAGATE;
+        case  1: {
+            size_t i;
+            char head[4096];
+            char *tg = head;
 
-    if (http1) {
-        size_t i;
-        char head[4096];
-        char *tg = head;
+            if (conn->server) {
+                sprintf(head, "HTTP/1.%d %d %s\r\n", msg->minor, msg->code, cno_response_literal(msg->code));
+                tg += strlen(head);
+            } else {
+                if (msg->method.size + msg->path.size >= 4084) {
+                    return CNO_ERROR_TRANSPORT("path too long (>= 4096 total)");
+                }
 
-        if (conn->server) {
-            sprintf(head, "HTTP/1.%d %d %s\r\n", msg->minor, msg->code, cno_response_literal(msg->code));
-            tg += strlen(head);
-        } else {
-            if (msg->method.size + msg->path.size >= 4084) {
-                return CNO_ERROR_GENERIC("path too long (>= 4096 total)");
+                memcpy(tg, msg->method.data, msg->method.size); tg += msg->method.size; *tg++ = ' ';
+                memcpy(tg, msg->path.data,   msg->path.size);   tg += msg->path.size;
+                sprintf(tg, " HTTP/1.%d\r\n", msg->minor);
+                tg += strlen(tg);
             }
 
-            memcpy(tg, msg->method.data, msg->method.size); tg += msg->method.size; *tg++ = ' ';
-            memcpy(tg, msg->path.data,   msg->path.size);   tg += msg->path.size;
-            sprintf(tg, " HTTP/1.%d\r\n", msg->minor);
-            tg += strlen(tg);
-        }
+            for (i = 0; i < msg->headers_len; ++i) {
+                CNO_FIRE(conn, on_write, head, tg - head);
+                cno_io_vector_t *name  = &msg->headers[i].name;
+                cno_io_vector_t *value = &msg->headers[i].value;
 
-        for (i = 0; i < msg->headers_len; ++i) {
+                if (name->size + value->size >= 4090) {
+                    return CNO_ERROR_TRANSPORT("header too long (>= 4096 total)");
+                }
+
+                tg = head;
+                memcpy(tg, name->data,  name->size);  tg += name->size;  *tg++ = ':';  *tg++ = ' ';
+                memcpy(tg, value->data, value->size); tg += value->size; *tg++ = '\r'; *tg++ = '\n';
+            }
+
+            *tg++ = '\r';
+            *tg++ = '\n';
             CNO_FIRE(conn, on_write, head, tg - head);
-            cno_io_vector_t *name  = &msg->headers[i].name;
-            cno_io_vector_t *value = &msg->headers[i].value;
-
-            if (name->size + value->size >= 4090) {
-                return CNO_ERROR_GENERIC("header too long (>= 4096 total)");
-            }
-
-            tg = head;
-            memcpy(tg, name->data,  name->size);  tg += name->size;  *tg++ = ':';  *tg++ = ' ';
-            memcpy(tg, value->data, value->size); tg += value->size; *tg++ = '\r'; *tg++ = '\n';
+            return 0;
         }
-
-        *tg++ = '\r';
-        *tg++ = '\n';
-        CNO_FIRE(conn, on_write, head, tg - head);
-        return 0;
     }
 
-    // TODO send HTTP2 message
-    return CNO_ERROR_GENERIC("not implemented");
+    return CNO_ERROR_NOT_IMPLEMENTED("HTTP 2 protocol");
 }
 
 
 int cno_write_data(cno_connection_t *conn, size_t stream, const char *data, size_t length, int chunked)
 {
     cno_stream_t *streamobj;
-    int http1 = cno_is_http1(conn, stream, &streamobj);
 
-    if (http1 == -1) {
-        return CNO_PROPAGATE;
-    }
+    switch (cno_is_http1(conn, stream, &streamobj)) {
+        case -1: return CNO_PROPAGATE;
+        case  1: {
+            if (!length) {
+                // Nothing to do.
+            } else if (chunked) {
+                size_t enc;
+                char  encd[sizeof(size_t) + 2];
+                char *it = encd + sizeof(size_t) + 2;
+                *--it = '\n';
+                *--it = '\r';
 
-    if (http1) {
-        if (!length) {
+                for (enc = length; enc; enc >>= 4) {
+                    *--it = (enc & 0xF) < 10
+                          ? (enc & 0xF) + '0'
+                          : (enc & 0xF) + 'A' - 10;
+                }
+
+                CNO_FIRE(conn, on_write, it, sizeof(size_t) + 2 - (it - encd));
+                CNO_FIRE(conn, on_write, data, length);
+                CNO_FIRE(conn, on_write, "\r\n", 2);
+            } else {
+                CNO_FIRE(conn, on_write, data, length);
+            }
             return 0;
         }
-
-        if (chunked) {
-            size_t enc;
-            char  encd[sizeof(size_t) + 2];
-            char *it = encd + sizeof(size_t) + 2;
-            *--it = '\n';
-            *--it = '\r';
-
-            for (enc = length; enc; enc >>= 4) {
-                *--it = (enc & 0xF) < 10
-                      ? (enc & 0xF) + '0'
-                      : (enc & 0xF) + 'A' - 10;
-            }
-
-            CNO_FIRE(conn, on_write, it, sizeof(size_t) + 2 - (it - encd));
-            CNO_FIRE(conn, on_write, data, length);
-            CNO_FIRE(conn, on_write, "\r\n", 2);
-        } else {
-            CNO_FIRE(conn, on_write, data, length);
-        }
-        return 0;
     }
 
-    // TODO send HTTP2 raw data
-    return CNO_ERROR_GENERIC("not implemented");
+    return CNO_ERROR_NOT_IMPLEMENTED("HTTP 2 protocol");
 }
 
 
 int cno_write_end(cno_connection_t *conn, size_t stream, int chunked)
 {
     cno_stream_t *streamobj;
-    int http1 = cno_is_http1(conn, stream, &streamobj);
 
-    if (http1 == -1) {
-        return CNO_PROPAGATE;
-    }
+    switch (cno_is_http1(conn, stream, &streamobj)) {
+        case -1: return CNO_PROPAGATE;
+        case  1: {
+            if (chunked) {
+                CNO_FIRE(conn, on_write, "0\r\n\r\n", 5);
+            }
 
-    if (http1) {
-        if (chunked) {
-            CNO_FIRE(conn, on_write, "0\r\n\r\n", 5);
+            return 0;
         }
-
-        return 0;
     }
 
-    // TODO send HTTP2 message
-    return CNO_ERROR_GENERIC("not implemented");
+    return CNO_ERROR_NOT_IMPLEMENTED("HTTP 2 protocol");
 }

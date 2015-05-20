@@ -6,8 +6,8 @@ x = test.CNO server: True
 y = test.CNO server: False
 
 
-x.on_write = y.data_received
-y.on_write = x.data_received
+x.on_write = data -> y.data_received data
+y.on_write = data -> x.data_received data
 
 
 x.on_message_start = stream _ _ method path headers -> print 'srv' stream 'req' method path headers
@@ -23,8 +23,14 @@ y.on_message_start = stream _ code _ _ headers -> print 'cli' stream 'res' code 
 y.on_message_data  = stream data               -> print 'cli' stream 'dat' data
 y.on_message_end   = stream disconnect         -> print 'cli' stream 'fin'
 
-y.write_message 0 1 "GET" "/index.html" [('host', 'localhost:8000')]
-y.write_end     0
+y.data_received b''  # force transition into ready state
+y.write_message 1 1 "GET" "/index.html" [('host', 'localhost:8000')]
+y.write_end     1
+
+y.write_message 1 1 "POST" "/index.dg" [('transfer-encoding', 'chunked')] True
+y.write_data    1 b'test data\n' True
+y.write_data    1 b'more data\n' True
+y.write_end     1 True
 
 x.connection_lost None
 y.connection_lost None
