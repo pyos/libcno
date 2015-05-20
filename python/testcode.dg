@@ -1,0 +1,27 @@
+import '/testloader'
+import '/test'
+
+x = test.CNO server: True
+x.on_write         = *: xs -> print 'server write' xs
+x.on_message_start = *: xs -> print 'server start' xs
+x.on_message_data  = *: xs -> print 'server data'  xs
+x.on_message_end   = *: xs -> print 'server end'   xs
+x.data_received b'GET /index.html HTTP/1.1\r\n'
+x.data_received b'Host: localhost\r\ntransfer-encoding: chunked\r\n\r\n'
+x.data_received b'4\r\ntest\r\n3\r\nasd\r\n0\r\n\r\n'
+x.data_received b'GET /index.html HTTP/1.1\r\n'
+x.data_received b'Host: localhost\r\ncontent-length: 4\r\n\r\n'
+x.data_received b'test'
+
+
+y = test.CNO server: False
+y.on_write         = *: xs -> print 'client write' xs
+y.on_message_start = *: xs -> print 'client start' xs
+y.on_message_data  = *: xs -> print 'client data'  xs
+y.on_message_end   = *: xs -> print 'client end'   xs
+y.data_received b'HTTP/1.'
+y.data_received b'1 200 OK\r\n'
+y.data_received b'Cookie: norm\r\n\r\n'
+y.data_received b'test'
+y.connection_lost None
+x.connection_lost None
