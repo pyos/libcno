@@ -13,6 +13,7 @@
 enum CNO_CONNECTION_STATE {
     CNO_CONNECTION_CLOSED,
     CNO_CONNECTION_INIT,
+    CNO_CONNECTION_INIT_UPGRADE,  // same as INIT, but does not emit `on_ready`.
     CNO_CONNECTION_PREFACE,
     CNO_CONNECTION_READY,
     CNO_CONNECTION_READING,
@@ -106,6 +107,7 @@ static const struct cno_st_io_vector_t CNO_PREFACE   = { "PRI * HTTP/2.0\r\n\r\n
 
 cno_connection_t * cno_connection_new           (int server, int upgrade);
 int                cno_connection_destroy       (cno_connection_t *conn);
+int                cno_connection_made          (cno_connection_t *conn);
 int                cno_connection_data_received (cno_connection_t *conn, const char *data, size_t length);
 int                cno_connection_fire          (cno_connection_t *conn);
 int                cno_connection_lost          (cno_connection_t *conn);

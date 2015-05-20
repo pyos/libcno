@@ -103,6 +103,12 @@ int cno_connection_data_received(cno_connection_t *conn, const char *data, size_
 }
 
 
+int cno_connection_made(cno_connection_t *conn)
+{
+    return cno_connection_fire(conn);
+}
+
+
 int cno_connection_lost(cno_connection_t *conn)
 {
     if (conn->closed) {
@@ -111,6 +117,12 @@ int cno_connection_lost(cno_connection_t *conn)
 
     conn->closed = 1;
     return cno_connection_fire(conn);
+}
+
+
+static void cno_connection_send_preface(cno_connection_t *conn) {
+    CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size);
+    // TODO send a SETTINGS frame
 }
 
 
@@ -171,7 +183,10 @@ int cno_connection_fire(cno_connection_t *conn)
                 if  (conn->buffer.size >= CNO_PREFACE.size &&  may_be_http2) {
                     // Definitely HTTP2. Stream 1 should be recycled, though.
                     cno_stream_destroy(conn, stream->id);
-                    conn->state = CNO_CONNECTION_INIT;
+                    cno_connection_send_preface(conn);
+                    // NOTE transition to HTTP 2 will be seamless because the buffer
+                    //      is already full. Thus we don't emit `on_ready` again.
+                    conn->state = CNO_CONNECTION_INIT_UPGRADE;
                     break;
                 }
 
@@ -231,6 +246,9 @@ int cno_connection_fire(cno_connection_t *conn)
 
                         // TODO `HTTP2-Settings` header contains a base64-d SETTINGS payload.
                         conn->state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
+                        // If we send the preface now, we'll be able to send HTTP 2 frames
+                        // while in the HTTP1_READING_UPGRADE state.
+                        cno_connection_send_preface(conn);
                     } else
 
                     if (strncmp(name, "content-length", size) == 0) {
@@ -311,7 +329,7 @@ int cno_connection_fire(cno_connection_t *conn)
 
                 if (!stream->msg.remaining) {
                     conn->state = conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE
-                        ? CNO_CONNECTION_INIT  // upgrade to full duplex HTTP 2
+                        ? CNO_CONNECTION_INIT_UPGRADE  // preface already sent in HTTP1_READY
                         : CNO_CONNECTION_HTTP1_READY;
                     conn->streams->active = 0;
                     CNO_FIRE(conn, on_message_end, stream->id, 0);
@@ -321,8 +339,11 @@ int cno_connection_fire(cno_connection_t *conn)
             }
 
             case CNO_CONNECTION_INIT: {
-                CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size);
+                cno_connection_send_preface(conn);
+                CNO_FIRE(conn, on_ready);
+            }  // fallthrough
 
+            case CNO_CONNECTION_INIT_UPGRADE: {
                 WAIT(conn->buffer.size >= CNO_PREFACE.size);
 
                 if (strncmp(conn->buffer.data, CNO_PREFACE.data, CNO_PREFACE.size)) {
@@ -330,7 +351,6 @@ int cno_connection_fire(cno_connection_t *conn)
                 }
 
                 conn->state = CNO_CONNECTION_PREFACE;
-                // TODO send a SETTINGS frame
                 cno_io_vector_shift(&conn->buffer, CNO_PREFACE.size);
                 break;
             }
@@ -347,7 +367,6 @@ int cno_connection_fire(cno_connection_t *conn)
 
                 if (conn->state == CNO_CONNECTION_PREFACE) {
                     // TODO check that we got a SETTINGS frame
-                    CNO_FIRE(conn, on_ready);
                 }
 
                 cno_io_vector_shift(&conn->buffer, 9);

@@ -64,13 +64,14 @@ static int cno_is_http1(cno_connection_t *conn, size_t id, cno_stream_t **stream
             return CNO_ERROR_INVALID_STATE("connection already closed");
 
         case CNO_CONNECTION_INIT:
+        case CNO_CONNECTION_INIT_UPGRADE:  // shouldn't have time to call this while in that state
         case CNO_CONNECTION_PREFACE:
         case CNO_CONNECTION_HTTP1_INIT:
-        case CNO_CONNECTION_HTTP1_READING_UPGRADE:
             return CNO_ERROR_INVALID_STATE("connection not yet initialized");
 
         case CNO_CONNECTION_HTTP1_READY:
         case CNO_CONNECTION_HTTP1_READING:
+        // HTTP1_READING_UPGRADE is treated as HTTP 2 for writing
             if (id != conn->streams->id) {
                 return CNO_ERROR_INVALID_STREAM(id);
             }
