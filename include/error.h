@@ -14,7 +14,7 @@ void *cno_error_arg(void);
 #define CNO_PROPAGATE -1
 #define CNO_SET_ERROR(code, msg, arg) cno_error_set(code, msg, __FILE__, __LINE__, (void*) arg)
 #define CNO_ERRNO_GENERIC     0
-#define CNO_ERROR_GENERIC     CNO_SET_ERROR(CNO_ERRNO_GENERIC, "", 0)
+#define CNO_ERROR_GENERIC(m)  CNO_SET_ERROR(CNO_ERRNO_GENERIC, m, 0)
 #define CNO_ERRNO_NOMEMORY    1
 #define CNO_ERROR_NOMEMORY    CNO_SET_ERROR(CNO_ERRNO_NOMEMORY, "out of memory", 0)
 #define CNO_ERRNO_NOSTREAM    2
@@ -23,6 +23,8 @@ void *cno_error_arg(void);
 #define CNO_ERROR_CLOSED      CNO_SET_ERROR(CNO_ERRNO_CLOSED, "connection closed", 0)
 #define CNO_ERRNO_BAD_REQ     4
 #define CNO_ERROR_BAD_REQ     CNO_SET_ERROR(CNO_ERRNO_BAD_REQ, "bad request", 0)
+#define CNO_ERRNO_INVSTATE    5
+#define CNO_ERROR_INVSTATE(m) CNO_SET_ERROR(CNO_ERRNO_INVSTATE, m, 0)
 
 
 #endif

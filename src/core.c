@@ -399,7 +399,7 @@ int cno_connection_fire (cno_connection_t *conn)
                 break;
             }
 
-            default: STOP(CNO_ERROR_GENERIC);
+            default: STOP(CNO_ERROR_GENERIC("invalid connection state"));
         }
     }
 

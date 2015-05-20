@@ -7,7 +7,7 @@
 int cno_io_vector_shift (struct cno_st_io_vector_tmp_t *vec, size_t offset)
 {
     if (offset > vec->size) {
-        return CNO_ERROR_GENERIC;
+        return CNO_ERROR_GENERIC("string offset out of bounds");
     }
 
     vec->data   += offset;
@@ -49,7 +49,7 @@ void cno_io_vector_clear_tmp (struct cno_st_io_vector_tmp_t *vec)
 char * cno_io_vector_slice (struct cno_st_io_vector_tmp_t *vec, size_t size)
 {
     if (size > vec->size) {
-        (void) CNO_ERROR_GENERIC;
+        (void) CNO_ERROR_GENERIC("string offset out of bounds");
         return NULL;
     }
 
