@@ -201,6 +201,19 @@ static PyObject * pycno_connection_made(PyCNO *self, PyObject *args)
 
     self->transport = transport;
     Py_INCREF(transport);
+
+    if (self->conn == NULL) {
+        return PyErr_Format(PyExc_ConnectionError, "connection closed");
+    }
+
+    if (cno_connection_made(self->conn)) {
+        return pycno_handle_cno_error(self);
+    }
+
+    if (PyErr_Occurred()) {
+        return NULL;
+    }
+
     Py_RETURN_NONE;
 }
 
