@@ -70,7 +70,6 @@ struct cno_st_connection_t {
     struct cno_st_stream_t *streams;
     void * cb_data;
     void * on_ready;
-    void * on_error;
     void * on_close;
     void * on_frame;
     void * on_write;
@@ -91,7 +90,6 @@ CNO_STRUCT_EXPORT(message);
 
 
 CNO_DEF_CALLBACK(cno_connection_t, on_ready);
-CNO_DEF_CALLBACK(cno_connection_t, on_error, int, char *, char *, int, void *);
 CNO_DEF_CALLBACK(cno_connection_t, on_close);
 CNO_DEF_CALLBACK(cno_connection_t, on_frame, cno_frame_t *);
 CNO_DEF_CALLBACK(cno_connection_t, on_write, const char *, size_t);
