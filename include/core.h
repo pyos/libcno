@@ -4,8 +4,6 @@
 #include "iovec.h"
 
 #define CNO_STRUCT_EXPORT(name) typedef struct cno_st_ ## name ## _t cno_ ## name ## _t
-#define CNO_PAYLOAD_UNLIMITED ((size_t) -1)
-#define CNO_PAYLOAD_CHUNKED   ((size_t) -2)
 #define CNO_FIRE(ob, cb, ...) do if (ob->cb) ((cno_cb_ ## cb ## _t) ob->cb)(ob, ob->cb_data, ## __VA_ARGS__); while (0)
 
 
@@ -40,6 +38,7 @@ struct cno_st_message_t {
     int major;
     int minor;
     int code;
+    int chunked;
     size_t read;
     size_t remaining;
     size_t headers_len;
@@ -98,9 +97,7 @@ typedef void (* cno_cb_on_message_data_t)  (cno_connection_t *, void *, size_t, 
 typedef void (* cno_cb_on_message_end_t)   (cno_connection_t *, void *, size_t, int disconnect);
 
 
-static const struct cno_st_io_vector_t CNO_PREFACE = {
-    "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24
-};
+static const struct cno_st_io_vector_t CNO_PREFACE = { "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24 };
 
 
 cno_connection_t * cno_connection_new           (int server, int upgrade);

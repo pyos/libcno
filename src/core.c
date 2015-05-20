@@ -195,7 +195,7 @@ int cno_connection_fire (cno_connection_t *conn)
                 size_t header_num = 100;
                 size_t it;
 
-                stream->msg.remaining = CNO_PAYLOAD_UNLIMITED;
+                stream->msg.remaining = 0;
 
                 if (conn->server) {
                     ok = phr_parse_request(conn->buffer.data, conn->buffer.size,
@@ -227,6 +227,7 @@ int cno_connection_fire (cno_connection_t *conn)
                 conn->state = CNO_CONNECTION_HTTP1_READING;
                 stream->msg.headers_len = header_num;
                 stream->msg.headers = malloc(sizeof(cno_header_t) * header_num);
+                stream->msg.chunked = 0;
 
                 if (!stream->msg.headers) {
                     STOP(CNO_ERROR_NOMEMORY);
@@ -238,8 +239,8 @@ int cno_connection_fire (cno_connection_t *conn)
                     // TODO lowercase
 
                     if (strncmp(name, "content-length", size) == 0) {
-                        if (stream->msg.remaining != CNO_PAYLOAD_UNLIMITED) {
-                            // Cannot have both length and chunked TE.
+                        if (stream->msg.remaining || stream->msg.chunked) {
+                            // Cannot have both length and chunked TE/multiple content-lengths.
                             STOP(CNO_ERROR_BAD_REQ);
                         }
 
@@ -252,12 +253,12 @@ int cno_connection_fire (cno_connection_t *conn)
                             STOP(CNO_ERROR_BAD_REQ);
                         }
 
-                        if (stream->msg.remaining != CNO_PAYLOAD_UNLIMITED) {
+                        if (stream->msg.remaining) {
                             // Cannot have both length and chunked TE.
                             STOP(CNO_ERROR_BAD_REQ);
                         }
 
-                        stream->msg.remaining = CNO_PAYLOAD_CHUNKED;
+                        stream->msg.chunked = 1;
                     }
                 }
 
@@ -280,70 +281,58 @@ int cno_connection_fire (cno_connection_t *conn)
                 size_t limit  = stream->msg.remaining;
                 char * buffer = conn->buffer.data;
 
-                switch (limit) {
-                    case CNO_PAYLOAD_UNLIMITED: {
+                if (stream->msg.chunked) {
+                    char *it  = conn->buffer.data;
+                    char *lim = conn->buffer.size + it;
+                    char *eol = it; while (eol != lim && *eol != '\n') ++eol;
+                    char *end = it; while (end != eol && *end != ';')  ++end;
+
+                    if (eol == lim) {
+                        // Wait for a chunk header.
+                        STOP(CNO_OK);
+                    }
+
+                    limit = 0;
+
+                    size_t chunk_len = (eol - it) + 3;  // + \r\n
+
+                    for (; it != end; ++it) {
+                        limit = '0' <= *it && *it <= '9' ? (limit << 4) | (*it - '0') :
+                                'A' <= *it && *it <= 'F' ? (limit << 4) | (*it - 'A') :
+                                'a' <= *it && *it <= 'f' ? (limit << 4) | (*it - 'a') : limit;
+                    }
+
+                    chunk_len += limit;
+
+                    if (conn->buffer.size < chunk_len) {
+                        // Wait for a complete chunk, with a line break.
+                        STOP(CNO_OK);
+                    }
+
+                    buffer = eol + 1;
+
+                    cno_io_vector_shift(&conn->buffer, chunk_len);
+
+                    if (limit == 0) {
+                        // That was the last chunk.
+                        stream->msg.chunked = 0;
+                    }
+                } else {
+                    if (limit > conn->buffer.size) {
                         limit = conn->buffer.size;
-                        cno_io_vector_shift(&conn->buffer, limit);
-                        break;
+                        stream->msg.remaining -= limit;
+                    } else {
+                        stream->msg.remaining = 0;
                     }
 
-                    case CNO_PAYLOAD_CHUNKED: {
-                        char *it  = conn->buffer.data;
-                        char *lim = conn->buffer.size + it;
-                        char *eol = it; while (eol != lim && *eol != '\n') ++eol;
-                        char *end = it; while (end != eol && *end != ';')  ++end;
-
-                        if (eol == lim) {
-                            // Wait for a chunk header.
-                            STOP(CNO_OK);
-                        }
-
-                        limit = 0;
-
-                        size_t chunk_len = (eol - it) + 3;  // + \r\n
-
-                        for (; it != end; ++it) {
-                            limit = '0' <= *it && *it <= '9' ? (limit << 4) | (*it - '0') :
-                                    'A' <= *it && *it <= 'F' ? (limit << 4) | (*it - 'A') :
-                                    'a' <= *it && *it <= 'f' ? (limit << 4) | (*it - 'a') : limit;
-                        }
-
-                        chunk_len += limit;
-
-                        if (conn->buffer.size < chunk_len) {
-                            // Wait for a complete chunk, with a line break.
-                            STOP(CNO_OK);
-                        }
-
-                        buffer = eol + 1;
-
-                        cno_io_vector_shift(&conn->buffer, chunk_len);
-
-                        if (limit == 0) {
-                            // That was the last chunk.
-                            stream->msg.remaining = 0;
-                        }
-
-                        break;
-                    }
-
-                    default: {
-                        if (limit > conn->buffer.size) {
-                            limit = conn->buffer.size;
-                            stream->msg.remaining -= limit;
-                        } else {
-                            stream->msg.remaining = 0;
-                        }
-
-                        cno_io_vector_shift(&conn->buffer, limit);
-                    }
+                    cno_io_vector_shift(&conn->buffer, limit);
                 }
 
                 if (limit) {
                     CNO_FIRE(conn, on_message_data, stream->id, buffer, limit);
                 }
 
-                if (!stream->msg.remaining) {
+                if (!stream->msg.remaining && !stream->msg.chunked) {
                     // TODO switch to HTTP 2 if request ended and was an upgrade request
                     conn->state = CNO_CONNECTION_HTTP1_READY;
                     stream->active = 0;

@@ -19,9 +19,9 @@ y.on_write         = *: xs -> print 'client write' xs
 y.on_message_start = *: xs -> print 'client start' xs
 y.on_message_data  = *: xs -> print 'client data'  xs
 y.on_message_end   = *: xs -> print 'client end'   xs
-y.data_received b'HTTP/1.'
-y.data_received b'1 200 OK\r\n'
-y.data_received b'Cookie: norm\r\n\r\n'
+y.data_received b'HTTP/1.1 200 OK\r\n'
+y.data_received b'cookie: norm\r\n'
+y.data_received b'content-length: 4\r\n\r\n'
 y.data_received b'test'
 y.connection_lost None
 x.connection_lost None
