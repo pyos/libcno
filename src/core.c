@@ -81,30 +81,6 @@ static int cno_connection_stream_find (cno_connection_t *conn, size_t id, cno_st
 }
 
 
-static int cno_connection_stream_close (cno_connection_t *conn, size_t id)
-{
-    cno_stream_t *parent;
-    cno_stream_t *stream;
-
-    if (cno_connection_stream_find(conn, id, &stream, &parent)) {
-        return CNO_PROPAGATE;
-    }
-
-    if (!stream->open) {
-        return CNO_ERROR_CLOSED;
-    }
-
-    stream->open = 0;
-
-    if (stream->active) {
-        CNO_FIRE(conn, on_message_end, id, 0);
-        stream->active = 0;
-    }
-
-    return CNO_OK;
-}
-
-
 static int cno_connection_stream_destroy (cno_connection_t *conn, size_t id)
 {
     cno_stream_t *parent;
