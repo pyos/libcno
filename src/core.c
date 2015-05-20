@@ -18,7 +18,26 @@ cno_connection_t * cno_connection_new (int server, int upgrade)
 
     conn->state  = upgrade ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
     conn->server = server;
+
+    if (cno_connection_fire(conn)) {
+        cno_connection_destroy(conn);
+        return NULL;
+    }
+
     return conn;
+}
+
+
+int cno_connection_destroy (cno_connection_t *conn)
+{
+    int ok = CNO_OK;
+
+    if (!conn->closed) {
+        ok = cno_connection_lost(conn);
+    }
+
+    free(conn);
+    return ok;
 }
 
 
@@ -107,16 +126,6 @@ static int cno_connection_stream_destroy (cno_connection_t *conn, size_t id) {
 
     free(stream);
     return CNO_OK;
-}
-
-
-void cno_connection_destroy (cno_connection_t *conn)
-{
-    if (!conn->closed) {
-        cno_connection_lost(conn);
-    }
-
-    free(conn);
 }
 
 
@@ -280,13 +289,13 @@ int cno_connection_fire (cno_connection_t *conn)
             }
 
             case CNO_CONNECTION_HTTP1_READING: {
-                if (!conn->buffer.size) {
-                    STOP(CNO_OK);
-                }
-
                 cno_stream_t *stream = conn->streams;
                 size_t limit  = stream->msg.remaining;
                 char * buffer = conn->buffer.data;
+
+                if (!conn->buffer.size && stream->msg.remaining) {
+                    STOP(CNO_OK);
+                }
 
                 if (stream->msg.chunked) {
                     char *it  = conn->buffer.data;

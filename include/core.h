@@ -101,7 +101,7 @@ static const struct cno_st_io_vector_t CNO_PREFACE = { "PRI * HTTP/2.0\r\n\r\nSM
 
 
 cno_connection_t * cno_connection_new           (int server, int upgrade);
-void               cno_connection_destroy       (cno_connection_t *conn);
+int                cno_connection_destroy       (cno_connection_t *conn);
 int                cno_connection_data_received (cno_connection_t *conn, const char *data, size_t length);
 int                cno_connection_lost          (cno_connection_t *conn);
 int                cno_connection_fire          (cno_connection_t *conn);
