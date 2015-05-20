@@ -233,6 +233,7 @@ int cno_connection_fire (cno_connection_t *conn)
                 stream->msg.headers_len = header_num;
                 stream->msg.headers = malloc(sizeof(cno_header_t) * header_num);
                 stream->msg.chunked = 0;
+                stream->msg.read    = 0;
 
                 if (!stream->msg.headers) {
                     STOP(CNO_ERROR_NOMEMORY);
@@ -263,7 +264,8 @@ int cno_connection_fire (cno_connection_t *conn)
                             STOP(CNO_ERROR_BAD_REQ);
                         }
 
-                        stream->msg.chunked = 1;
+                        stream->msg.chunked   = 1;
+                        stream->msg.remaining = 1;
                     }
                 }
 
@@ -320,7 +322,7 @@ int cno_connection_fire (cno_connection_t *conn)
 
                     if (limit == 0) {
                         // That was the last chunk.
-                        stream->msg.chunked = 0;
+                        stream->msg.remaining = 0;
                     }
                 } else {
                     if (limit > conn->buffer.size) {
@@ -337,7 +339,7 @@ int cno_connection_fire (cno_connection_t *conn)
                     CNO_FIRE(conn, on_message_data, stream->id, buffer, limit);
                 }
 
-                if (!stream->msg.remaining && !stream->msg.chunked) {
+                if (!stream->msg.remaining) {
                     // TODO switch to HTTP 2 if request ended and was an upgrade request
                     conn->state = CNO_CONNECTION_HTTP1_READY;
                     stream->active = 0;
