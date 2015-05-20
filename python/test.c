@@ -173,6 +173,24 @@ static PyObject * pycno_data_received(PyCNO *self, PyObject *args)
 }
 
 
+static PyObject * pycno_eof_received(PyCNO *self, PyObject *args)
+{
+    Py_RETURN_FALSE;
+}
+
+
+static PyObject * pycno_pause_writing(PyCNO *self, PyObject *args)
+{
+    Py_RETURN_FALSE;
+}
+
+
+static PyObject * pycno_resume_writing(PyCNO *self, PyObject *args)
+{
+    Py_RETURN_FALSE;
+}
+
+
 static PyObject * pycno_connection_made(PyCNO *self, PyObject *args)
 {
     PyObject *transport;
@@ -357,6 +375,9 @@ static void pycno_dealloc(PyCNO *self)
 
 
 static PyMethodDef PyCNOMethods[] = {
+    { "eof_received",    (PyCFunction) pycno_eof_received,    METH_VARARGS, NULL },
+    { "pause_writing",   (PyCFunction) pycno_pause_writing,   METH_VARARGS, NULL },
+    { "resume_writing",  (PyCFunction) pycno_resume_writing,  METH_VARARGS, NULL },
     { "data_received",   (PyCFunction) pycno_data_received,   METH_VARARGS, NULL },
     { "connection_made", (PyCFunction) pycno_connection_made, METH_VARARGS, NULL },
     { "connection_lost", (PyCFunction) pycno_connection_lost, METH_VARARGS, NULL },
