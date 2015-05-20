@@ -108,7 +108,7 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
             }
 
             memcpy(tg, msg->method.data, msg->method.size); tg += msg->method.size; *tg++ = ' ';
-            memcpy(tg, msg->path.data,   msg->path.size);   tg += msg->path.size;   *tg++ = ' ';
+            memcpy(tg, msg->path.data,   msg->path.size);   tg += msg->path.size;
             sprintf(tg, " HTTP/1.%d\r\n", msg->minor);
             tg += strlen(tg);
         }
