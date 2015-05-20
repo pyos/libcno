@@ -1,30 +1,30 @@
 import '/testloader'
 import '/test'
 
+
 x = test.CNO server: True
-x.on_write         = *: xs -> print 'server write' xs
-x.on_message_start = *: xs -> print 'server start' xs
-x.on_message_data  = *: xs -> print 'server data'  xs
-x.on_message_end   = *: xs -> print 'server end'   xs
-x.data_received b'GET /index.html HTTP/1.1\r\n'
-x.data_received b'Host: localhost\r\ntransfer-encoding: chunked\r\n\r\n'
-x.data_received b'4\r\ntest\r\n3\r\nasd\r\n0\r\n\r\n'
-x.data_received b'GET /index.html HTTP/1.1\r\n'
-x.data_received b'Host: localhost\r\ncontent-length: 4\r\n\r\n'
-x.data_received b'test\r\n'
-x.data_received b'GET /index.html HTTP/1.1\r\n'
-x.data_received b'Host: localhost\r\ncontent-length: 4\r\n\r\n'
-x.data_received b'test\r\n'
-
-
 y = test.CNO server: False
-y.on_write         = *: xs -> print 'client write' xs
-y.on_message_start = *: xs -> print 'client start' xs
-y.on_message_data  = *: xs -> print 'client data'  xs
-y.on_message_end   = *: xs -> print 'client end'   xs
-y.data_received b'HTTP/1.1 200 OK\r\n'
-y.data_received b'cookie: norm\r\n'
-y.data_received b'content-length: 4\r\n\r\n'
-y.data_received b'test\r\n'
-y.connection_lost None
+
+
+x.on_write = y.data_received
+y.on_write = x.data_received
+
+
+x.on_message_start = stream _ _ method path headers -> print 'srv' stream 'req' method path headers
+x.on_message_data  = stream data                    -> print 'srv' stream 'dat' data
+x.on_message_end   = stream disconnect ->
+  print 'srv' stream 'fin'
+  x.write_message stream 1 200 [('content-length', '11'), ('content-type', 'text/plain')]
+  x.write_data    stream b'successful!'
+  x.write_end     stream
+
+
+y.on_message_start = stream _ code _ _ headers -> print 'cli' stream 'res' code headers
+y.on_message_data  = stream data               -> print 'cli' stream 'dat' data
+y.on_message_end   = stream disconnect         -> print 'cli' stream 'fin'
+
+y.write_message 0 1 "GET" "/index.html" [('host', 'localhost:8000')]
+y.write_end     0
+
 x.connection_lost None
+y.connection_lost None
