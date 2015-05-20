@@ -43,11 +43,11 @@ struct cno_st_message_t {
     int minor;
     int code;
     int chunked;
-    size_t remaining;
-    size_t headers_len;
     struct cno_st_io_vector_t method;
     struct cno_st_io_vector_t path;
+    size_t headers_len;
     struct cno_st_header_t *headers;
+    size_t remaining;
 };
 
 

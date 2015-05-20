@@ -236,8 +236,8 @@ int cno_connection_fire(cno_connection_t *conn)
 
                         cno_message_t upgrade_msg = {
                             stream->msg.major, stream->msg.minor, 101,
-                            /* chunked */  0,  /* ignored */  0,  /* headers_len */ 2,
-                            /* method  */ {0}, /* path    */ {0}, upgrade_headers
+                            /* chunked */  0, /* method */ {0}, /* path */ {0},
+                            /* headers_len */ 2, upgrade_headers
                         };
 
                         if (cno_write_message(conn, stream->id, &upgrade_msg)) {
