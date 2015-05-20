@@ -57,7 +57,8 @@ static const char *cno_response_literal(int status)
 }
 
 
-static int cno_is_http1(cno_connection_t *conn, size_t id, cno_stream_t **stream) {
+static int cno_is_http1(cno_connection_t *conn, size_t id, cno_stream_t **stream)
+{
     switch (conn->state) {
         case CNO_CONNECTION_INIT:
         case CNO_CONNECTION_PREFACE:

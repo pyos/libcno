@@ -81,7 +81,8 @@ static int cno_connection_stream_find (cno_connection_t *conn, size_t id, cno_st
 }
 
 
-static int cno_connection_stream_close (cno_connection_t *conn, size_t id) {
+static int cno_connection_stream_close (cno_connection_t *conn, size_t id)
+{
     cno_stream_t *parent;
     cno_stream_t *stream;
 
@@ -104,7 +105,8 @@ static int cno_connection_stream_close (cno_connection_t *conn, size_t id) {
 }
 
 
-static int cno_connection_stream_destroy (cno_connection_t *conn, size_t id) {
+static int cno_connection_stream_destroy (cno_connection_t *conn, size_t id)
+{
     cno_stream_t *parent;
     cno_stream_t *stream;
 
