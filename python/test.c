@@ -12,6 +12,7 @@
 #include "core.h"
 #include "error.h"
 #include "write.h"
+#define CNO_ERROR_PYTHON CNO_ERROR_UNKNOWN("See Python exception info")
 
 
 typedef struct
@@ -28,16 +29,20 @@ typedef struct
 
 static PyObject * pycno_handle_cno_error(PyCNO *self)
 {
-    // TODO use different exception types
-    return PyErr_Format(PyExc_RuntimeError, "%d: %s (%s:%d)",
-        cno_error(), cno_error_text(), cno_error_file(), cno_error_line());
+    if (!PyErr_Occurred()) {
+        // TODO use different exception types
+        return PyErr_Format(PyExc_RuntimeError, "%d: %s (%s:%d)",
+            cno_error(), cno_error_text(), cno_error_file(), cno_error_line());
+    }
+
+    return NULL;
 }
 
 
-static void pycno_on_message_start(cno_connection_t *conn, PyCNO *self, size_t stream, cno_message_t *msg)
+static int pycno_on_message_start(cno_connection_t *conn, PyCNO *self, size_t stream, cno_message_t *msg)
 {
     if (PyErr_Occurred()) {
-        return;
+        return CNO_ERROR_PYTHON;
     }
 
     if (self->on_message_start) {
@@ -45,7 +50,7 @@ static void pycno_on_message_start(cno_connection_t *conn, PyCNO *self, size_t s
         size_t i;
 
         if (headers == NULL) {
-            return;
+            return CNO_ERROR_PYTHON;
         }
 
         for (i = 0; i < msg->headers_len; ++i) {
@@ -55,7 +60,7 @@ static void pycno_on_message_start(cno_connection_t *conn, PyCNO *self, size_t s
 
             if (header == NULL) {
                 Py_DECREF(headers);
-                return;
+                return CNO_ERROR_PYTHON;
             }
 
             PyList_SET_ITEM(headers, i, header);
@@ -68,39 +73,45 @@ static void pycno_on_message_start(cno_connection_t *conn, PyCNO *self, size_t s
             msg->path.data,   msg->path.size, headers);
         Py_XDECREF(ret);
     }
+
+    return CNO_OK;
 }
 
 
-static void pycno_on_message_data(cno_connection_t *conn, PyCNO *self, size_t stream, const char *data, size_t length)
+static int pycno_on_message_data(cno_connection_t *conn, PyCNO *self, size_t stream, const char *data, size_t length)
 {
     if (PyErr_Occurred()) {
-        return;
+        return CNO_ERROR_PYTHON;
     }
 
     if (self->on_message_data) {
         PyObject *ret = PyObject_CallFunction(self->on_message_data, "ny#", stream, data, length);
         Py_XDECREF(ret);
     }
+
+    return CNO_OK;
 }
 
 
-static void pycno_on_message_end(cno_connection_t *conn, PyCNO *self, size_t stream, int disconnect)
+static int pycno_on_message_end(cno_connection_t *conn, PyCNO *self, size_t stream, int disconnect)
 {
     if (PyErr_Occurred()) {
-        return;
+        return CNO_ERROR_PYTHON;
     }
 
     if (self->on_message_end) {
         PyObject *ret = PyObject_CallFunction(self->on_message_end, "ni", stream, disconnect);
         Py_XDECREF(ret);
     }
+
+    return CNO_OK;
 }
 
 
-static void pycno_on_write(cno_connection_t *conn, PyCNO *self, const char *data, size_t length)
+static int pycno_on_write(cno_connection_t *conn, PyCNO *self, const char *data, size_t length)
 {
     if (PyErr_Occurred()) {
-        return;
+        return CNO_ERROR_PYTHON;
     }
 
     if (self->on_write) {
@@ -108,7 +119,10 @@ static void pycno_on_write(cno_connection_t *conn, PyCNO *self, const char *data
         Py_XDECREF(ret);
     } else if (self->transport) {
         PyErr_Format(PyExc_NotImplementedError, "cannot send to transports yet");
+        return CNO_ERROR_PYTHON;
     }
+
+    return CNO_OK;
 }
 
 
@@ -165,10 +179,6 @@ static PyObject * pycno_data_received(PyCNO *self, PyObject *args)
         return pycno_handle_cno_error(self);
     }
 
-    if (PyErr_Occurred()) {
-        return NULL;
-    }
-
     Py_RETURN_NONE;
 }
 
@@ -210,10 +220,6 @@ static PyObject * pycno_connection_made(PyCNO *self, PyObject *args)
         return pycno_handle_cno_error(self);
     }
 
-    if (PyErr_Occurred()) {
-        return NULL;
-    }
-
     Py_RETURN_NONE;
 }
 
@@ -231,10 +237,6 @@ static PyObject * pycno_connection_lost(PyCNO *self, PyObject *args)
         }
 
         self->conn = NULL;
-    }
-
-    if (PyErr_Occurred()) {
-        return NULL;
     }
 
     Py_RETURN_NONE;
@@ -308,10 +310,6 @@ static PyObject * pycno_write_message(PyCNO *self, PyObject *args, PyObject *kwa
         return pycno_handle_cno_error(self);
     }
 
-    if (PyErr_Occurred()) {
-        return NULL;
-    }
-
     PyMem_RawFree(msg.headers);
     Py_RETURN_NONE;
 }
@@ -333,10 +331,6 @@ static PyObject * pycno_write_data(PyCNO *self, PyObject *args, PyObject *kwargs
         return pycno_handle_cno_error(self);
     }
 
-    if (PyErr_Occurred()) {
-        return NULL;
-    }
-
     Py_RETURN_NONE;
 }
 
@@ -353,10 +347,6 @@ static PyObject * pycno_write_end(PyCNO *self, PyObject *args, PyObject *kwargs)
 
     if (cno_write_end(self->conn, stream, chunked)) {
         return pycno_handle_cno_error(self);
-    }
-
-    if (PyErr_Occurred()) {
-        return NULL;
     }
 
     Py_RETURN_NONE;

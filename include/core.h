@@ -5,8 +5,8 @@
 #include "iovec.h"
 
 #define CNO_STRUCT_EXPORT(name) typedef struct cno_st_ ## name ## _t cno_ ## name ## _t
-#define CNO_DEF_CALLBACK(ob, cb, ...) typedef void (* cno_cb_ ## cb ## _t)(ob *, void *, ## __VA_ARGS__)
-#define CNO_FIRE(ob, cb, ...) do if (ob->cb) ((cno_cb_ ## cb ## _t) ob->cb)(ob, ob->cb_data, ## __VA_ARGS__); while (0)
+#define CNO_DEF_CALLBACK(ob, cb, ...) typedef int (* cno_cb_ ## cb ## _t)(ob *, void *, ## __VA_ARGS__)
+#define CNO_FIRE(ob, cb, ...) (ob->cb && ((cno_cb_ ## cb ## _t) ob->cb)(ob, ob->cb_data, ## __VA_ARGS__))
 #define CNO_ZERO(ob) memset(ob, 0, sizeof(*ob))
 
 

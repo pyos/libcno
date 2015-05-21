@@ -114,7 +114,10 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
             }
 
             for (i = 0; i < msg->headers_len; ++i) {
-                CNO_FIRE(conn, on_write, head, tg - head);
+                if (CNO_FIRE(conn, on_write, head, tg - head)) {
+                    return CNO_PROPAGATE;
+                }
+
                 cno_io_vector_t *name  = &msg->headers[i].name;
                 cno_io_vector_t *value = &msg->headers[i].value;
 
@@ -129,8 +132,11 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
 
             *tg++ = '\r';
             *tg++ = '\n';
-            CNO_FIRE(conn, on_write, head, tg - head);
-            return 0;
+
+            if (CNO_FIRE(conn, on_write, head, tg - head)) {
+                return CNO_PROPAGATE;
+            }
+            return CNO_OK;
         }
     }
 
@@ -160,13 +166,15 @@ int cno_write_data(cno_connection_t *conn, size_t stream, const char *data, size
                           : (enc & 0xF) + 'A' - 10;
                 }
 
-                CNO_FIRE(conn, on_write, it, sizeof(size_t) + 2 - (it - encd));
-                CNO_FIRE(conn, on_write, data, length);
-                CNO_FIRE(conn, on_write, "\r\n", 2);
+                if (CNO_FIRE(conn, on_write, it, sizeof(size_t) + 2 - (it - encd))
+                 || CNO_FIRE(conn, on_write, data, length)
+                 || CNO_FIRE(conn, on_write, "\r\n", 2)) return CNO_PROPAGATE;
             } else {
-                CNO_FIRE(conn, on_write, data, length);
+                if (CNO_FIRE(conn, on_write, data, length)) {
+                    return CNO_PROPAGATE;
+                }
             }
-            return 0;
+            return CNO_OK;
         }
     }
 
@@ -181,11 +189,11 @@ int cno_write_end(cno_connection_t *conn, size_t stream, int chunked)
     switch (cno_is_http1(conn, stream, &streamobj)) {
         case -1: return CNO_PROPAGATE;
         case  1: {
-            if (chunked) {
-                CNO_FIRE(conn, on_write, "0\r\n\r\n", 5);
+            if (chunked && CNO_FIRE(conn, on_write, "0\r\n\r\n", 5)) {
+                return CNO_PROPAGATE;
             }
 
-            return 0;
+            return CNO_OK;
         }
     }
 

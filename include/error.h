@@ -21,10 +21,8 @@ enum CNO_ERRNO {
 };
 
 
-enum CNO_RETURN_VALUE {
-    CNO_OK        =  0,
-    CNO_PROPAGATE = -1,
-};
+#define CNO_OK         0
+#define CNO_PROPAGATE -1
 
 
 int          cno_error_set  (int code, const char *text, const char *file, int line, void *arg);

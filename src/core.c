@@ -20,7 +20,13 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
     stream->next  = conn->streams;
     stream->state = CNO_STREAM_IDLE;
     conn->streams = stream;
-    CNO_FIRE(conn, on_stream_start, id);
+
+    if (CNO_FIRE(conn, on_stream_start, id)) {
+        free(stream);
+        (void) CNO_PROPAGATE;
+        return NULL;
+    }
+
     return stream;
 }
 
@@ -51,14 +57,22 @@ static int cno_stream_destroy(cno_connection_t *conn, size_t id)
     if (stream->state == CNO_STREAM_OPEN) {
         // Note that second argument is `1`. Callback should know that the stream
         // is dead, but shouldn't try to actually do anything with the message.
-        CNO_FIRE(conn, on_message_end, stream->id, 1);
+        if (CNO_FIRE(conn, on_message_end, stream->id, 1)) {
+            return CNO_PROPAGATE;
+        }
     }
 
-    CNO_FIRE(conn, on_stream_end, id);
+    if (CNO_FIRE(conn, on_stream_end, id)) {
+        return CNO_PROPAGATE;
+    }
 
     if (stream->next) stream->next->prev = stream->prev;
     if (stream->prev) stream->prev->next = stream->next;
     else conn->streams = stream->next;
+
+    if (stream->msg.headers) {
+        free(stream->msg.headers);
+    }
 
     free(stream);
     return CNO_OK;
@@ -121,12 +135,13 @@ int cno_connection_lost(cno_connection_t *conn)
 }
 
 
-static void cno_connection_send_preface(cno_connection_t *conn) {
-    if (!conn->server) {
-        CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size);
+static int cno_connection_send_preface(cno_connection_t *conn) {
+    if (!conn->server && CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size)) {
+        return CNO_PROPAGATE;
     }
 
     // TODO send a SETTINGS frame
+    return CNO_OK;
 }
 
 
@@ -151,8 +166,7 @@ int cno_connection_fire(cno_connection_t *conn)
 
             conn->state = CNO_CONNECTION_CLOSED;
             CNO_ZERO(&conn->buffer);
-            CNO_FIRE( conn, on_close);
-            return CNO_OK;
+            return CNO_FIRE(conn, on_close);
         }
 
         switch (conn->state) {
@@ -162,7 +176,11 @@ int cno_connection_fire(cno_connection_t *conn)
                 }
 
                 conn->state = CNO_CONNECTION_HTTP1_READY;
-                CNO_FIRE(conn, on_ready);
+
+                if (CNO_FIRE(conn, on_ready)) {
+                    STOP(CNO_PROPAGATE);
+                }
+
                 break;
             }
 
@@ -175,6 +193,11 @@ int cno_connection_fire(cno_connection_t *conn)
 
                 // Should be exactly one stream right now.
                 cno_stream_t *stream = conn->streams;
+
+                if (stream->msg.headers) {
+                    free(stream->msg.headers);
+                }
+
                 CNO_ZERO(&stream->msg);
                 stream->msg.major = 1;
 
@@ -187,7 +210,11 @@ int cno_connection_fire(cno_connection_t *conn)
                 if  (conn->buffer.size >= CNO_PREFACE.size &&  may_be_http2) {
                     // Definitely HTTP2. Stream 1 should be recycled, though.
                     cno_stream_destroy(conn, stream->id);
-                    cno_connection_send_preface(conn);
+
+                    if (cno_connection_send_preface(conn)) {
+                        STOP(CNO_PROPAGATE);
+                    }
+
                     // NOTE transition to HTTP 2 will be seamless because the buffer
                     //      is already full. Thus we don't emit `on_ready` again.
                     conn->state = CNO_CONNECTION_INIT_UPGRADE;
@@ -257,7 +284,9 @@ int cno_connection_fire(cno_connection_t *conn)
                         conn->state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
                         // If we send the preface now, we'll be able to send HTTP 2 frames
                         // while in the HTTP1_READING_UPGRADE state.
-                        cno_connection_send_preface(conn);
+                        if (cno_connection_send_preface(conn)) {
+                            STOP(CNO_PROPAGATE);
+                        }
                     } else
 
                     if (strncmp(name, "content-length", size) == 0) {
@@ -284,7 +313,10 @@ int cno_connection_fire(cno_connection_t *conn)
 
                 memcpy(stream->msg.headers, headers, sizeof(cno_header_t) * header_num);
 
-                CNO_FIRE(conn, on_message_start, stream->id, &stream->msg);
+                if (CNO_FIRE(conn, on_message_start, stream->id, &stream->msg)) {
+                    STOP(CNO_PROPAGATE);
+                }
+
                 CNO_ZERO(&stream->msg.method);
                 CNO_ZERO(&stream->msg.path);
                 cno_io_vector_shift(&conn->buffer, (size_t) ok);
@@ -317,7 +349,9 @@ int cno_connection_fire(cno_connection_t *conn)
                     cno_io_vector_shift(&conn->buffer, data_len + head_len);
 
                     if (data_len) {
-                        CNO_FIRE(conn, on_message_data, stream->id, eol + 1, data_len);
+                        if (CNO_FIRE(conn, on_message_data, stream->id, eol + 1, data_len)) {
+                            STOP(CNO_PROPAGATE);
+                        }
                     } else {
                         // That was the last chunk.
                         stream->msg.remaining = 0;
@@ -333,7 +367,10 @@ int cno_connection_fire(cno_connection_t *conn)
                     stream->msg.remaining -= data_len;
 
                     cno_io_vector_shift(&conn->buffer, data_len);
-                    CNO_FIRE(conn, on_message_data, stream->id, data_buf, data_len);
+
+                    if (CNO_FIRE(conn, on_message_data, stream->id, data_buf, data_len)) {
+                        STOP(CNO_PROPAGATE);
+                    }
                 }
 
                 if (!stream->msg.remaining) {
@@ -342,15 +379,23 @@ int cno_connection_fire(cno_connection_t *conn)
                         : CNO_CONNECTION_HTTP1_READY;
                     // In HTTP/1.x, RST_STREAM is implied.
                     conn->streams->state = CNO_STREAM_IDLE;
-                    CNO_FIRE(conn, on_message_end, stream->id, 0);
+
+                    if (CNO_FIRE(conn, on_message_end, stream->id, 0)) {
+                        STOP(CNO_PROPAGATE);
+                    }
                 }
 
                 break;
             }
 
             case CNO_CONNECTION_INIT: {
-                cno_connection_send_preface(conn);
-                CNO_FIRE(conn, on_ready);
+                if (cno_connection_send_preface(conn)) {
+                    STOP(CNO_PROPAGATE);
+                }
+
+                if (CNO_FIRE(conn, on_ready)) {
+                    STOP(CNO_PROPAGATE);
+                }
             }  // fallthrough
 
             case CNO_CONNECTION_INIT_UPGRADE: {
@@ -395,7 +440,11 @@ int cno_connection_fire(cno_connection_t *conn)
 
                 conn->frame.payload.data = cno_io_vector_slice(&conn->buffer, conn->frame.payload.size);
                 conn->state = CNO_CONNECTION_READY;
-                CNO_FIRE(conn, on_frame, &conn->frame);
+
+                if (CNO_FIRE(conn, on_frame, &conn->frame)) {
+                    STOP(CNO_PROPAGATE);
+                }
+
                 cno_io_vector_clear(&conn->frame.payload);
                 break;
             }
