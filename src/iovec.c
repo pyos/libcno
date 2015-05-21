@@ -40,7 +40,7 @@ char * cno_io_vector_slice (struct cno_st_io_vector_tmp_t *vec, size_t size)
         return NULL;
     }
 
-    char * mem = malloc(size);
+    char *mem = malloc(size);
 
     if (mem) {
         memcpy(mem, vec->data, size);

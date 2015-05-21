@@ -2,8 +2,8 @@ import '/testloader'
 import '/test'
 
 
-x = test.CNO server: True
-y = test.CNO server: False
+x = test.CNO "server"
+y = test.CNO "http1"
 
 
 x.on_write = data -> y.data_received data

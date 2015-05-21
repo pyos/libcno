@@ -99,10 +99,7 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
             char head[4096];
             char *tg = head;
 
-            if (conn->server) {
-                sprintf(head, "HTTP/1.%d %d %s\r\n", msg->minor, msg->code, cno_response_literal(msg->code));
-                tg += strlen(head);
-            } else {
+            if (conn->client) {
                 if (msg->method.size + msg->path.size >= 4084) {
                     return CNO_ERROR_TRANSPORT("path too long (>= 4096 total)");
                 }
@@ -111,6 +108,9 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
                 memcpy(tg, msg->path.data,   msg->path.size);   tg += msg->path.size;
                 sprintf(tg, " HTTP/1.%d\r\n", msg->minor);
                 tg += strlen(tg);
+            } else {
+                sprintf(head, "HTTP/1.%d %d %s\r\n", msg->minor, msg->code, cno_response_literal(msg->code));
+                tg += strlen(head);
             }
 
             for (i = 0; i < msg->headers_len; ++i) {

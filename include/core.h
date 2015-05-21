@@ -10,6 +10,13 @@
 #define CNO_ZERO(ob) memset(ob, 0, sizeof(*ob))
 
 
+enum CNO_CONNECTION_KIND {
+    CNO_HTTP2_SERVER = 0,
+    CNO_HTTP2_CLIENT = 1,
+    CNO_HTTP1_CLIENT = 2,
+};
+
+
 enum CNO_CONNECTION_STATE {
     CNO_CONNECTION_CLOSED,
     CNO_CONNECTION_INIT,
@@ -77,9 +84,9 @@ struct cno_st_settings_t {
 
 
 struct cno_st_connection_t {
+    union { int kind; int client; };
     int state;
     int closed;
-    int server;
     struct cno_st_io_vector_tmp_t buffer;
     struct cno_st_frame_t frame;
     struct cno_st_stream_t *streams;
@@ -119,7 +126,7 @@ CNO_DEF_CALLBACK(cno_connection_t, on_message_end,   size_t, int disconnect);
 static const struct cno_st_io_vector_t CNO_PREFACE   = { "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24 };
 
 
-cno_connection_t * cno_connection_new           (int server, int upgrade);
+cno_connection_t * cno_connection_new           (int kind);
 int                cno_connection_destroy       (cno_connection_t *conn);
 int                cno_connection_made          (cno_connection_t *conn);
 int                cno_connection_data_received (cno_connection_t *conn, const char *data, size_t length);

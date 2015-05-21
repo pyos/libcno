@@ -128,12 +128,20 @@ static int pycno_on_write(cno_connection_t *conn, PyCNO *self, const char *data,
 
 static PyCNO * pycno_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
-    int server  = 1;
-    int upgrade = 0;
-    char *kwds[] = { "server", "upgrade", NULL };
+    char *kind = "http2";
+    char *kwds[] = { "kind", NULL };
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|pp", kwds, &server, &upgrade)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|s", kwds, &kind)) {
         return NULL;
+    }
+
+    int kind_enum = strcmp(kind, "server") == 0 ? CNO_HTTP2_SERVER
+                  : strcmp(kind, "http2")  == 0 ? CNO_HTTP2_CLIENT
+                  : strcmp(kind, "http1")  == 0 ? CNO_HTTP1_CLIENT : -1;
+
+    if (kind_enum == -1) {
+        return (PyCNO *) PyErr_Format(PyExc_ValueError,
+            "kind should be either 'server', 'http2', or 'http1'");
     }
 
     PyCNO *self = (PyCNO *) type->tp_alloc(type, 0);
@@ -142,7 +150,7 @@ static PyCNO * pycno_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
-    self->conn = cno_connection_new(server, upgrade);
+    self->conn = cno_connection_new(kind_enum);
 
     if (self->conn == NULL) {
         Py_DECREF(self);
@@ -249,17 +257,17 @@ static PyObject * pycno_write_message(PyCNO *self, PyObject *args, PyObject *kwa
     PyObject *headers;
     Py_ssize_t stream;
 
-    if (self->conn->server) {
-        char *kwds[] = { "stream", "minor", "code", "headers", "chunked", NULL };
-        if (!PyArg_ParseTupleAndKeywords(args, kwargs, "niiO|p", kwds, &stream,
-                &msg.minor, &msg.code, &headers, &msg.chunked)) {
-            return NULL;
-        }
-    } else {
+    if (self->conn->client) {
         char *kwds[] = { "stream", "minor", "method", "path", "headers", "chunked", NULL };
         if (!PyArg_ParseTupleAndKeywords(args, kwargs, "nis#s#O|p", kwds, &stream,
                 &msg.minor, &msg.method.data, &msg.method.size,
                 &msg.path.data, &msg.path.size, &headers, &msg.chunked)) {
+            return NULL;
+        }
+    } else {
+        char *kwds[] = { "stream", "minor", "code", "headers", "chunked", NULL };
+        if (!PyArg_ParseTupleAndKeywords(args, kwargs, "niiO|p", kwds, &stream,
+                &msg.minor, &msg.code, &headers, &msg.chunked)) {
             return NULL;
         }
     }
