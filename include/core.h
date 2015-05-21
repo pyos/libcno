@@ -76,13 +76,11 @@ enum CNO_STATE_CODE {
 
 
 enum CNO_FRAME_FLAGS {
-    CNO_FRAME_DATA_END_STREAM     = 0x1,
-    CNO_FRAME_DATA_PADDED         = 0x8,
-    CNO_FRAME_HEADERS_END_STREAM  = 0x1,
-    CNO_FRAME_HEADERS_END_HEADERS = 0x4,
-    CNO_FRAME_HEADERS_PADDED      = 0x8,
-    CNO_FRAME_HEADERS_PRIORITY    = 0x20,
-    CNO_FRAME_SETTINGS_ACK        = 0x1,
+    CNO_FLAG_ACK         = 0x1,
+    CNO_FLAG_END_STREAM  = 0x1,
+    CNO_FLAG_END_HEADERS = 0x4,
+    CNO_FLAG_PADDED      = 0x8,
+    CNO_FLAG_PRIORITY    = 0x20,
 };
 
 
@@ -144,6 +142,7 @@ struct cno_st_message_t {
 struct cno_st_stream_t {
     CNO_LIST_LINK(struct cno_st_stream_t);
     size_t id;
+    size_t window;
     enum CNO_STREAM_STATE state;
     struct cno_st_message_t msg;
 };
@@ -151,7 +150,7 @@ struct cno_st_stream_t {
 
 struct cno_st_settings_t {
     size_t header_table_size;
-    int    enable_push;
+    size_t enable_push;
     size_t max_concurrent_streams;
     size_t initial_window_size;
     size_t max_frame_size;
@@ -164,6 +163,7 @@ struct cno_st_connection_t {
     union { int kind; int client; };
     enum CNO_CONNECTION_STATE state;
     int closed;
+    size_t window;
     struct cno_st_io_vector_tmp_t buffer;
     struct cno_st_frame_t frame;
     struct cno_st_settings_t settings;

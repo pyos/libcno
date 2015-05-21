@@ -17,8 +17,9 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
     }
 
     CNO_ZERO(stream);
-    stream->id    = id;
-    stream->state = CNO_STREAM_IDLE;
+    stream->id     = id;
+    stream->state  = CNO_STREAM_IDLE;
+    stream->window = conn->settings.initial_window_size;
     cno_list_insert_after(conn, stream);
 
     if (CNO_FIRE(conn, on_stream_start, id)) {
@@ -85,6 +86,7 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     conn->settings.initial_window_size = 65536;
     conn->settings.max_frame_size = 16384;
     conn->settings.max_header_list_size = -1;
+    conn->window = 65536;
     return conn;
 }
 
@@ -128,20 +130,14 @@ int cno_connection_lost(cno_connection_t *conn)
 }
 
 
-#define _CNO_WRITE_NUMBER_1BYTE(ptr, src) *ptr++ = src
-#define _CNO_WRITE_NUMBER_2BYTE(ptr, src) do { \
-    _CNO_WRITE_NUMBER_1BYTE(ptr, src >> 8); \
-    _CNO_WRITE_NUMBER_1BYTE(ptr, src); \
-} while (0)
-#define _CNO_WRITE_NUMBER_3BYTE(ptr, src) do { \
-    _CNO_WRITE_NUMBER_1BYTE(ptr, src >> 16); \
-    _CNO_WRITE_NUMBER_2BYTE(ptr, src); \
-} while (0)
-
-#define _CNO_WRITE_NUMBER_4BYTE(ptr, src) do { \
-    _CNO_WRITE_NUMBER_1BYTE(ptr, src >> 24); \
-    _CNO_WRITE_NUMBER_3BYTE(ptr, src); \
-} while (0)
+#define _CNO_WRITE_1BYTE(ptr, src) *ptr++ = src
+#define _CNO_WRITE_2BYTE(ptr, src) do { *ptr++ = src >>  8; _CNO_WRITE_1BYTE(ptr, src); } while (0)
+#define _CNO_WRITE_3BYTE(ptr, src) do { *ptr++ = src >> 16; _CNO_WRITE_2BYTE(ptr, src); } while (0)
+#define _CNO_WRITE_4BYTE(ptr, src) do { *ptr++ = src >> 24; _CNO_WRITE_3BYTE(ptr, src); } while (0)
+#define _CNO_READ_1BYTE(tg, ptr) tg = *ptr++
+#define _CNO_READ_2BYTE(tg, ptr) do { tg = *ptr++ <<  8; _CNO_READ_1BYTE(tg, ptr); } while (0)
+#define _CNO_READ_3BYTE(tg, ptr) do { tg = *ptr++ << 16; _CNO_READ_2BYTE(tg, ptr); } while (0)
+#define _CNO_READ_4BYTE(tg, ptr) do { tg = *ptr++ << 24; _CNO_READ_3BYTE(tg, ptr); } while (0)
 
 
 static int cno_connection_send_frame(cno_connection_t *conn, cno_frame_t *frame)
@@ -155,10 +151,10 @@ static int cno_connection_send_frame(cno_connection_t *conn, cno_frame_t *frame)
         return CNO_ERROR_ASSERTION("frame too big", length);
     }
 
-    _CNO_WRITE_NUMBER_3BYTE(ptr, length);
-    _CNO_WRITE_NUMBER_1BYTE(ptr, frame->type);
-    _CNO_WRITE_NUMBER_1BYTE(ptr, frame->flags);
-    _CNO_WRITE_NUMBER_4BYTE(ptr, stream);
+    _CNO_WRITE_3BYTE(ptr, length);
+    _CNO_WRITE_1BYTE(ptr, frame->type);
+    _CNO_WRITE_1BYTE(ptr, frame->flags);
+    _CNO_WRITE_4BYTE(ptr, stream);
 
     if (CNO_FIRE(conn, on_write, header, 9)) {
         return CNO_PROPAGATE;
@@ -182,8 +178,8 @@ static int cno_connection_send_goaway(cno_connection_t *conn, size_t code, const
 
     char descr[8];
     char *ptr = descr;
-    _CNO_WRITE_NUMBER_4BYTE(ptr, stream);
-    _CNO_WRITE_NUMBER_4BYTE(ptr, code);
+    _CNO_WRITE_4BYTE(ptr, stream);
+    _CNO_WRITE_4BYTE(ptr, code);
 
     cno_frame_t error = { CNO_FRAME_GOAWAY };
 
@@ -209,9 +205,79 @@ static int cno_connection_send_goaway(cno_connection_t *conn, size_t code, const
 
 static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *frame)
 {
+    char *ptr = frame->payload.data;
+    char *end = frame->payload.size + ptr;
+
     switch (frame->type) {
         case CNO_FRAME_SETTINGS: {
-            // ...
+            if (frame->payload.size % 6) {
+                if (cno_connection_send_goaway(conn, CNO_STATE_FRAME_SIZE_ERROR, NULL, 0)) {
+                    return CNO_PROPAGATE;
+                }
+
+                return CNO_ERROR_TRANSPORT("malformed SETTINGS frame (invalid length)");
+            }
+
+            while (ptr != end) {
+                size_t setting; _CNO_READ_2BYTE(setting, ptr);
+                size_t value;   _CNO_READ_4BYTE(value,   ptr);
+
+                switch (setting) {
+                    case CNO_SETTINGS_HEADER_TABLE_SIZE:      conn->settings.header_table_size      = value; break;
+                    case CNO_SETTINGS_ENABLE_PUSH:            conn->settings.enable_push            = value; break;
+                    case CNO_SETTINGS_MAX_CONCURRENT_STREAMS: conn->settings.max_concurrent_streams = value; break;
+                    case CNO_SETTINGS_INITIAL_WINDOW_SIZE:    conn->settings.initial_window_size    = value; break;
+                    case CNO_SETTINGS_MAX_FRAME_SIZE:         conn->settings.max_frame_size         = value; break;
+                    case CNO_SETTINGS_MAX_HEADER_LIST_SIZE:   conn->settings.max_header_list_size   = value; break;
+                }
+            }
+
+            cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK };
+
+            if (cno_connection_send_frame(conn, &ack)) {
+                return CNO_PROPAGATE;
+            }
+
+            return CNO_OK;
+        }
+
+        case CNO_FRAME_WINDOW_UPDATE: {
+            if (frame->payload.size != 4) {
+                if (cno_connection_send_goaway(conn, CNO_STATE_FRAME_SIZE_ERROR, NULL, 0)) {
+                    return CNO_PROPAGATE;
+                }
+
+                return CNO_ERROR_TRANSPORT("malformed WINDOW_UPDATE frame (invalid length)");
+            }
+
+            size_t increment;
+            _CNO_READ_4BYTE(increment, ptr);
+
+            if (frame->stream == 0) {
+                if (increment == 0) {
+                    if (cno_connection_send_goaway(conn, CNO_STATE_PROTOCOL_ERROR, NULL, 0)) {
+                        return CNO_PROPAGATE;
+                    }
+
+                    return CNO_ERROR_TRANSPORT("malformed WINDOW_UPDATE frame (no increment)");
+                }
+
+                conn->window += increment;
+
+                if (conn->window >= 0x80000000u) {
+                    if (cno_connection_send_goaway(conn, CNO_STATE_FLOW_CONTROL_ERROR, NULL, 0)) {
+                        return CNO_PROPAGATE;
+                    }
+
+                    return CNO_ERROR_TRANSPORT("malformed WINDOW_UPDATE frame (increment too large)");
+                }
+            } else {
+                // TODO check that increment is nonzero
+                // TODO increment stream's flow control window (stream->window)
+                // TODO check that it is < (1 << 31); otherwise, return FLOW_CONTROL_ERROR.
+            }
+
+            return CNO_OK;
         }
 
         case CNO_FRAME_DATA:
@@ -221,7 +287,6 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
         case CNO_FRAME_PUSH_PROMISE:
         case CNO_FRAME_PING:
         case CNO_FRAME_GOAWAY:
-        case CNO_FRAME_WINDOW_UPDATE:
         case CNO_FRAME_CONTINUATION: {
             (void) CNO_ERROR_NOT_IMPLEMENTED("cannot handle that frame yet");
             (void) cno_connection_send_goaway(conn, CNO_STATE_INTERNAL_ERROR, NULL, 0);
@@ -513,10 +578,10 @@ int cno_connection_fire(cno_connection_t *conn)
             WAIT(conn->buffer.size >= 9);
 
             char *base = conn->buffer.data;
-            conn->frame.payload.size = base[0] << 16 | base[1] <<  8 | base[2];
-            conn->frame.type         = base[3];
-            conn->frame.flags        = base[4];
-            conn->frame.stream       = base[5] << 24 | base[6] << 16 | base[7] << 8 | base[8];
+            _CNO_READ_3BYTE(conn->frame.payload.size, base);
+            _CNO_READ_1BYTE(conn->frame.type,         base);
+            _CNO_READ_1BYTE(conn->frame.flags,        base);
+            _CNO_READ_4BYTE(conn->frame.stream,       base);
 
             if (conn->frame.payload.size > conn->settings.max_frame_size) {
                 // TODO send FRAME_SIZE_ERROR
