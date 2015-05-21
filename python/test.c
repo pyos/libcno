@@ -31,8 +31,8 @@ static PyObject * pycno_handle_cno_error(PyCNO *self)
 {
     if (!PyErr_Occurred()) {
         // TODO use different exception types
-        return PyErr_Format(PyExc_RuntimeError, "%d: %s (%s:%d)",
-            cno_error(), cno_error_text(), cno_error_file(), cno_error_line());
+        return PyErr_Format(PyExc_RuntimeError, "%s: %s (%s:%d)",
+            cno_error_name(), cno_error_text(), cno_error_file(), cno_error_line());
     }
 
     return NULL;

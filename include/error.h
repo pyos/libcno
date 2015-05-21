@@ -1,13 +1,13 @@
 #ifndef _CNO_ERROR_H_
 #define _CNO_ERROR_H_
-#define CNO_ERROR_SET(code, msg, arg) cno_error_set(code, msg, __FILE__, __LINE__, (void*) arg)
-#define CNO_ERROR_UNKNOWN(m)         CNO_ERROR_SET(CNO_ERRNO_UNKNOWN,         m, 0)
-#define CNO_ERROR_ASSERTION(m, a)    CNO_ERROR_SET(CNO_ERRNO_ASSERTION,       m, a)
-#define CNO_ERROR_NO_MEMORY          CNO_ERROR_SET(CNO_ERRNO_NO_MEMORY,       "out of memory", 0)
-#define CNO_ERROR_NOT_IMPLEMENTED(m) CNO_ERROR_SET(CNO_ERRNO_NOT_IMPLEMENTED, m, 0)
-#define CNO_ERROR_TRANSPORT(m)       CNO_ERROR_SET(CNO_ERRNO_TRANSPORT,       m, 0)
-#define CNO_ERROR_INVALID_STATE(m)   CNO_ERROR_SET(CNO_ERRNO_INVALID_STATE,   m, 0)
-#define CNO_ERROR_INVALID_STREAM(a)  CNO_ERROR_SET(CNO_ERRNO_INVALID_STREAM,  "stream not found", a)
+#define CNO_ERROR_SET(code, msg, ...) cno_error_set(code, __FILE__, __LINE__, msg, ##__VA_ARGS__)
+#define CNO_ERROR_UNKNOWN(m, ...)         CNO_ERROR_SET(CNO_ERRNO_UNKNOWN,         m,  ##__VA_ARGS__)
+#define CNO_ERROR_ASSERTION(m, ...)       CNO_ERROR_SET(CNO_ERRNO_ASSERTION,       m,  ##__VA_ARGS__)
+#define CNO_ERROR_NO_MEMORY               CNO_ERROR_SET(CNO_ERRNO_NO_MEMORY,       "")
+#define CNO_ERROR_NOT_IMPLEMENTED(m, ...) CNO_ERROR_SET(CNO_ERRNO_NOT_IMPLEMENTED, m,  ##__VA_ARGS__)
+#define CNO_ERROR_TRANSPORT(m, ...)       CNO_ERROR_SET(CNO_ERRNO_TRANSPORT,       m,  ##__VA_ARGS__)
+#define CNO_ERROR_INVALID_STATE(m, ...)   CNO_ERROR_SET(CNO_ERRNO_INVALID_STATE,   m,  ##__VA_ARGS__)
+#define CNO_ERROR_INVALID_STREAM(id)      CNO_ERROR_SET(CNO_ERRNO_INVALID_STREAM,  "%d", id)
 
 
 enum CNO_ERRNO {
@@ -25,12 +25,26 @@ enum CNO_ERRNO {
 #define CNO_PROPAGATE -1
 
 
-int          cno_error_set  (int code, const char *text, const char *file, int line, void *arg);
+int          cno_error_set  (int code, const char *file, int line, const char *fmt, ...);
 int          cno_error      (void);
 int          cno_error_line (void);
 const char * cno_error_file (void);
 const char * cno_error_text (void);
-void *       cno_error_arg  (void);
+
+
+static inline const char * cno_error_name(void)
+{
+    switch (cno_error()) {
+        case CNO_ERRNO_UNKNOWN:         return "generic error";
+        case CNO_ERRNO_ASSERTION:       return "assertion failed";
+        case CNO_ERRNO_NO_MEMORY:       return "out of memory";
+        case CNO_ERRNO_NOT_IMPLEMENTED: return "not implemented";
+        case CNO_ERRNO_TRANSPORT:       return "transport error";
+        case CNO_ERRNO_INVALID_STATE:   return "invalid state";
+        case CNO_ERRNO_INVALID_STREAM:  return "stream does not exist";
+        default: return "unknown error";
+    }
+}
 
 
 #endif

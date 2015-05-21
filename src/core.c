@@ -148,7 +148,7 @@ static int cno_connection_send_frame(cno_connection_t *conn, cno_frame_t *frame)
     size_t stream = frame->stream;
 
     if (length > conn->settings.max_frame_size) {
-        return CNO_ERROR_ASSERTION("frame too big", length);
+        return CNO_ERROR_ASSERTION("frame too big (%lu; limit = %lu)", length, conn->settings.max_frame_size);
     }
 
     _CNO_WRITE_3BYTE(ptr, length);
@@ -207,15 +207,16 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
 {
     char *ptr = frame->payload.data;
     char *end = frame->payload.size + ptr;
+    size_t sz = frame->payload.size;
 
     switch (frame->type) {
         case CNO_FRAME_SETTINGS: {
-            if (frame->payload.size % 6) {
+            if (sz % 6) {
                 if (cno_connection_send_goaway(conn, CNO_STATE_FRAME_SIZE_ERROR, NULL, 0)) {
                     return CNO_PROPAGATE;
                 }
 
-                return CNO_ERROR_TRANSPORT("malformed SETTINGS frame (invalid length)");
+                return CNO_ERROR_TRANSPORT("bad SETTINGS (length = %lu)", sz);
             }
 
             while (ptr != end) {
@@ -242,12 +243,12 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
         }
 
         case CNO_FRAME_WINDOW_UPDATE: {
-            if (frame->payload.size != 4) {
+            if (sz != 4) {
                 if (cno_connection_send_goaway(conn, CNO_STATE_FRAME_SIZE_ERROR, NULL, 0)) {
                     return CNO_PROPAGATE;
                 }
 
-                return CNO_ERROR_TRANSPORT("malformed WINDOW_UPDATE frame (invalid length)");
+                return CNO_ERROR_TRANSPORT("bad WINDOW_UPDATE (length = %lu)", sz);
             }
 
             size_t increment;
@@ -259,7 +260,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                         return CNO_PROPAGATE;
                     }
 
-                    return CNO_ERROR_TRANSPORT("malformed WINDOW_UPDATE frame (no increment)");
+                    return CNO_ERROR_TRANSPORT("bad WINDOW_UPDATE (incr = %lu)", increment);
                 }
 
                 conn->window += increment;
@@ -269,7 +270,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                         return CNO_PROPAGATE;
                     }
 
-                    return CNO_ERROR_TRANSPORT("malformed WINDOW_UPDATE frame (increment too large)");
+                    return CNO_ERROR_TRANSPORT("flow control window got too big (incr = %lu)", increment);
                 }
             } else {
                 // TODO check that increment is nonzero
@@ -288,7 +289,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
         case CNO_FRAME_PING:
         case CNO_FRAME_GOAWAY:
         case CNO_FRAME_CONTINUATION: {
-            (void) CNO_ERROR_NOT_IMPLEMENTED("cannot handle that frame yet");
+            (void) CNO_ERROR_NOT_IMPLEMENTED("frame type %d (%s)", frame->type, cno_frame_get_name(frame));
             (void) cno_connection_send_goaway(conn, CNO_STATE_INTERNAL_ERROR, NULL, 0);
             return CNO_PROPAGATE;
         }
@@ -298,7 +299,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                 return CNO_PROPAGATE;
             }
 
-            return CNO_ERROR_TRANSPORT("unknown frame type");
+            return CNO_ERROR_TRANSPORT("unknown frame type %d", frame->type);
         }
     }
 
