@@ -16,9 +16,9 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
     }
 
     CNO_ZERO(stream);
-    stream->id   = id;
-    stream->next = conn->streams;
-    stream->open = 1;
+    stream->id    = id;
+    stream->next  = conn->streams;
+    stream->state = CNO_STREAM_IDLE;
     conn->streams = stream;
     CNO_FIRE(conn, on_stream_start, id);
     return stream;
@@ -48,7 +48,7 @@ static int cno_stream_destroy(cno_connection_t *conn, size_t id)
         return CNO_PROPAGATE;
     }
 
-    if (stream->active) {
+    if (stream->state == CNO_STREAM_OPEN) {
         // Note that second argument is `1`. Callback should know that the stream
         // is dead, but shouldn't try to actually do anything with the message.
         CNO_FIRE(conn, on_message_end, stream->id, 1);
@@ -77,6 +77,7 @@ cno_connection_t * cno_connection_new(int server, int upgrade)
     CNO_ZERO(conn);
     conn->state  = upgrade ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
     conn->server = server;
+    conn->settings.max_frame_size = 1 << 14;
     return conn;
 }
 
@@ -121,7 +122,10 @@ int cno_connection_lost(cno_connection_t *conn)
 
 
 static void cno_connection_send_preface(cno_connection_t *conn) {
-    CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size);
+    if (!conn->server) {
+        CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size);
+    }
+
     // TODO send a SETTINGS frame
 }
 
@@ -218,7 +222,7 @@ int cno_connection_fire(cno_connection_t *conn)
                 stream->msg.headers     = calloc(sizeof(cno_header_t), header_num);
                 if (!stream->msg.headers) STOP(CNO_ERROR_NO_MEMORY);
 
-                conn->streams->active = 1;
+                conn->streams->state = CNO_STREAM_OPEN;
                 conn->state = CNO_CONNECTION_HTTP1_READING;
 
                 for (it = 0; it < header_num; ++it) {
@@ -227,6 +231,10 @@ int cno_connection_fire(cno_connection_t *conn)
                     char * value = (char *) headers[it].value;
                     size_t vsize = (size_t) headers[it].value_len;
                     // TODO convert name to lowercase
+
+                    if (strncmp(name, "http2-settings", size) == 0) {
+                        // TODO decode & emit on_frame
+                    } else
 
                     if (strncmp(name, "upgrade", size) == 0 && strncmp(value, "h2c", vsize) == 0) {
                         cno_header_t upgrade_headers[] = {
@@ -244,7 +252,8 @@ int cno_connection_fire(cno_connection_t *conn)
                             STOP(CNO_PROPAGATE);
                         }
 
-                        // TODO `HTTP2-Settings` header contains a base64-d SETTINGS payload.
+                        // Technically, server should refuse if HTTP2-Settings are not present.
+                        // We'll let this slide.
                         conn->state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
                         // If we send the preface now, we'll be able to send HTTP 2 frames
                         // while in the HTTP1_READING_UPGRADE state.
@@ -331,7 +340,8 @@ int cno_connection_fire(cno_connection_t *conn)
                     conn->state = conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE
                         ? CNO_CONNECTION_INIT_UPGRADE  // preface already sent in HTTP1_READY
                         : CNO_CONNECTION_HTTP1_READY;
-                    conn->streams->active = 0;
+                    // In HTTP/1.x, RST_STREAM is implied.
+                    conn->streams->state = CNO_STREAM_IDLE;
                     CNO_FIRE(conn, on_message_end, stream->id, 0);
                 }
 
@@ -364,6 +374,12 @@ int cno_connection_fire(cno_connection_t *conn)
                 conn->frame.type         = base[3];
                 conn->frame.flags        = base[4];
                 conn->frame.stream       = base[5] << 24 | base[6] << 16 | base[7] << 8 | base[8];
+
+                if (conn->frame.payload.size > conn->settings.max_frame_size) {
+                    // TODO send FRAME_SIZE_ERROR
+                    //      if HEADERS, PUSH_PROMISE, CONTINUATION, SETTINGS, or stream sis 0
+                    //      => CONNECTION_ERROR
+                }
 
                 if (conn->state == CNO_CONNECTION_PREFACE) {
                     // TODO check that we got a SETTINGS frame

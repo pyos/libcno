@@ -24,6 +24,17 @@ enum CNO_CONNECTION_STATE {
 };
 
 
+enum CNO_STREAM_STATE {
+    CNO_STREAM_IDLE,  // initial state
+    CNO_STREAM_OPEN,  // recv HEADERS / sent HEADERS
+    CNO_STREAM_CLOSED_LOCAL,  // sent END_STREAM
+    CNO_STREAM_CLOSED_REMOTE, // recv END_STREAM
+    CNO_STREAM_RESERVED_LOCAL,  // sent PUSH_PROMISE
+    CNO_STREAM_RESERVED_REMOTE, // recv PUSH_PROMISE
+    CNO_STREAM_CLOSED,  // recv RST_STREAM / sent RST_STREAM / both END_STREAM
+};
+
+
 struct cno_st_frame_t {
     char type;
     char flags;
@@ -52,12 +63,16 @@ struct cno_st_message_t {
 
 
 struct cno_st_stream_t {
-    int open;
-    int active;
     size_t id;
+    size_t state;
     struct cno_st_message_t msg;
     struct cno_st_stream_t *prev;
     struct cno_st_stream_t *next;
+};
+
+
+struct cno_st_settings_t {
+    size_t max_frame_size;
 };
 
 
@@ -68,6 +83,7 @@ struct cno_st_connection_t {
     struct cno_st_io_vector_tmp_t buffer;
     struct cno_st_frame_t frame;
     struct cno_st_stream_t *streams;
+    struct cno_st_settings_t settings;
     void * cb_data;
     void * on_ready;
     void * on_close;
