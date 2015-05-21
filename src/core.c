@@ -17,9 +17,10 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
     }
 
     CNO_ZERO(stream);
-    stream->id     = id;
-    stream->state  = CNO_STREAM_IDLE;
-    stream->window = conn->settings.initial_window_size;
+    stream->id = id;
+    stream->state = CNO_STREAM_IDLE;
+    stream->window_recv = conn->settings.initial_window_size;
+    stream->window_send = conn->settings.initial_window_size;
     cno_list_insert_after(conn, stream);
 
     if (CNO_FIRE(conn, on_stream_start, id)) {
@@ -86,7 +87,8 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     conn->settings.initial_window_size = 65536;
     conn->settings.max_frame_size = 16384;
     conn->settings.max_header_list_size = -1;
-    conn->window = 65536;
+    conn->window_recv = 0;
+    conn->window_send = 0;
     return conn;
 }
 
@@ -130,14 +132,14 @@ int cno_connection_lost(cno_connection_t *conn)
 }
 
 
-#define _CNO_WRITE_1BYTE(ptr, src) *ptr++ = src
-#define _CNO_WRITE_2BYTE(ptr, src) do { *ptr++ = src >>  8; _CNO_WRITE_1BYTE(ptr, src); } while (0)
-#define _CNO_WRITE_3BYTE(ptr, src) do { *ptr++ = src >> 16; _CNO_WRITE_2BYTE(ptr, src); } while (0)
-#define _CNO_WRITE_4BYTE(ptr, src) do { *ptr++ = src >> 24; _CNO_WRITE_3BYTE(ptr, src); } while (0)
-#define _CNO_READ_1BYTE(tg, ptr) tg = *ptr++
-#define _CNO_READ_2BYTE(tg, ptr) do { tg = *ptr++ <<  8; _CNO_READ_1BYTE(tg, ptr); } while (0)
-#define _CNO_READ_3BYTE(tg, ptr) do { tg = *ptr++ << 16; _CNO_READ_2BYTE(tg, ptr); } while (0)
-#define _CNO_READ_4BYTE(tg, ptr) do { tg = *ptr++ << 24; _CNO_READ_3BYTE(tg, ptr); } while (0)
+#define CNO_WRITE_1BYTE(ptr, src) *ptr++ = src
+#define CNO_WRITE_2BYTE(ptr, src) do { *ptr++ = src >>  8; CNO_WRITE_1BYTE(ptr, src); } while (0)
+#define CNO_WRITE_3BYTE(ptr, src) do { *ptr++ = src >> 16; CNO_WRITE_2BYTE(ptr, src); } while (0)
+#define CNO_WRITE_4BYTE(ptr, src) do { *ptr++ = src >> 24; CNO_WRITE_3BYTE(ptr, src); } while (0)
+#define CNO_READ_1BYTE(tg, ptr) tg = *ptr++
+#define CNO_READ_2BYTE(tg, ptr) do { tg = *ptr++ <<  8; CNO_READ_1BYTE(tg, ptr); } while (0)
+#define CNO_READ_3BYTE(tg, ptr) do { tg = *ptr++ << 16; CNO_READ_2BYTE(tg, ptr); } while (0)
+#define CNO_READ_4BYTE(tg, ptr) do { tg = *ptr++ << 24; CNO_READ_3BYTE(tg, ptr); } while (0)
 
 
 static int cno_connection_send_frame(cno_connection_t *conn, cno_frame_t *frame)
@@ -145,16 +147,34 @@ static int cno_connection_send_frame(cno_connection_t *conn, cno_frame_t *frame)
     char  header[9];
     char *ptr = header;
     size_t length = frame->payload.size;
-    size_t stream = frame->stream;
+    size_t stream = frame->stream_id;
 
     if (length > conn->settings.max_frame_size) {
-        return CNO_ERROR_ASSERTION("frame too big (%lu; limit = %lu)", length, conn->settings.max_frame_size);
+        return CNO_ERROR_ASSERTION("frame too big (%lu > %lu)", length, conn->settings.max_frame_size);
     }
 
-    _CNO_WRITE_3BYTE(ptr, length);
-    _CNO_WRITE_1BYTE(ptr, frame->type);
-    _CNO_WRITE_1BYTE(ptr, frame->flags);
-    _CNO_WRITE_4BYTE(ptr, stream);
+    if (cno_frame_is_flow_controlled(frame)) {
+        if (length > conn->window_send) {
+            return CNO_ERROR_WOULD_BLOCK("frame exceeds connection flow window (%lu > %lu)",
+                length, conn->window_send);
+        }
+
+        conn->window_send -= 9 + length;
+
+        if (frame->stream) {
+            if (length > frame->stream->window_send) {
+                return CNO_ERROR_WOULD_BLOCK("frame exceeds connection flow window (%lu > %lu)",
+                    length, frame->stream->window_send);
+            }
+
+            frame->stream->window_send -= 9 + length;
+        }
+    }
+
+    CNO_WRITE_3BYTE(ptr, length);
+    CNO_WRITE_1BYTE(ptr, frame->type);
+    CNO_WRITE_1BYTE(ptr, frame->flags);
+    CNO_WRITE_4BYTE(ptr, stream);
 
     if (CNO_FIRE(conn, on_write, header, 9)) {
         return CNO_PROPAGATE;
@@ -178,9 +198,9 @@ static int cno_connection_send_goaway(cno_connection_t *conn, size_t code, const
 
     char descr[8];
     char *ptr = descr;
-    _CNO_WRITE_4BYTE(ptr, stream);
-    _CNO_WRITE_4BYTE(ptr, code);
 
+    CNO_WRITE_4BYTE(ptr, stream);
+    CNO_WRITE_4BYTE(ptr, code);
     cno_frame_t error = { CNO_FRAME_GOAWAY };
 
     if (!length) {
@@ -209,6 +229,11 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
     char *end = frame->payload.size + ptr;
     size_t sz = frame->payload.size;
 
+    if (cno_frame_is_flow_controlled(frame)) {
+        conn->window_recv -= 9 + sz;
+        // TODO stream flow control
+    }
+
     switch (frame->type) {
         case CNO_FRAME_SETTINGS: {
             if (sz % 6) {
@@ -220,8 +245,8 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
             }
 
             while (ptr != end) {
-                size_t setting; _CNO_READ_2BYTE(setting, ptr);
-                size_t value;   _CNO_READ_4BYTE(value,   ptr);
+                size_t setting; CNO_READ_2BYTE(setting, ptr);
+                size_t value;   CNO_READ_4BYTE(value,   ptr);
 
                 switch (setting) {
                     case CNO_SETTINGS_HEADER_TABLE_SIZE:      conn->settings.header_table_size      = value; break;
@@ -231,6 +256,11 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                     case CNO_SETTINGS_MAX_FRAME_SIZE:         conn->settings.max_frame_size         = value; break;
                     case CNO_SETTINGS_MAX_HEADER_LIST_SIZE:   conn->settings.max_header_list_size   = value; break;
                 }
+            }
+
+            if (conn->window_send == 0 && conn->window_recv == 0) {
+                // Reset flow control windows; this is probably the initial SETTINGS frame.
+                conn->window_send = conn->window_recv = conn->settings.initial_window_size;
             }
 
             cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK };
@@ -252,7 +282,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
             }
 
             size_t increment;
-            _CNO_READ_4BYTE(increment, ptr);
+            CNO_READ_4BYTE(increment, ptr);
 
             if (frame->stream == 0) {
                 if (increment == 0) {
@@ -263,9 +293,9 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                     return CNO_ERROR_TRANSPORT("bad WINDOW_UPDATE (incr = %lu)", increment);
                 }
 
-                conn->window += increment;
+                conn->window_send += increment;
 
-                if (conn->window >= 0x80000000u) {
+                if (conn->window_send >= 0x80000000u) {
                     if (cno_connection_send_goaway(conn, CNO_STATE_FLOW_CONTROL_ERROR, NULL, 0)) {
                         return CNO_PROPAGATE;
                     }
@@ -579,10 +609,11 @@ int cno_connection_fire(cno_connection_t *conn)
             WAIT(conn->buffer.size >= 9);
 
             char *base = conn->buffer.data;
-            _CNO_READ_3BYTE(conn->frame.payload.size, base);
-            _CNO_READ_1BYTE(conn->frame.type,         base);
-            _CNO_READ_1BYTE(conn->frame.flags,        base);
-            _CNO_READ_4BYTE(conn->frame.stream,       base);
+            CNO_ZERO(&conn->frame);
+            CNO_READ_3BYTE(conn->frame.payload.size, base);
+            CNO_READ_1BYTE(conn->frame.type,         base);
+            CNO_READ_1BYTE(conn->frame.flags,        base);
+            CNO_READ_4BYTE(conn->frame.stream_id,    base);
 
             if (conn->frame.payload.size > conn->settings.max_frame_size) {
                 // TODO send FRAME_SIZE_ERROR

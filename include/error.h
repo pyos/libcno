@@ -8,6 +8,7 @@
 #define CNO_ERROR_TRANSPORT(m, ...)       CNO_ERROR_SET(CNO_ERRNO_TRANSPORT,       m,  ##__VA_ARGS__)
 #define CNO_ERROR_INVALID_STATE(m, ...)   CNO_ERROR_SET(CNO_ERRNO_INVALID_STATE,   m,  ##__VA_ARGS__)
 #define CNO_ERROR_INVALID_STREAM(id)      CNO_ERROR_SET(CNO_ERRNO_INVALID_STREAM,  "%d", id)
+#define CNO_ERROR_WOULD_BLOCK(m, ...)     CNO_ERROR_SET(CNO_ERRNO_WOULD_BLOCK,     m,  ##__VA_ARGS__)
 
 
 enum CNO_ERRNO {
@@ -18,6 +19,7 @@ enum CNO_ERRNO {
     CNO_ERRNO_TRANSPORT,        // Transport-level syntax error. Stream-level errors simply close the stream.
     CNO_ERRNO_INVALID_STATE,    // Connection cannot do that while in the current state.
     CNO_ERRNO_INVALID_STREAM,   // Stream with given ID was not found.
+    CNO_ERRNO_WOULD_BLOCK,      // Frame too big to send with current flow control window
 };
 
 

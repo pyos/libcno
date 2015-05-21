@@ -97,7 +97,8 @@ enum CNO_CONNECTION_SETTINGS {
 struct cno_st_frame_t {
     enum CNO_FRAME_TYPE  type;
     enum CNO_FRAME_FLAGS flags;
-    size_t stream;
+    size_t stream_id;
+    struct cno_st_stream_t *stream;
     struct cno_st_io_vector_t payload;
 };
 
@@ -118,6 +119,12 @@ static inline const char *cno_frame_get_name(struct cno_st_frame_t *frame)
         default: return "UNKNOWN";
     }
 };
+
+
+static inline int cno_frame_is_flow_controlled(struct cno_st_frame_t *frame)
+{
+    return frame->type == CNO_FRAME_DATA;
+}
 
 
 struct cno_st_header_t {
@@ -142,7 +149,8 @@ struct cno_st_message_t {
 struct cno_st_stream_t {
     CNO_LIST_LINK(struct cno_st_stream_t);
     size_t id;
-    size_t window;
+    size_t window_recv;
+    size_t window_send;
     enum CNO_STREAM_STATE state;
     struct cno_st_message_t msg;
 };
@@ -163,7 +171,8 @@ struct cno_st_connection_t {
     union { int kind; int client; };
     enum CNO_CONNECTION_STATE state;
     int closed;
-    size_t window;
+    size_t window_recv;
+    size_t window_send;
     struct cno_st_io_vector_tmp_t buffer;
     struct cno_st_frame_t frame;
     struct cno_st_settings_t settings;
