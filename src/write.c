@@ -72,12 +72,12 @@ static int cno_is_http1(cno_connection_t *conn, size_t id, cno_stream_t **stream
         case CNO_CONNECTION_HTTP1_READY:
         case CNO_CONNECTION_HTTP1_READING:
         // HTTP1_READING_UPGRADE is treated as HTTP 2 for writing
-            if (id != conn->streams->id) {
+            if (id != conn->streams.first->id) {
                 return CNO_ERROR_INVALID_STREAM(id);
             }
 
             if (stream) {
-                *stream = conn->streams;
+                *stream = conn->streams.first;
             }
 
             return 1;

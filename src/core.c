@@ -1,4 +1,5 @@
 #include "core.h"
+#include "list.h"
 #include "error.h"
 #include "write.h"
 #include "picohttpparser/picohttpparser.h"
@@ -17,9 +18,8 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
 
     CNO_ZERO(stream);
     stream->id    = id;
-    stream->next  = conn->streams;
     stream->state = CNO_STREAM_IDLE;
-    conn->streams = stream;
+    cno_list_insert_after(conn, stream);
 
     if (CNO_FIRE(conn, on_stream_start, id)) {
         free(stream);
@@ -44,10 +44,7 @@ static int cno_stream_destroy(cno_connection_t *conn, cno_stream_t *stream)
         return CNO_PROPAGATE;
     }
 
-    if (stream->next) stream->next->prev = stream->prev;
-    if (stream->prev) stream->prev->next = stream->next;
-    else conn->streams = stream->next;
-
+    cno_list_remove(stream);
     free(stream);
     return CNO_OK;
 }
@@ -55,26 +52,20 @@ static int cno_stream_destroy(cno_connection_t *conn, cno_stream_t *stream)
 #if 0
 static cno_stream_t * cno_stream_find(cno_connection_t *conn, size_t id)
 {
-    cno_stream_t *current = conn->streams;
+    cno_stream_t *current = (cno_stream_t *) conn;
 
-    while (current->id != id) if (!(current = current->next)) {
-        // XXX Maybe a hashmap? Definitely not an array - stream ids are sparse
-        //     because they can be closed in different order.
-        (void) CNO_ERROR_INVALID_STREAM(id);
-        return NULL;
+    while ((current = current->next) != (cno_stream_t *) conn) {
+        if (current->id == id) {
+            return current;
+        }
     }
 
-    return current;
-}
-
-
-static int cno_stream_frame(cno_connection_t *conn, cno_stream_t *stream, cno_frame_t *frame)
-{
-    return CNO_ERROR_NOT_IMPLEMENTED("frame handling");
+    (void) CNO_ERROR_INVALID_STREAM(id);
+    return NULL;
 }
 #endif
 
-cno_connection_t * cno_connection_new(int kind)
+cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
 {
     cno_connection_t *conn = malloc(sizeof(cno_connection_t));
 
@@ -86,7 +77,14 @@ cno_connection_t * cno_connection_new(int kind)
     CNO_ZERO(conn);
     conn->kind  = kind;
     conn->state = kind == CNO_HTTP2_CLIENT ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
-    conn->settings.max_frame_size = 1 << 14;
+    conn->streams.first = (cno_stream_t *) conn;
+    conn->streams.last  = (cno_stream_t *) conn;
+    conn->settings.header_table_size = 4096;
+    conn->settings.enable_push = 1;
+    conn->settings.max_concurrent_streams = -1;
+    conn->settings.initial_window_size = 65536;
+    conn->settings.max_frame_size = 16384;
+    conn->settings.max_header_list_size = -1;
     return conn;
 }
 
@@ -130,12 +128,106 @@ int cno_connection_lost(cno_connection_t *conn)
 }
 
 
-static int cno_connection_send_preface(cno_connection_t *conn) {
+static int cno_connection_send_frame(cno_connection_t *conn, cno_frame_t *frame)
+{
+    char  header[9];
+    char *ptr = header;
+    size_t length = frame->payload.size;
+    size_t stream = frame->stream;
+
+    if (length > conn->settings.max_frame_size) {
+        return CNO_ERROR_ASSERTION("frame too big", length);
+    }
+
+    *ptr++ = length >> 16;
+    *ptr++ = length >> 8;
+    *ptr++ = length;
+    *ptr++ = frame->type;
+    *ptr++ = frame->flags;
+    *ptr++ = stream >> 24;
+    *ptr++ = stream >> 16;
+    *ptr++ = stream >> 8;
+    *ptr++ = stream;
+
+    if (CNO_FIRE(conn, on_write, header, 9)) {
+        return CNO_PROPAGATE;
+    }
+
+    if (length && CNO_FIRE(conn, on_write, frame->payload.data, length)) {
+        return CNO_PROPAGATE;
+    }
+
+    if (CNO_FIRE(conn, on_frame_send, frame)) {
+        return CNO_PROPAGATE;
+    }
+
+    return CNO_OK;
+}
+
+
+static int cno_connection_send_error(cno_connection_t *conn, enum CNO_STATE_CODE code, const char *data, size_t length)
+{
+    cno_frame_t error;
+    error.type   = CNO_FRAME_GOAWAY;
+    error.flags  = 0;
+    error.stream = 0;
+    return CNO_ERROR_NOT_IMPLEMENTED("error frame");
+}
+
+
+static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *frame)
+{
+    switch (frame->type) {
+        case CNO_FRAME_SETTINGS: {
+            // ...
+        }
+
+        case CNO_FRAME_DATA:
+        case CNO_FRAME_HEADERS:
+        case CNO_FRAME_PRIORITY:
+        case CNO_FRAME_RST_STREAM:
+        case CNO_FRAME_PUSH_PROMISE:
+        case CNO_FRAME_PING:
+        case CNO_FRAME_GOAWAY:
+        case CNO_FRAME_WINDOW_UPDATE:
+        case CNO_FRAME_CONTINUATION: {
+            (void) CNO_ERROR_NOT_IMPLEMENTED("frames");
+            (void) cno_connection_send_error(conn, CNO_STATE_INTERNAL_ERROR, NULL, 0);
+            return CNO_PROPAGATE;
+        }
+
+        default: {
+            if (cno_connection_send_error(conn, CNO_STATE_PROTOCOL_ERROR, NULL, 0)) {
+                return CNO_PROPAGATE;
+            }
+
+            return CNO_ERROR_TRANSPORT("unknown frame type");
+        }
+    }
+
+    return CNO_OK;
+}
+
+
+static int cno_connection_send_preface(cno_connection_t *conn)
+{
     if (conn->client && CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size)) {
         return CNO_PROPAGATE;
     }
 
-    // TODO send a SETTINGS frame
+    // TODO send actual settings
+
+    cno_frame_t settings;
+    settings.type   = CNO_FRAME_SETTINGS;
+    settings.flags  = 0;
+    settings.stream = 0;
+    settings.payload.data = NULL;
+    settings.payload.size = 0;
+
+    if (cno_connection_send_frame(conn, &settings)) {
+        return CNO_PROPAGATE;
+    }
+
     return CNO_OK;
 }
 
@@ -170,7 +262,7 @@ int cno_connection_fire(cno_connection_t *conn)
             }
 
             // Should be exactly one stream right now.
-            cno_stream_t *stream = conn->streams;
+            cno_stream_t *stream = conn->streams.first;
             CNO_ZERO(&stream->msg);
             stream->msg.major = 1;
 
@@ -178,7 +270,7 @@ int cno_connection_fire(cno_connection_t *conn)
             // PicoHTTPParser will reject it, but we want to know if the client
             // speaks HTTP 2. (This also waits for a non-empty buffer, which
             // is a good thing because PicoHTTPParser breaks if length == 0.)
-            {
+            if (!conn->client) {
                 int may_be_http2 = strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size) == 0;
                 WAIT(conn->buffer.size >= CNO_PREFACE.size || !may_be_http2);
                 if  (conn->buffer.size >= CNO_PREFACE.size &&  may_be_http2) {
@@ -290,7 +382,7 @@ int cno_connection_fire(cno_connection_t *conn)
                 STOP(CNO_PROPAGATE);
             }
 
-            conn->streams->state = CNO_STREAM_OPEN;
+            conn->streams.first->state = CNO_STREAM_OPEN;
             conn->state = CNO_CONNECTION_HTTP1_READING;
             cno_io_vector_shift(&conn->buffer, (size_t) ok);
             free(stream->msg.headers);
@@ -299,7 +391,7 @@ int cno_connection_fire(cno_connection_t *conn)
 
         case CNO_CONNECTION_HTTP1_READING:
         case CNO_CONNECTION_HTTP1_READING_UPGRADE: {
-            cno_stream_t *stream = conn->streams;
+            cno_stream_t *stream = conn->streams.first;
 
             WAIT(conn->buffer.size || !stream->msg.remaining);
 
@@ -356,10 +448,10 @@ int cno_connection_fire(cno_connection_t *conn)
 
             if (conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE) {
                 conn->state = CNO_CONNECTION_INIT_UPGRADE;
-                conn->streams->state = CNO_STREAM_CLOSED_REMOTE;
+                conn->streams.first->state = CNO_STREAM_CLOSED_REMOTE;
             } else {
                 conn->state = CNO_CONNECTION_HTTP1_READY;
-                conn->streams->state = CNO_STREAM_IDLE;
+                conn->streams.first->state = CNO_STREAM_IDLE;
             }
 
             break;
@@ -376,16 +468,18 @@ int cno_connection_fire(cno_connection_t *conn)
         }  // fallthrough
 
         case CNO_CONNECTION_INIT_UPGRADE: {
-            WAIT(conn->buffer.size >= CNO_PREFACE.size);
+            if (!conn->client) {
+                WAIT(conn->buffer.size >= CNO_PREFACE.size);
 
-            if (strncmp(conn->buffer.data, CNO_PREFACE.data, CNO_PREFACE.size)) {
-                STOP(CNO_ERROR_TRANSPORT("HTTP 2 did not start with valid preface"));
+                if (strncmp(conn->buffer.data, CNO_PREFACE.data, CNO_PREFACE.size)) {
+                    STOP(CNO_ERROR_TRANSPORT("invalid HTTP 2 preface: no client preface"));
+                }
+
+                cno_io_vector_shift(&conn->buffer, CNO_PREFACE.size);
             }
 
             conn->state = CNO_CONNECTION_PREFACE;
-            cno_io_vector_shift(&conn->buffer, CNO_PREFACE.size);
-            break;
-        }
+        }  // fallthrough (no closed-ness check)
 
         case CNO_CONNECTION_READY:
         case CNO_CONNECTION_PREFACE: {
@@ -403,8 +497,8 @@ int cno_connection_fire(cno_connection_t *conn)
                 //      => CONNECTION_ERROR
             }
 
-            if (conn->state == CNO_CONNECTION_PREFACE) {
-                // TODO check that we got a SETTINGS frame
+            if (conn->state == CNO_CONNECTION_PREFACE && conn->frame.type != CNO_FRAME_SETTINGS) {
+                STOP(CNO_ERROR_TRANSPORT("invalid HTTP 2 preface: no SETTINGS frame"));
             }
 
             cno_io_vector_shift(&conn->buffer, 9);
@@ -419,6 +513,11 @@ int cno_connection_fire(cno_connection_t *conn)
             conn->state = CNO_CONNECTION_READY;
 
             if (CNO_FIRE(conn, on_frame, &conn->frame)) {
+                cno_io_vector_clear(&conn->frame.payload);
+                STOP(CNO_PROPAGATE);
+            }
+
+            if (cno_connection_handle_frame(conn, &conn->frame)) {
                 cno_io_vector_clear(&conn->frame.payload);
                 STOP(CNO_PROPAGATE);
             }
@@ -439,8 +538,8 @@ int cno_connection_fire(cno_connection_t *conn)
     cno_io_vector_clear((cno_io_vector_t *) &conn->buffer);
     cno_io_vector_clear((cno_io_vector_t *) &conn->frame.payload);
 
-    while (conn->streams) {
-        if (cno_stream_destroy(conn, conn->streams)) {
+    while (conn->streams.first != (cno_stream_t *) conn) {
+        if (cno_stream_destroy(conn, conn->streams.first)) {
             return CNO_PROPAGATE;
         }
     }
