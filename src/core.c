@@ -32,24 +32,13 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
     return stream;
 }
 
-static int cno_stream_destroy(cno_connection_t *conn, cno_stream_t *stream)
+
+static void cno_stream_destroy(cno_connection_t *conn, cno_stream_t *stream)
 {
-    if (stream->state == CNO_STREAM_OPEN) {
-        // Note that second argument is `1`. Callback should know that the stream
-        // is dead, but shouldn't try to actually do anything with the message.
-        if (CNO_FIRE(conn, on_message_end, stream->id, 1)) {
-            return CNO_PROPAGATE;
-        }
-    }
-
-    if (CNO_FIRE(conn, on_stream_end, stream->id)) {
-        return CNO_PROPAGATE;
-    }
-
     cno_list_remove(stream);
     free(stream);
-    return CNO_OK;
 }
+
 
 #if 0
 static cno_stream_t * cno_stream_find(cno_connection_t *conn, size_t id)
@@ -93,11 +82,17 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
 }
 
 
-int cno_connection_destroy(cno_connection_t *conn)
+void cno_connection_destroy(cno_connection_t *conn)
 {
-    int ok = conn->closed ? CNO_OK : cno_connection_lost(conn);
+    cno_io_vector_reset(&conn->buffer);
+    cno_io_vector_clear((cno_io_vector_t *) &conn->buffer);
+    cno_io_vector_clear((cno_io_vector_t *) &conn->frame.payload);
+
+    while (conn->streams.first != (cno_stream_t *) conn) {
+        cno_stream_destroy(conn, conn->streams.first);
+    }
+
     free(conn);
-    return ok;
 }
 
 
@@ -128,7 +123,13 @@ int cno_connection_lost(cno_connection_t *conn)
     }
 
     conn->closed = 1;
-    return cno_connection_fire(conn);
+
+    if (cno_connection_fire(conn)) {
+        conn->closed = 0;
+        return CNO_PROPAGATE;
+    }
+
+    return CNO_OK;
 }
 
 
@@ -668,9 +669,21 @@ int cno_connection_fire(cno_connection_t *conn)
     cno_io_vector_clear((cno_io_vector_t *) &conn->frame.payload);
 
     while (conn->streams.first != (cno_stream_t *) conn) {
-        if (cno_stream_destroy(conn, conn->streams.first)) {
+        cno_stream_t *stream = conn->streams.first;
+
+        if (stream->state == CNO_STREAM_OPEN) {
+            // Note that second argument is `1`. Callback should know that the stream
+            // is dead, but shouldn't try to actually do anything with the message.
+            if (CNO_FIRE(conn, on_message_end, stream->id, 1)) {
+                return CNO_PROPAGATE;
+            }
+        }
+
+        if (CNO_FIRE(conn, on_stream_end, stream->id)) {
             return CNO_PROPAGATE;
         }
+
+        cno_stream_destroy(conn, conn->streams.first);
     }
 
     conn->state = CNO_CONNECTION_CLOSED;

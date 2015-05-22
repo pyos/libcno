@@ -264,7 +264,7 @@ static inline const char *cno_message_literal(struct cno_st_message_t *msg)
 
 
 cno_connection_t * cno_connection_new           (enum CNO_CONNECTION_KIND kind);
-int                cno_connection_destroy       (cno_connection_t *conn);
+void               cno_connection_destroy       (cno_connection_t *conn);
 int                cno_connection_made          (cno_connection_t *conn);
 int                cno_connection_data_received (cno_connection_t *conn, const char *data, size_t length);
 int                cno_connection_fire          (cno_connection_t *conn);
