@@ -5,6 +5,7 @@
 #include "picohttpparser/picohttpparser.h"
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 
 static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
@@ -101,6 +102,12 @@ int cno_connection_destroy(cno_connection_t *conn)
 }
 
 
+int cno_connection_made(cno_connection_t *conn)
+{
+    return cno_connection_fire(conn);
+}
+
+
 int cno_connection_data_received(cno_connection_t *conn, const char *data, size_t length)
 {
     if (conn->closed) {
@@ -111,12 +118,6 @@ int cno_connection_data_received(cno_connection_t *conn, const char *data, size_
         return CNO_PROPAGATE;
     }
 
-    return cno_connection_fire(conn);
-}
-
-
-int cno_connection_made(cno_connection_t *conn)
-{
     return cno_connection_fire(conn);
 }
 
@@ -440,7 +441,12 @@ int cno_connection_fire(cno_connection_t *conn)
                 size_t size  = (size_t) headers[it].name_len;
                 char * value = (char *) headers[it].value;
                 size_t vsize = (size_t) headers[it].value_len;
-                // TODO convert name to lowercase
+
+                {
+                    char *it  = name;
+                    char *end = name + size;
+                    for (; it != end; ++it) *it = tolower(*it);
+                }
 
                 if (strncmp(name, "http2-settings", size) == 0) {
                     // TODO decode & emit on_frame
