@@ -226,8 +226,8 @@ static int cno_connection_send_goaway(cno_connection_t *conn, size_t code, const
 
 static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *frame)
 {
-    char *ptr = frame->payload.data;
-    char *end = frame->payload.size + ptr;
+    unsigned char *ptr = (unsigned char *)  frame->payload.data;
+    unsigned char *end = (unsigned char *) (frame->payload.size + ptr);
     size_t sz = frame->payload.size;
 
     if (cno_frame_is_flow_controlled(frame)) {
@@ -286,6 +286,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
             CNO_READ_4BYTE(increment, ptr);
 
             if (frame->stream == 0) {
+                #ifdef CNO_HTTP2_STRICT
                 if (increment == 0) {
                     if (cno_connection_send_goaway(conn, CNO_STATE_PROTOCOL_ERROR, NULL, 0)) {
                         return CNO_PROPAGATE;
@@ -293,6 +294,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
 
                     return CNO_ERROR_TRANSPORT("bad WINDOW_UPDATE (incr = %lu)", increment);
                 }
+                #endif
 
                 conn->window_send += increment;
 
@@ -301,7 +303,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                         return CNO_PROPAGATE;
                     }
 
-                    return CNO_ERROR_TRANSPORT("flow control window got too big (incr = %lu)", increment);
+                    return CNO_ERROR_TRANSPORT("flow control window got too big (res = %lu)", conn->window_send);
                 }
             } else {
                 // TODO check that increment is nonzero
@@ -312,8 +314,15 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
             return CNO_OK;
         }
 
+        case CNO_FRAME_HEADERS: {
+            // ...
+            /* while (ptr != end) {
+                printf("%x", *ptr++);
+            }
+            printf("\n"); */
+        }
+
         case CNO_FRAME_DATA:
-        case CNO_FRAME_HEADERS:
         case CNO_FRAME_PRIORITY:
         case CNO_FRAME_RST_STREAM:
         case CNO_FRAME_PUSH_PROMISE:
@@ -614,7 +623,7 @@ int cno_connection_fire(cno_connection_t *conn)
         case CNO_CONNECTION_PREFACE: {
             WAIT(conn->buffer.size >= 9);
 
-            char *base = conn->buffer.data;
+            unsigned char *base = (unsigned char *) conn->buffer.data;
             CNO_ZERO(&conn->frame);
             CNO_READ_3BYTE(conn->frame.payload.size, base);
             CNO_READ_1BYTE(conn->frame.type,         base);
