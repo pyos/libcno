@@ -85,7 +85,7 @@ void cno_io_vector_reset (struct cno_st_io_vector_tmp_t *vec)
 char * cno_io_vector_slice (struct cno_st_io_vector_tmp_t *vec, size_t size)
 {
     if (size > vec->size) {
-        (void) CNO_ERROR_ASSERTION("out of bounds (%lu > %lu)", size, vec->size);
+        (void) CNO_ERROR_ASSERTION("slice out of bounds (%lu > %lu)", size, vec->size);
         return NULL;
     }
 
@@ -105,7 +105,7 @@ char * cno_io_vector_slice (struct cno_st_io_vector_tmp_t *vec, size_t size)
 int cno_io_vector_shift (struct cno_st_io_vector_tmp_t *vec, size_t offset)
 {
     if (offset > vec->size) {
-        return CNO_ERROR_ASSERTION("out of bounds (%lu > %lu)", offset, vec->size);
+        return CNO_ERROR_ASSERTION("shift out of bounds (%lu > %lu)", offset, vec->size);
     }
 
     vec->data   += offset;
