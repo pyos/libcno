@@ -2,7 +2,9 @@
 #define _CNO_CORE_H_
 #include <stddef.h>
 #include <string.h>
-#include "common.h"
+
+#include "cno-common.h"
+#include "cno-hpack.h"
 
 #define CNO_DEF_CALLBACK(ob, cb, ...) typedef int (* cno_cb_ ## cb ## _t)(ob *, void *, ## __VA_ARGS__)
 #define CNO_FIRE(ob, cb, ...) (ob->cb && ((cno_cb_ ## cb ## _t) ob->cb)(ob, ob->cb_data, ## __VA_ARGS__))
@@ -97,12 +99,6 @@ struct cno_st_frame_t {
     size_t stream_id;
     struct cno_st_stream_t *stream;
     struct cno_st_io_vector_t payload;
-};
-
-
-struct cno_st_header_t {
-    struct cno_st_io_vector_t name;
-    struct cno_st_io_vector_t value;
 };
 
 

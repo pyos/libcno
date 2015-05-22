@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "common.h"
+#include "cno-common.h"
 
 
 static struct {
