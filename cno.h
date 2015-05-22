@@ -20,7 +20,7 @@ enum CNO_CONNECTION_KIND {
 enum CNO_CONNECTION_STATE {
     CNO_CONNECTION_CLOSED,
     CNO_CONNECTION_INIT,
-    CNO_CONNECTION_INIT_UPGRADE,  // same as INIT, but does not emit `on_ready`.
+    CNO_CONNECTION_UPGRADE,
     CNO_CONNECTION_PREFACE,
     CNO_CONNECTION_READY,
     CNO_CONNECTION_READING,
@@ -146,8 +146,6 @@ struct cno_st_connection_t {
     struct cno_st_frame_t frame;
     struct cno_st_settings_t settings;
     void * cb_data;
-    void * on_ready;
-    void * on_close;
     void * on_frame;
     void * on_frame_send;
     void * on_write;
@@ -167,8 +165,6 @@ CNO_STRUCT_EXPORT(header);
 CNO_STRUCT_EXPORT(message);
 
 
-CNO_DEF_CALLBACK(cno_connection_t, on_ready);
-CNO_DEF_CALLBACK(cno_connection_t, on_close);
 CNO_DEF_CALLBACK(cno_connection_t, on_frame, cno_frame_t *);
 CNO_DEF_CALLBACK(cno_connection_t, on_frame_send, cno_frame_t *);
 CNO_DEF_CALLBACK(cno_connection_t, on_write, const char *, size_t);

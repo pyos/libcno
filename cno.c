@@ -377,10 +377,6 @@ int cno_connection_fire(cno_connection_t *conn)
                 STOP(CNO_PROPAGATE);
             }
 
-            if (CNO_FIRE(conn, on_ready)) {
-                STOP(CNO_PROPAGATE);
-            }
-
             conn->state = CNO_CONNECTION_HTTP1_READY;
             break;
         }
@@ -409,14 +405,7 @@ int cno_connection_fire(cno_connection_t *conn)
                 if  (conn->buffer.size >= CNO_PREFACE.size &&  may_be_http2) {
                     // Definitely HTTP2. Stream 1 should be recycled, though.
                     cno_stream_destroy(conn, stream);
-
-                    if (cno_connection_send_preface(conn)) {
-                        STOP(CNO_PROPAGATE);
-                    }
-
-                    // NOTE transition to HTTP 2 will be seamless because the buffer
-                    //      is already full. Thus we don't emit `on_ready` again.
-                    conn->state = CNO_CONNECTION_INIT_UPGRADE;
+                    conn->state = CNO_CONNECTION_INIT;
                     break;
                 }
             }
@@ -477,14 +466,14 @@ int cno_connection_fire(cno_connection_t *conn)
                         STOP(CNO_PROPAGATE);
                     }
 
-                    // Technically, server should refuse if HTTP2-Settings are not present.
-                    // We'll let this slide.
-                    conn->state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
                     // If we send the preface now, we'll be able to send HTTP 2 frames
                     // while in the HTTP1_READING_UPGRADE state.
                     if (cno_connection_send_preface(conn)) {
                         STOP(CNO_PROPAGATE);
                     }
+                    // Technically, server should refuse if HTTP2-Settings are not present.
+                    // We'll let this slide.
+                    conn->state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
                 } else
 
                 if (strncmp(name, "content-length", size) == 0) {
@@ -585,7 +574,7 @@ int cno_connection_fire(cno_connection_t *conn)
             }
 
             if (conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE) {
-                conn->state = CNO_CONNECTION_INIT_UPGRADE;
+                conn->state = CNO_CONNECTION_UPGRADE;
                 conn->streams.first->state = CNO_STREAM_CLOSED_REMOTE;
             } else {
                 conn->state = CNO_CONNECTION_HTTP1_READY;
@@ -599,13 +588,9 @@ int cno_connection_fire(cno_connection_t *conn)
             if (cno_connection_send_preface(conn)) {
                 STOP(CNO_PROPAGATE);
             }
+        } // fallthrough
 
-            if (CNO_FIRE(conn, on_ready)) {
-                STOP(CNO_PROPAGATE);
-            }
-        }  // fallthrough
-
-        case CNO_CONNECTION_INIT_UPGRADE: {
+        case CNO_CONNECTION_UPGRADE: {
             if (!conn->client) {
                 WAIT(conn->buffer.size >= CNO_PREFACE.size);
 
@@ -697,7 +682,7 @@ int cno_connection_fire(cno_connection_t *conn)
 
     conn->state = CNO_CONNECTION_CLOSED;
     CNO_ZERO(&conn->buffer);
-    return CNO_FIRE(conn, on_close);
+    return CNO_OK;
 
 done:
 
@@ -716,8 +701,6 @@ static int cno_write_get_mode(cno_connection_t *conn, size_t id, cno_stream_t **
             return CNO_ERROR_INVALID_STATE("connection already closed");
 
         case CNO_CONNECTION_INIT:
-        case CNO_CONNECTION_INIT_UPGRADE:  // shouldn't have time to call this while in that state
-        case CNO_CONNECTION_PREFACE:
         case CNO_CONNECTION_HTTP1_INIT:
             return CNO_ERROR_INVALID_STATE("connection not yet initialized");
 
