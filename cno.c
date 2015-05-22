@@ -119,7 +119,7 @@ int cno_connection_data_received(cno_connection_t *conn, const char *data, size_
 int cno_connection_lost(cno_connection_t *conn)
 {
     if (conn->closed) {
-        return CNO_ERROR_INVALID_STATE("already closed");
+        return CNO_OK;
     }
 
     conn->closed = 1;
@@ -237,6 +237,18 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
 
     switch (frame->type) {
         case CNO_FRAME_SETTINGS: {
+            if (frame->flags & CNO_FLAG_ACK) {
+                if (sz) {
+                    if (cno_connection_send_goaway(conn, CNO_STATE_FRAME_SIZE_ERROR, NULL, 0)) {
+                        return CNO_PROPAGATE;
+                    }
+
+                    return CNO_ERROR_TRANSPORT("bad SETTINGS (ack with length = %lu)", sz);
+                }
+
+                return CNO_OK;
+            }
+
             if (sz % 6) {
                 if (cno_connection_send_goaway(conn, CNO_STATE_FRAME_SIZE_ERROR, NULL, 0)) {
                     return CNO_PROPAGATE;
@@ -314,6 +326,15 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
             return CNO_OK;
         }
 
+        case CNO_FRAME_GOAWAY: {
+            if (cno_connection_lost(conn)) {
+                return CNO_PROPAGATE;
+            }
+
+            // TODO parse error code.
+            return CNO_ERROR_TRANSPORT("connection lost");
+        }
+
         case CNO_FRAME_HEADERS: {
             // ...
             /* while (ptr != end) {
@@ -327,7 +348,6 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
         case CNO_FRAME_RST_STREAM:
         case CNO_FRAME_PUSH_PROMISE:
         case CNO_FRAME_PING:
-        case CNO_FRAME_GOAWAY:
         case CNO_FRAME_CONTINUATION: {
             (void) CNO_ERROR_NOT_IMPLEMENTED("frame type %d (%s)", frame->type, cno_frame_get_name(frame));
             (void) cno_connection_send_goaway(conn, CNO_STATE_INTERNAL_ERROR, NULL, 0);
@@ -585,6 +605,8 @@ int cno_connection_fire(cno_connection_t *conn)
         }
 
         case CNO_CONNECTION_INIT: {
+            conn->state = CNO_CONNECTION_UPGRADE;
+
             if (cno_connection_send_preface(conn)) {
                 STOP(CNO_PROPAGATE);
             }
