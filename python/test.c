@@ -1,7 +1,5 @@
 //! file: ../src/core.c
-//! file: ../src/iovec.c
-//! file: ../src/error.c
-//! file: ../src/write.c
+//! file: ../src/common.c
 //! file: ../picohttpparser/picohttpparser.c
 //! include_dir: ..
 //! include_dir: ../include
@@ -10,8 +8,6 @@
 #include <string.h>
 #include <structmember.h>
 #include "core.h"
-#include "error.h"
-#include "write.h"
 #define CNO_ERROR_PYTHON CNO_ERROR_UNKNOWN("See Python exception info")
 
 

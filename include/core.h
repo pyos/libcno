@@ -2,13 +2,10 @@
 #define _CNO_CORE_H_
 #include <stddef.h>
 #include <string.h>
-#include "iovec.h"
-#include "list.h"
+#include "common.h"
 
-#define CNO_STRUCT_EXPORT(name) typedef struct cno_st_ ## name ## _t cno_ ## name ## _t
 #define CNO_DEF_CALLBACK(ob, cb, ...) typedef int (* cno_cb_ ## cb ## _t)(ob *, void *, ## __VA_ARGS__)
 #define CNO_FIRE(ob, cb, ...) (ob->cb && ((cno_cb_ ## cb ## _t) ob->cb)(ob, ob->cb_data, ## __VA_ARGS__))
-#define CNO_ZERO(ob) memset(ob, 0, sizeof(*ob))
 
 
 enum CNO_CONNECTION_KIND {
@@ -103,30 +100,6 @@ struct cno_st_frame_t {
 };
 
 
-static inline const char *cno_frame_get_name(struct cno_st_frame_t *frame)
-{
-    switch (frame->type) {
-        case CNO_FRAME_DATA:          return "DATA";
-        case CNO_FRAME_HEADERS:       return "HEADERS";
-        case CNO_FRAME_PRIORITY:      return "PRIORITY";
-        case CNO_FRAME_RST_STREAM:    return "RST_STREAM";
-        case CNO_FRAME_SETTINGS:      return "SETTINGS";
-        case CNO_FRAME_PUSH_PROMISE:  return "PUSH_PROMISE";
-        case CNO_FRAME_PING:          return "PING";
-        case CNO_FRAME_GOAWAY:        return "GOAWAY";
-        case CNO_FRAME_WINDOW_UPDATE: return "WINDOW_UPDATE";
-        case CNO_FRAME_CONTINUATION:  return "CONTINUATION";
-        default: return "UNKNOWN";
-    }
-};
-
-
-static inline int cno_frame_is_flow_controlled(struct cno_st_frame_t *frame)
-{
-    return frame->type == CNO_FRAME_DATA;
-}
-
-
 struct cno_st_header_t {
     struct cno_st_io_vector_t name;
     struct cno_st_io_vector_t value;
@@ -213,11 +186,92 @@ CNO_DEF_CALLBACK(cno_connection_t, on_message_end,   size_t, int disconnect);
 static const struct cno_st_io_vector_t CNO_PREFACE = { "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24 };
 
 
+static inline const char *cno_frame_get_name(struct cno_st_frame_t *frame)
+{
+    switch (frame->type) {
+        case CNO_FRAME_DATA:          return "DATA";
+        case CNO_FRAME_HEADERS:       return "HEADERS";
+        case CNO_FRAME_PRIORITY:      return "PRIORITY";
+        case CNO_FRAME_RST_STREAM:    return "RST_STREAM";
+        case CNO_FRAME_SETTINGS:      return "SETTINGS";
+        case CNO_FRAME_PUSH_PROMISE:  return "PUSH_PROMISE";
+        case CNO_FRAME_PING:          return "PING";
+        case CNO_FRAME_GOAWAY:        return "GOAWAY";
+        case CNO_FRAME_WINDOW_UPDATE: return "WINDOW_UPDATE";
+        case CNO_FRAME_CONTINUATION:  return "CONTINUATION";
+        default: return "UNKNOWN";
+    }
+};
+
+
+static inline int cno_frame_is_flow_controlled(struct cno_st_frame_t *frame)
+{
+    return frame->type == CNO_FRAME_DATA;
+}
+
+
+static inline const char *cno_message_literal(struct cno_st_message_t *msg)
+{
+    switch (msg->code) {
+        case 100: return "Continue";
+        case 101: return "Switching Protocols";
+        case 200: return "OK";
+        case 201: return "Created";
+        case 202: return "Accepted";
+        case 203: return "Non-Authoritative Information";
+        case 204: return "No Content";
+        case 205: return "Reset Content";
+        case 206: return "Partial Content";
+        case 300: return "Multiple Choices";
+        case 301: return "Moved Permanently";
+        case 302: return "Found";
+        case 303: return "See Other";
+        case 304: return "Not Modified";
+        case 305: return "Use Proxy";
+        case 306: return "(Unused)";
+        case 307: return "Temporary Redirect";
+        case 400: return "Bad Request";
+        case 401: return "Unauthorized";
+        case 402: return "Payment Required";
+        case 403: return "Forbidden";
+        case 404: return "Not Found";
+        case 405: return "Method Not Allowed";
+        case 406: return "Not Acceptable";
+        case 407: return "Proxy Authentication Required";
+        case 408: return "Request Timeout";
+        case 409: return "Conflict";
+        case 410: return "Gone";
+        case 411: return "Length Required";
+        case 412: return "Precondition Failed";
+        case 413: return "Request Entity Too Large";
+        case 414: return "Request-URI Too Long";
+        case 415: return "Unsupported Media Type";
+        case 416: return "Requested Range Not Satisfiable";
+        case 417: return "Expectation Failed";
+        case 428: return "Precondition Required";
+        case 429: return "Too Many Requests";
+        case 431: return "Request Header Fields Too Large";
+        case 500: return "Internal Server Error";
+        case 501: return "Not Implemented";
+        case 502: return "Bad Gateway";
+        case 503: return "Service Unavailable";
+        case 504: return "Gateway Timeout";
+        case 505: return "HTTP Version Not Supported";
+        case 511: return "Network Authentication Required";
+        default:  return "Unknown";
+    }
+}
+
+
 cno_connection_t * cno_connection_new           (enum CNO_CONNECTION_KIND kind);
 int                cno_connection_destroy       (cno_connection_t *conn);
 int                cno_connection_made          (cno_connection_t *conn);
 int                cno_connection_data_received (cno_connection_t *conn, const char *data, size_t length);
 int                cno_connection_fire          (cno_connection_t *conn);
 int                cno_connection_lost          (cno_connection_t *conn);
+
+int cno_write_message (cno_connection_t *conn, size_t stream, cno_message_t *msg);
+int cno_write_data    (cno_connection_t *conn, size_t stream, const char *data, size_t length, int chunked);
+int cno_write_end     (cno_connection_t *conn, size_t stream, int chunked);
 
 #endif
