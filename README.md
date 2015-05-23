@@ -19,12 +19,13 @@ secrets to yourself.
 ```python
 class Protocol (asyncio.Protocol):
     def data_received(self, data):
-        # Can you do that, libuv? CAN YOU?
-        print('i HAVE the data', data)
+        print('i HAVE the data')
 ```
 
 ### Does it actually work?
 
-Not yet.
+Well, it can make and respond to HTTP/1.x requests, upgrade HTTP/1.x connections to HTTP 2,
+and respond to the first HEADERS frame with an error because that part is not implemented
+yet.
 
 ### Then I'm done here.
