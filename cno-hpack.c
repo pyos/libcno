@@ -61,56 +61,53 @@ static int cno_hpack_decode_string(cno_hpack_t *state, cno_io_vector_tmp_t *sour
         return CNO_PROPAGATE;
     }
 
+    if (length > source->size) {
+        return CNO_ERROR_TRANSPORT("hpack: truncated string literal (%lu out of %lu octets)", source->size, length);
+    }
+
     if (huffman) {
         unsigned char *src = (unsigned char *) source->data;
-        unsigned char *end = source->size + src;
+        unsigned char *end = length + src;
+        // Min. length of a Huffman code = 5 bits => max length after decoding = x * 8 / 5.
+        unsigned char *buf = malloc(length * 2);
+        unsigned char *ptr = buf;
 
-        char chunk[64];
-        char *chunk_ptr = chunk;
-        char *chunk_end = chunk + sizeof(chunk);
-        out->data = NULL;
-        out->size = 0;
+        if (!buf) {
+            return CNO_ERROR_NO_MEMORY;
+        }
 
         // Has to be at least 37 bits, since we can only read 8-bit chars and
         // if we happen to have 29 bits at some point, that will not be enough
         // for some Huffman codes.
-        uint64_t buf  = (uint64_t) *src++;
-        uint64_t mask = 1 << 7;
+        uint64_t bits = 0;
+        uint64_t mask = 0;
+        const cno_huffman_node_t *tree;
 
-        while (mask) { next_char:
-            if (chunk_ptr == chunk_end) {
-                if (cno_io_vector_extend(out, chunk, sizeof(chunk))) {
-                    cno_io_vector_clear(out);
-                    return CNO_PROPAGATE;
-                }
-
-                chunk_ptr = chunk;
-            }
-
+        next_char:
             while (src != end && mask < 1 << 30) {
-                mask <<= 8;
-                buf  <<= 8;
-                buf   |= *src++;
+                mask = mask << 8;
+                bits = bits << 8 | *src++;
+                if (!mask) mask = 0x80;
             }
 
-            const cno_huffman_node_t *tree = CNO_HUFFMAN_TREE;
+            tree = CNO_HUFFMAN_TREE;
 
             while (mask) {
-                tree = buf & mask ? tree->right : tree->left;
+                tree = bits & mask ? tree->right : tree->left;
                 mask >>= 1;
 
                 if (tree == NULL) {
-                    cno_io_vector_clear(out);
+                    free(buf);
                     return CNO_ERROR_TRANSPORT("hpack: invalid Huffman code");
                 }
 
                 if (!tree->left && !tree->right) {
                     if (tree->data >= 256) {
-                        cno_io_vector_clear(out);
+                        free(buf);
                         return CNO_ERROR_TRANSPORT("hpack: EOS in Huffman-encoded string");
                     }
 
-                    *chunk_ptr++ = (unsigned char) tree->data;
+                    *ptr++ = (unsigned char) tree->data;
                     goto next_char;
                 }
             }
@@ -120,21 +117,19 @@ static int cno_hpack_decode_string(cno_hpack_t *state, cno_io_vector_tmp_t *sour
             while (tree->right) tree = tree->right;
 
             if (tree->data != 256) {
-                cno_io_vector_clear(out);
+                free(buf);
                 return CNO_ERROR_TRANSPORT("hpack: truncated non-EOS Huffman code");
             }
-        }
 
-        if (cno_io_vector_extend(out, chunk, chunk_ptr - chunk)) {
-            cno_io_vector_clear(out);
-            return CNO_PROPAGATE;
-        }
+        out->data = buf;
+        out->size = ptr - buf;
 
         cno_io_vector_shift(source, length);
-    } else {
-        out->data = cno_io_vector_slice(source, length);
-        out->size = length;
+        return CNO_OK;
     }
+
+    out->data = cno_io_vector_slice(source, length);
+    out->size = length;
 
     if (!out->data) {
         return CNO_PROPAGATE;
