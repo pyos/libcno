@@ -1,20 +1,28 @@
+import sys
 import random
+import itertools
 
 
-TEMPLATE_LEAF   = 'static const struct cno_st_huffman_node_t _CNO_HUFFMAN_NODE_{} = {{ {} }};\n'
-TEMPLATE_BRANCH = 'static const struct cno_st_huffman_node_t _CNO_HUFFMAN_NODE_{} = {{ 0, &_CNO_HUFFMAN_NODE_{}, &_CNO_HUFFMAN_NODE_{} }};\n'
-TEMPLATE_LEFT   = 'static const struct cno_st_huffman_node_t _CNO_HUFFMAN_NODE_{} = {{ 0, &_CNO_HUFFMAN_NODE_{}, 0 }};\n'
-TEMPLATE_RIGHT  = 'static const struct cno_st_huffman_node_t _CNO_HUFFMAN_NODE_{} = {{ 0, 0, &_CNO_HUFFMAN_NODE_{} }};\n'
-TEMPLATE_ROOT   = 'static const struct cno_st_huffman_node_t *CNO_HUFFMAN_TREE = &_CNO_HUFFMAN_NODE_{};\n'
+LEAF_EOS   = 1
+LEAF_CHAR  = 2
+LEAF_ERROR = 4
+# Maximum no. of Huffman subtrees addressable by a chosen data type.
+# This is precisely `2 ** (sizeof(id_type) * 8 - bits_per_step)`.
+TREE_LIMIT = 2 ** (2 * 8 - 4)  # for unsigned short and 4 bits per step
+
+TEMPLATE_NODE = '{{{},{},{}}},'
 TEMPLATE = '''#include "cno.h"
 
 struct cno_st_huffman_item_t { unsigned int code; unsigned char bits; };
-struct cno_st_huffman_node_t { unsigned short data; const struct cno_st_huffman_node_t *left; const struct cno_st_huffman_node_t *right; };
+struct cno_st_huffman_leaf_t { unsigned char type; unsigned char data; unsigned short tree; };
+
+static const unsigned char CNO_HUFFMAN_LEAF_EOS   = 1;
+static const unsigned char CNO_HUFFMAN_LEAF_CHAR  = 2;
+static const unsigned char CNO_HUFFMAN_LEAF_ERROR = 4;
 
 
 CNO_STRUCT_EXPORT(huffman_item);
-CNO_STRUCT_EXPORT(huffman_node);
-
+CNO_STRUCT_EXPORT(huffman_leaf);
 
 static const struct cno_st_huffman_item_t CNO_HUFFMAN_TABLE [] = {
     {     0x1ff8, 13 }, {   0x7fffd8, 23 }, {  0xfffffe2, 28 }, {  0xfffffe3, 28 },
@@ -84,6 +92,25 @@ static const struct cno_st_huffman_item_t CNO_HUFFMAN_TABLE [] = {
     { 0x3fffffff, 30 },
 };
 
+// How to decode Huffman-encoded strings:
+//
+//   1. Start with tree id = 0, eos = 1.
+//   2. While possible:
+//
+//      2.1. Read 4 bits of input, set eos = 0.
+//      2.2. Look up CNO_HUFFMAN_TREES[tree id | input] to fetch a cno_huffman_leaf_t.
+//           If `type` is...
+//
+//           2.2.1. CNO_HUFFMAN_LEAF_EOS:   set eos = 1
+//           2.2.2. CNO_HUFFMAN_LEAF_CHAR:  append character in `data` to output.
+//           2.2.3. CNO_HUFFMAN_LEAF_ERROR: return CNO_ERROR_TRANSPORT("invalid Huffman code")
+//
+//      2.3. set tree id = `tree`.
+//
+//   3. if eos = 0, return CNO_ERROR_TRANSPORT("truncated Huffman code")
+//
+
+static const struct cno_st_huffman_leaf_t CNO_HUFFMAN_TREES[] = {%s};
 '''
 
 
@@ -99,30 +126,106 @@ xs = sorted((code << 32 >> sz, sz, i) for i, (code, sz) in enumerate(xs))
 
 
 def make_tree(xs, start, end, i):
-    '''Generate a static Huffman lookup tree for i-th bit.'''
-    uid = ''.join(random.choice('0123456789abcdef') for _ in range(10))
-
+    '''
+        Construct a Huffman decoder tree.
+        Leafs are ints, interior nodes are 2-tuples, invalid nodes are Nones.
+    '''
     if end == start or i > 31:
-        return None, None
+        return None
 
     if end - start == 1 and xs[start][1] == i:
-        return TEMPLATE_LEAF.format(uid, xs[start][2]), uid
+        return xs[start][2]
 
     mask = 1 << (31 - i)
     for middle in range(start, end):
         if xs[middle][0] & mask:
             break
 
-    ltree, lid = make_tree(xs, start, middle, i + 1)
-    rtree, rid = make_tree(xs, middle, end, i + 1)
-    if ltree and rtree:
-        return ltree + rtree + TEMPLATE_BRANCH.format(uid, lid, rid), uid
-    if ltree:
-        return ltree + TEMPLATE_LEFT.format(uid, lid), uid
-    if rtree:
-        return rtree + TEMPLATE_RIGHT.format(uid, rid), uid
-    return None, None
+    ltree = make_tree(xs, start, middle, i + 1)
+    rtree = make_tree(xs, middle, end, i + 1)
+    return ltree, rtree
 
 
-tree, uid = make_tree(xs, 0, len(xs), 0)
-print(TEMPLATE + tree + TEMPLATE_ROOT.format(uid))
+def unwrap(tree):
+    '''Recursively enumerate all subtrees.'''
+    yield tree
+    if isinstance(tree, tuple):
+        yield from unwrap(tree[0])
+        yield from unwrap(tree[1])
+
+
+def step(root, tree, seq):
+    '''
+        Simulate decoding of a sequence starting with `seq` with starting tree `tree`,
+        return a (char, tree) tuple where `char` is the character decoded (if any)
+        and `tree` is the state in which the decoder would end up.
+    '''
+    char = None
+    seq  = iter(seq)
+
+    while True:
+        if tree is None:
+            return None, None
+
+        if isinstance(tree, int):
+            if char:
+                raise ValueError("granularity too low")
+            char, tree = tree, root
+
+        try:
+            tree = tree[next(seq)]
+        except StopIteration:
+            break
+
+    if char == 256:
+        return None, None
+
+    return char, tree
+
+
+def gen_header(root, bits_per_step=4):
+    '''
+        Construct a lookup table that allows to read Huffman-coded data
+        `bits_per_step` bits at a time.
+    '''
+    trees   = list(unwrap(root))
+    inputs  = list(itertools.product((0, 1), repeat=bits_per_step))
+    require = {root}
+    targets = {}
+
+    # Prune unreachable subtrees to improve memory consumption.
+    # This can reduce the table size in half.
+    for tree in trees:
+        for seq in inputs:
+            targets[tree, seq] = char, subtree = step(root, tree, seq)
+            require.add(subtree)
+
+    trees = list(filter(require.__contains__, trees))
+
+    assert len(trees) <= TREE_LIMIT, 'not enough address space'
+
+    # Find out which states are valid end states. These are precisely those states
+    # from which the EOS character (0b1111...1) can be reached.
+    eofs = set()
+    subtree = root
+
+    while isinstance(subtree, tuple):
+        eofs.add(subtree)
+        subtree = subtree[1]
+
+    index = dict(zip(trees, itertools.count()))
+
+    for tree in trees:
+        for seq in inputs:
+            char, subtree = targets[tree, seq]
+            eof = LEAF_EOS if subtree in eofs else 0
+
+            if subtree is None:
+                yield TEMPLATE_NODE.format(LEAF_ERROR, 0, 0)
+            elif char is not None:
+                yield TEMPLATE_NODE.format(LEAF_CHAR | eof, char, index[subtree] << 4)
+            else:
+                yield TEMPLATE_NODE.format(eof, 0, index[subtree] << 4)
+
+
+print(TEMPLATE % ''.join(gen_header(make_tree(xs, 0, len(xs), 0))))
