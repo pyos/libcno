@@ -6,47 +6,14 @@
 #include "cno-hpack-huffman.h"
 
 
-cno_hpack_t *cno_hpack_start(cno_hpack_dynamic_t *dyntable, char *buf, size_t length)
+static int cno_hpack_decode_uint(cno_hpack_t *state, cno_io_vector_tmp_t *source, int prefix, size_t *result)
 {
-    cno_hpack_t *state = malloc(sizeof(cno_hpack_t));
-
-    if (state == NULL) {
-        (void) CNO_ERROR_NO_MEMORY;
-        return NULL;
-    }
-
-    CNO_ZERO(state);
-    state->table = dyntable;
-    state->buf.data = buf;
-    state->buf.size = length;
-
-    if (!length) {
-        state->writing = 1;
-    }
-
-    return state;
-}
-
-
-void cno_hpack_destroy(cno_hpack_t *state)
-{
-    if (state->writing) {
-        cno_io_vector_reset(&state->buf);
-        cno_io_vector_clear((cno_io_vector_t *) &state->buf);
-    }
-
-    free(state);
-}
-
-
-static int cno_hpack_decode_uint(cno_hpack_t *state, int prefix, size_t *result)
-{
-    if (!state->buf.size) {
+    if (!source->size) {
         return CNO_ERROR_TRANSPORT("hpack: expected uint, got EOF");
     }
 
-    unsigned char *src = (unsigned char *) state->buf.data;
-    unsigned char *end = state->buf.size + src;
+    unsigned char *src = (unsigned char *) source->data;
+    unsigned char *end = source->size + src;
     unsigned char mask = ~(0xFF << prefix);
     unsigned char head = *src++ & mask;
     unsigned char size = 0;
@@ -55,7 +22,7 @@ static int cno_hpack_decode_uint(cno_hpack_t *state, int prefix, size_t *result)
         // /--\------- prefix
         // xxxx....
         *result = (size_t) head;
-        return cno_io_vector_shift(&state->buf, 1);
+        return cno_io_vector_shift(source, 1);
     }
 
     *result = 0;
@@ -77,26 +44,26 @@ static int cno_hpack_decode_uint(cno_hpack_t *state, int prefix, size_t *result)
         *result  |= *src & 0x7F;
     } while (*src++ & 0x80);
 
-    return cno_io_vector_shift(&state->buf, size + 1);
+    return cno_io_vector_shift(source, size + 1);
 }
 
 
-static int cno_hpack_decode_string(cno_hpack_t *state, cno_io_vector_t *out)
+static int cno_hpack_decode_string(cno_hpack_t *state, cno_io_vector_tmp_t *source, cno_io_vector_t *out)
 {
-    if (!state->buf.size) {
+    if (!source->size) {
         return CNO_ERROR_TRANSPORT("hpack: expected string, got EOF");
     }
 
-    int huffman = *state->buf.data >> 7;
+    int huffman = *source->data >> 7;
     size_t length;
 
-    if (cno_hpack_decode_uint(state, 7, &length)) {
+    if (cno_hpack_decode_uint(state, source, 7, &length)) {
         return CNO_PROPAGATE;
     }
 
     if (huffman) {
-        unsigned char *src = (unsigned char *) state->buf.data;
-        unsigned char *end = state->buf.size + src;
+        unsigned char *src = (unsigned char *) source->data;
+        unsigned char *end = source->size + src;
 
         char chunk[64];
         char *chunk_ptr = chunk;
@@ -163,9 +130,9 @@ static int cno_hpack_decode_string(cno_hpack_t *state, cno_io_vector_t *out)
             return CNO_PROPAGATE;
         }
 
-        cno_io_vector_shift(&state->buf, length);
+        cno_io_vector_shift(source, length);
     } else {
-        out->data = cno_io_vector_slice(&state->buf, length);
+        out->data = cno_io_vector_slice(source, length);
         out->size = length;
     }
 
@@ -177,25 +144,27 @@ static int cno_hpack_decode_string(cno_hpack_t *state, cno_io_vector_t *out)
 }
 
 
-static int cno_hpack_decode_one(cno_hpack_t *state, cno_header_t *target)
+static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source, cno_header_t *target)
 {
     return CNO_ERROR_NOT_IMPLEMENTED("hpack");
 }
 
 
-static int cno_hpack_encode_one(cno_hpack_t *state, cno_header_t *source)
+static int cno_hpack_encode_one(cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *source)
 {
     return CNO_ERROR_NOT_IMPLEMENTED("hpack");
 }
 
 
-int cno_hpack_decode(cno_hpack_t *state, cno_header_t *array, size_t *limit)
+int cno_hpack_decode(cno_hpack_t *state, cno_io_vector_t *source, cno_header_t *array, size_t *limit)
 {
+    cno_io_vector_tmp_t sourcetmp = { source->data, source->size, 0 };
+
     size_t decoded = 0;
     size_t maximum = *limit;
 
-    for (; decoded < maximum && state->buf.size; ++decoded) {
-        if (cno_hpack_decode_one(state, array++)) {
+    for (; decoded < maximum && sourcetmp.size; ++decoded) {
+        if (cno_hpack_decode_one(state, &sourcetmp, array++)) {
             return CNO_PROPAGATE;
         }
     }
@@ -205,14 +174,15 @@ int cno_hpack_decode(cno_hpack_t *state, cno_header_t *array, size_t *limit)
 }
 
 
-int cno_hpack_encode(cno_hpack_t *state, cno_header_t *array, size_t amount)
+int cno_hpack_encode(cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *array, size_t amount)
 {
-    if (!state->writing) {
-        return CNO_ERROR_ASSERTION("hpack: expected a hpack_decode call");
+    if (target->size || target->data) {
+        return CNO_ERROR_ASSERTION("non-empty io vector passed to hpack_encode");
     }
 
     for (; amount; --amount) {
-        if (cno_hpack_encode_one(state, array++)) {
+        if (cno_hpack_encode_one(state, target, array++)) {
+            cno_io_vector_clear(target);
             return CNO_PROPAGATE;
         }
     }

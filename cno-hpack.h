@@ -10,31 +10,27 @@ struct cno_st_header_t {
 };
 
 
-struct cno_st_hpack_dynamic_t {
-    size_t size;
-    struct cno_st_io_vector_t *cache;
+struct cno_st_header_table_t {
+    CNO_LIST_LINK(struct cno_st_hpack_header_t);
+    struct cno_st_header_t data;
 };
 
 
 struct cno_st_hpack_t {
-    struct cno_st_hpack_dynamic_t *table;
-    struct cno_st_io_vector_tmp_t buf;
-    int writing;
+    CNO_LIST_ROOT(struct cno_st_hpack_header_t);
+    size_t size;
 };
 
 
 CNO_STRUCT_EXPORT(header);
 CNO_STRUCT_EXPORT(hpack);
-CNO_STRUCT_EXPORT(hpack_dynamic);
 
 
-cno_hpack_t *cno_hpack_start(cno_hpack_dynamic_t *dyntable, char *buf, size_t length);
-void cno_hpack_destroy (cno_hpack_t *state);
-int  cno_hpack_decode  (cno_hpack_t *state, cno_header_t *array, size_t *limit);
-int  cno_hpack_encode  (cno_hpack_t *state, cno_header_t *array, size_t amount);
+int  cno_hpack_decode(cno_hpack_t *state, cno_io_vector_t *source, cno_header_t *array, size_t *limit);
+int  cno_hpack_encode(cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *array, size_t amount);
 
 
-static const struct cno_st_header_t CNO_STATIC_TABLE [] = {
+static const struct cno_st_header_t CNO_HPACK_STATIC_TABLE [] = {
     { { ":authority",                  10 }, { 0 } },
     { { ":method",                      7 }, { "GET",            3 } },
     { { ":method",                      7 }, { "POST",           4 } },
@@ -98,5 +94,7 @@ static const struct cno_st_header_t CNO_STATIC_TABLE [] = {
     { { "www-authenticate",            16 }, { 0 } },
 };
 
+
+static const size_t CNO_HPACK_STATIC_TABLE_SIZE = sizeof(CNO_HPACK_STATIC_TABLE) / sizeof(struct cno_st_header_t);
 
 #endif
