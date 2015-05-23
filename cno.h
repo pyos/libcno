@@ -120,8 +120,12 @@ struct cno_st_stream_t {
     size_t id;
     size_t window_recv;
     size_t window_send;
+    enum CNO_FRAME_TYPE last_frame;
     enum CNO_STREAM_STATE state;
     struct cno_st_message_t msg;
+    struct cno_st_hpack_t decoder;
+    struct cno_st_hpack_t encoder;
+    struct cno_st_io_vector_t cache;
 };
 
 
@@ -142,6 +146,7 @@ struct cno_st_connection_t {
     int closed;
     size_t window_recv;
     size_t window_send;
+    size_t last_stream;
     struct cno_st_io_vector_tmp_t buffer;
     struct cno_st_frame_t frame;
     struct cno_st_settings_t settings;
