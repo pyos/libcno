@@ -53,6 +53,7 @@ struct cno_st_io_vector_tmp_t {
 };
 
 
+CNO_STRUCT_EXPORT(io_vector_tmp);
 CNO_STRUCT_EXPORT(io_vector);
 CNO_STRUCT_EXPORT(list_link);
 
