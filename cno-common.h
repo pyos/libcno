@@ -19,8 +19,8 @@
 #define CNO_ERROR_WOULD_BLOCK(m, ...)     CNO_ERROR_SET(CNO_ERRNO_WOULD_BLOCK,     m,  ##__VA_ARGS__)
 
 
-#define CNO_LIST_LINK(T) T *prev;  T *next
-#define CNO_LIST_ROOT(T) T *first; T *last
+#define CNO_LIST_LINK(T) T *prev; T *next
+#define CNO_LIST_ROOT(T) T *last; T *first
 
 
 enum CNO_ERRNO {
@@ -65,6 +65,7 @@ const char * cno_error_file (void);
 const char * cno_error_text (void);
 const char * cno_error_name (void);
 
+void cno_list_init         (void *node);
 void cno_list_insert_after (void *node, void *next);
 void cno_list_remove       (void *node);
 

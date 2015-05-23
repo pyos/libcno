@@ -24,6 +24,9 @@ int cno_error_set(int code, const char *file, int line, const char *fmt, ...)
     va_start(vl, fmt);
     vsnprintf(_cno_error.text, sizeof(_cno_error.text), fmt, vl);
     va_end(vl);
+    #ifdef CNO_ABORT_ON_ERROR
+    abort();
+    #endif
     return CNO_PROPAGATE;
 }
 
@@ -44,6 +47,14 @@ const char * cno_error_name (void)
         case CNO_ERRNO_INVALID_STREAM:  return "stream does not exist";
         default: return "unknown error";
     }
+}
+
+
+void cno_list_init(void *node)
+{
+    struct cno_st_list_link_t *node_ = (struct cno_st_list_link_t *) node;
+    node_->next = node_;
+    node_->prev = node_;
 }
 
 
