@@ -381,7 +381,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
             }
 
             // TODO parse error code.
-            return CNO_ERROR_TRANSPORT("connection lost");
+            return CNO_OK;
         }
 
         case CNO_FRAME_RST_STREAM: {
@@ -923,11 +923,11 @@ int cno_connection_fire(cno_connection_t *conn)
         }
 
         case CNO_CONNECTION_INIT: {
-            conn->state = CNO_CONNECTION_PREFACE;
-
             if (cno_connection_send_preface(conn)) {
                 STOP(CNO_PROPAGATE);
             }
+
+            conn->state = CNO_CONNECTION_PREFACE;
         } // fallthrough
 
         case CNO_CONNECTION_PREFACE: {
@@ -935,13 +935,16 @@ int cno_connection_fire(cno_connection_t *conn)
                 WAIT(conn->buffer.size >= CNO_PREFACE.size);
 
                 if (strncmp(conn->buffer.data, CNO_PREFACE.data, CNO_PREFACE.size)) {
-                    STOP(CNO_ERROR_TRANSPORT("invalid HTTP 2 preface: no client preface"));
+                    STOP(CNO_ERROR_TRANSPORT("invalid HTTP 2 client preface"));
                 }
 
                 cno_io_vector_shift(&conn->buffer, CNO_PREFACE.size);
             }
+
+            conn->state = CNO_CONNECTION_READY_NO_SETTINGS;
         }  // fallthrough
 
+        case CNO_CONNECTION_READY_NO_SETTINGS:
         case CNO_CONNECTION_READY: {
             WAIT(conn->buffer.size >= 9);
 
@@ -958,7 +961,7 @@ int cno_connection_fire(cno_connection_t *conn)
                 //      => CONNECTION_ERROR
             }
 
-            if (conn->state == CNO_CONNECTION_PREFACE && conn->frame.type != CNO_FRAME_SETTINGS) {
+            if (conn->state == CNO_CONNECTION_READY_NO_SETTINGS && conn->frame.type != CNO_FRAME_SETTINGS) {
                 STOP(CNO_ERROR_TRANSPORT("invalid HTTP 2 preface: got %s, not SETTINGS", cno_frame_get_name(&conn->frame)));
             }
 
