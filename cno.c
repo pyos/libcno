@@ -518,7 +518,8 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                     return CNO_PROPAGATE;
                 }
 
-                cno_message_t msg = { 2, 0 };
+                cno_message_t msg = { 0 };
+                msg.major = 2;
                 msg.headers_len = limit;
                 msg.headers = headers;
                 int state = CNO_OK;
@@ -702,6 +703,7 @@ int cno_connection_fire(cno_connection_t *conn)
             cno_stream_t *stream = conn->streams.first;
             CNO_ZERO(&stream->msg);
             stream->msg.major = 1;
+            stream->msg.minor = 1;
             WAIT(conn->buffer.size);
 
             // The HTTP 2 preface starts with pseudo-broken HTTP/1.x.
@@ -743,6 +745,10 @@ int cno_connection_fire(cno_connection_t *conn)
                 STOP(CNO_ERROR_TRANSPORT("bad HTTP/1.x request"));
             }
 
+            if (stream->msg.minor != 1) {
+                STOP(CNO_ERROR_TRANSPORT("HTTP/1.%d not supported", stream->msg.minor));
+            }
+
             for (it = 0; it < header_num; ++it) {
                 char * name  = (char *) headers[it].name;
                 size_t size  = (size_t) headers[it].name_len;
@@ -766,8 +772,7 @@ int cno_connection_fire(cno_connection_t *conn)
                     };
 
                     cno_message_t upgrade_msg = {
-                        stream->msg.major, stream->msg.minor, 101,
-                        /* chunked */  0, /* method */ {0}, /* path */ {0},
+                        101, /* chunked */  0, /* method */ {0}, /* path */ {0},
                         /* headers_len */ 2, upgrade_headers
                     };
 
@@ -1051,6 +1056,8 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
             size_t i;
             char head[4096];
             char *tg = head;
+            msg->major = 1;
+            msg->minor = 1;
 
             if (conn->client) {
                 if (msg->method.size + msg->path.size >= 4084) {
@@ -1059,10 +1066,10 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
 
                 memcpy(tg, msg->method.data, msg->method.size); tg += msg->method.size; *tg++ = ' ';
                 memcpy(tg, msg->path.data,   msg->path.size);   tg += msg->path.size;
-                sprintf(tg, " HTTP/1.%d\r\n", msg->minor);
+                sprintf(tg, " HTTP/1.1\r\n");
                 tg += strlen(tg);
             } else {
-                sprintf(head, "HTTP/1.%d %d %s\r\n", msg->minor, msg->code, cno_message_literal(msg));
+                sprintf(head, "HTTP/1.1 %d %s\r\n", msg->code, cno_message_literal(msg));
                 tg += strlen(head);
             }
 

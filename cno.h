@@ -102,8 +102,6 @@ struct cno_st_frame_t {
 
 
 struct cno_st_message_t {
-    int major;
-    int minor;
     int code;
     int chunked;
     struct cno_st_io_vector_t method;
@@ -111,6 +109,8 @@ struct cno_st_message_t {
     size_t headers_len;
     struct cno_st_header_t *headers;
     size_t remaining;
+    int major;
+    int minor;
 };
 
 
