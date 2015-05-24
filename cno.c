@@ -1135,6 +1135,7 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
         return CNO_PROPAGATE;
     }
 
+    cno_io_vector_clear(&frame.payload);
     return CNO_OK;
 }
 
