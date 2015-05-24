@@ -20,7 +20,6 @@ enum CNO_CONNECTION_KIND {
 enum CNO_CONNECTION_STATE {
     CNO_CONNECTION_CLOSED,
     CNO_CONNECTION_INIT,
-    CNO_CONNECTION_UPGRADE,
     CNO_CONNECTION_PREFACE,
     CNO_CONNECTION_READY,
     CNO_CONNECTION_READING,
@@ -159,6 +158,7 @@ struct cno_st_connection_t {
     void * on_message_start;
     void * on_message_data;
     void * on_message_end;
+    void * on_pong;
 };
 
 
@@ -178,6 +178,7 @@ CNO_DEF_CALLBACK(cno_connection_t, on_stream_end,    size_t);
 CNO_DEF_CALLBACK(cno_connection_t, on_message_start, size_t, cno_message_t *);
 CNO_DEF_CALLBACK(cno_connection_t, on_message_data,  size_t, const char *, size_t);
 CNO_DEF_CALLBACK(cno_connection_t, on_message_end,   size_t, int disconnect);
+CNO_DEF_CALLBACK(cno_connection_t, on_pong, const char [8]);
 
 
 static const struct cno_st_io_vector_t CNO_PREFACE = { "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24 };
