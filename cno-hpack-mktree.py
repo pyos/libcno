@@ -6,9 +6,8 @@ import itertools
 LEAF_EOS   = 1
 LEAF_CHAR  = 2
 LEAF_ERROR = 4
-# Maximum no. of Huffman subtrees addressable by a chosen data type.
-# This is precisely `2 ** (sizeof(id_type) * 8 - bits_per_step)`.
-TREE_LIMIT = 2 ** (2 * 8 - 4)  # for unsigned short and 4 bits per step
+# Upper limit on the contents of the data type used to store tree ids + 1.
+TREE_LIMIT = 1 << 16  # unsigned short
 
 TEMPLATE_NODE = '{{{},{},{}}},'
 TEMPLATE = '''#include "cno.h"
@@ -202,7 +201,7 @@ def gen_header(root, bits_per_step=4):
 
     trees = list(filter(require.__contains__, trees))
 
-    assert len(trees) <= TREE_LIMIT, 'not enough address space'
+    assert len(trees) <= (TREE_LIMIT >> bits_per_step), 'not enough address space'
 
     # Find out which states are valid end states. These are precisely those states
     # from which the EOS character (0b1111...1) can be reached.
@@ -223,9 +222,9 @@ def gen_header(root, bits_per_step=4):
             if subtree is None:
                 yield TEMPLATE_NODE.format(LEAF_ERROR, 0, 0)
             elif char is not None:
-                yield TEMPLATE_NODE.format(LEAF_CHAR | eof, char, index[subtree] << 4)
+                yield TEMPLATE_NODE.format(LEAF_CHAR | eof, char, index[subtree] << bits_per_step)
             else:
-                yield TEMPLATE_NODE.format(eof, 0, index[subtree] << 4)
+                yield TEMPLATE_NODE.format(eof, 0, index[subtree] << bits_per_step)
 
 
 print(TEMPLATE % ''.join(gen_header(make_tree(xs, 0, len(xs), 0))))

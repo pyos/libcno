@@ -28,15 +28,12 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
     stream->state = CNO_STREAM_IDLE;
     stream->window_recv = conn->settings.initial_window_size;
     stream->window_send = conn->settings.initial_window_size;
-    stream->decoder.limit_upper = stream->decoder.limit = conn->settings.header_table_size;
-    stream->encoder.limit_upper = stream->encoder.limit = conn->settings.header_table_size;
     stream->cache.data = NULL;
     stream->cache.size = 0;
-    cno_list_init(&stream->decoder);
-    cno_list_init(&stream->encoder);
     cno_list_insert_after(conn, stream);
 
     if (CNO_FIRE(conn, on_stream_start, id)) {
+        cno_list_remove(stream);
         free(stream);
         (void) CNO_PROPAGATE;
         return NULL;
@@ -48,6 +45,7 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
 
 static void cno_stream_destroy(cno_connection_t *conn, cno_stream_t *stream)
 {
+    cno_io_vector_clear(&stream->cache);
     cno_list_remove(stream);
     free(stream);
 }
@@ -62,6 +60,8 @@ static int cno_stream_destroy_clean(cno_connection_t *conn, cno_stream_t *stream
             return CNO_PROPAGATE;
         }
     }
+
+    stream->state = CNO_STREAM_CLOSED;
 
     if (CNO_FIRE(conn, on_stream_end, stream->id)) {
         return CNO_PROPAGATE;
@@ -99,8 +99,6 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     CNO_ZERO(conn);
     conn->kind  = kind;
     conn->state = kind == CNO_HTTP2_CLIENT ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
-    conn->streams.first = (cno_stream_t *) conn;
-    conn->streams.last  = (cno_stream_t *) conn;
     conn->last_stream = 0;
     conn->settings.header_table_size = 4096;
     conn->settings.enable_push = 1;
@@ -110,6 +108,11 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     conn->settings.max_header_list_size = -1;
     conn->window_recv = 0;
     conn->window_send = 0;
+    conn->decoder.limit_upper = conn->decoder.limit = conn->settings.header_table_size;
+    conn->encoder.limit_upper = conn->encoder.limit = conn->settings.header_table_size;
+    cno_list_init(&conn->decoder);
+    cno_list_init(&conn->encoder);
+    cno_list_init(conn);
     return conn;
 }
 
@@ -119,6 +122,8 @@ void cno_connection_destroy(cno_connection_t *conn)
     cno_io_vector_reset(&conn->buffer);
     cno_io_vector_clear((cno_io_vector_t *) &conn->buffer);
     cno_io_vector_clear((cno_io_vector_t *) &conn->frame.payload);
+    cno_hpack_clear(&conn->encoder);
+    cno_hpack_clear(&conn->decoder);
 
     while (conn->streams.first != (cno_stream_t *) conn) {
         cno_stream_destroy(conn, conn->streams.first);
@@ -175,12 +180,16 @@ int cno_connection_lost(cno_connection_t *conn)
 #define CNO_READ_4BYTE(tg, ptr) do { tg = *ptr++ << 24; CNO_READ_3BYTE(tg, ptr); } while (0)
 
 
-static int cno_connection_send_frame(cno_connection_t *conn, cno_frame_t *frame)
+static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
 {
     char  header[9];
     char *ptr = header;
     size_t length = frame->payload.size;
     size_t stream = frame->stream_id;
+
+    if (frame->stream == NULL) {
+        frame->stream = cno_stream_find(conn, stream);
+    }
 
     if (length > conn->settings.max_frame_size) {
         return CNO_ERROR_ASSERTION("frame too big (%lu > %lu)", length, conn->settings.max_frame_size);
@@ -196,7 +205,7 @@ static int cno_connection_send_frame(cno_connection_t *conn, cno_frame_t *frame)
 
         if (frame->stream) {
             if (length > frame->stream->window_send) {
-                return CNO_ERROR_WOULD_BLOCK("frame exceeds connection flow window (%lu > %lu)",
+                return CNO_ERROR_WOULD_BLOCK("frame exceeds stream flow window (%lu > %lu)",
                     length, frame->stream->window_send);
             }
 
@@ -225,7 +234,7 @@ static int cno_connection_send_frame(cno_connection_t *conn, cno_frame_t *frame)
 }
 
 
-static int cno_connection_send_goaway(cno_connection_t *conn, size_t code, const char *data, size_t length)
+static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
 {
     char descr[8];
     char *ptr = descr;
@@ -233,31 +242,17 @@ static int cno_connection_send_goaway(cno_connection_t *conn, size_t code, const
     CNO_WRITE_4BYTE(ptr, conn->last_stream);
     CNO_WRITE_4BYTE(ptr, code);
     cno_frame_t error = { CNO_FRAME_GOAWAY };
+    error.payload.data = descr;
+    error.payload.size = sizeof(descr);
 
-    if (!length) {
-        error.payload.data = descr;
-        error.payload.size = sizeof(descr);
-    } else {
-        if (cno_io_vector_extend(&error.payload, data, length)
-         || cno_io_vector_extend(&error.payload, descr, sizeof(descr))) {
-            return CNO_PROPAGATE;
-        }
-    }
-
-    int ok = cno_connection_send_frame(conn, &error);
-
-    if (length) {
-        cno_io_vector_clear(&error.payload);
-    }
-
-    return ok;
+    return cno_frame_write(conn, &error);
 }
 
 
-static int cno_connection_rst_stream(cno_connection_t *conn, size_t stream, size_t code)
+static int cno_frame_write_rst_stream(cno_connection_t *conn, size_t stream, size_t code)
 {
     if (stream == 0) {
-        if (cno_connection_send_goaway(conn, code, NULL, 0)) {
+        if (cno_frame_write_goaway(conn, code)) {
             return CNO_PROPAGATE;
         }
 
@@ -278,7 +273,7 @@ static int cno_connection_rst_stream(cno_connection_t *conn, size_t stream, size
     cno_frame_t error = { CNO_FRAME_RST_STREAM };
     error.payload.data = descr;
     error.payload.size = 4;
-    return cno_connection_send_frame(conn, &error);
+    return cno_frame_write(conn, &error);
 }
 
 
@@ -288,7 +283,6 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
     unsigned char *ptr = (unsigned char *) frame->payload.data;
     unsigned char *end = sz + ptr;
     cno_stream_t *stream = frame->stream = cno_stream_find(conn, frame->stream_id);
-    // ERROR_INVALID_STREAM ignored.
 
     if (cno_frame_is_flow_controlled(frame)) {
         conn->window_recv -= 9 + sz;
@@ -296,6 +290,8 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
         if (stream) {
             stream->window_recv -= 9 + sz;
         }
+
+        // TODO send WINDOW_UPDATE?
     }
 
     if (stream && frame->type != CNO_FRAME_CONTINUATION) {
@@ -306,22 +302,18 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
         case CNO_FRAME_SETTINGS: {
             if (frame->flags & CNO_FLAG_ACK) {
                 if (sz) {
-                    if (cno_connection_send_goaway(conn, CNO_STATE_FRAME_SIZE_ERROR, NULL, 0)) {
-                        return CNO_PROPAGATE;
-                    }
-
-                    return CNO_ERROR_TRANSPORT("bad SETTINGS (ack with length = %lu)", sz);
+                    return cno_frame_write_goaway(conn, CNO_STATE_FRAME_SIZE_ERROR)
+                        ? CNO_PROPAGATE
+                        : CNO_ERROR_TRANSPORT("bad SETTINGS (ack with length = %lu)", sz);
                 }
 
                 return CNO_OK;
             }
 
             if (sz % 6) {
-                if (cno_connection_send_goaway(conn, CNO_STATE_FRAME_SIZE_ERROR, NULL, 0)) {
-                    return CNO_PROPAGATE;
-                }
-
-                return CNO_ERROR_TRANSPORT("bad SETTINGS (length = %lu)", sz);
+                return cno_frame_write_goaway(conn, CNO_STATE_FRAME_SIZE_ERROR)
+                    ? CNO_PROPAGATE
+                    : CNO_ERROR_TRANSPORT("bad SETTINGS (length = %lu)", sz);
             }
 
             while (ptr != end) {
@@ -343,22 +335,18 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                 conn->window_send = conn->window_recv = conn->settings.initial_window_size;
             }
 
-            cno_stream_t *stream = conn->streams.first;
-
-            while (stream != (cno_stream_t *) conn) {
-                // The other side controls the upper limit on the encoder and
-                // the lower limit on the decoder; we control the upper limit
-                // on the decoder and the lower limit on the encoder.
-                // (The lower limit is controlled in HPACK itself.)
-                stream->encoder.limit_upper = conn->settings.header_table_size;
-                if (stream->encoder.limit < stream->encoder.limit_upper) {
-                    stream->encoder.limit = stream->encoder.limit_upper;
-                }
+            // The other side controls the upper limit on the encoder and
+            // the lower limit on the decoder; we control the upper limit
+            // on the decoder and the lower limit on the encoder.
+            // (The lower limit is controlled in HPACK itself.)
+            conn->encoder.limit_upper = conn->settings.header_table_size;
+            if (conn->encoder.limit < conn->encoder.limit_upper) {
+                conn->encoder.limit = conn->encoder.limit_upper;
             }
 
             cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK };
 
-            if (cno_connection_send_frame(conn, &ack)) {
+            if (cno_frame_write(conn, &ack)) {
                 return CNO_PROPAGATE;
             }
 
@@ -367,55 +355,35 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
 
         case CNO_FRAME_WINDOW_UPDATE: {
             if (sz != 4) {
-                if (cno_connection_send_goaway(conn, CNO_STATE_FRAME_SIZE_ERROR, NULL, 0)) {
-                    return CNO_PROPAGATE;
-                }
-
-                return CNO_ERROR_TRANSPORT("bad WINDOW_UPDATE (length = %lu)", sz);
+                return cno_frame_write_goaway(conn, CNO_STATE_FRAME_SIZE_ERROR)
+                    ? CNO_PROPAGATE
+                    : CNO_ERROR_TRANSPORT("bad WINDOW_UPDATE (length = %lu)", sz);
             }
 
             size_t increment;
             CNO_READ_4BYTE(increment, ptr);
 
-            if (frame->stream_id == 0) {
-                #ifdef CNO_HTTP2_STRICT
+            #ifdef CNO_HTTP2_STRICT
                 if (increment == 0) {
-                    if (cno_connection_send_goaway(conn, CNO_STATE_PROTOCOL_ERROR, NULL, 0)) {
-                        return CNO_PROPAGATE;
-                    }
-
-                    return CNO_ERROR_TRANSPORT("bad WINDOW_UPDATE (incr = %lu)", increment);
+                    return cno_frame_write_rst_stream(conn, frame->stream_id, CNO_STATE_PROTOCOL_ERROR)
+                        ? CNO_PROPAGATE
+                        : CNO_ERROR_TRANSPORT("bad WINDOW_UPDATE (incr = %lu)", increment);
                 }
-                #endif
+            #endif
 
+            if (frame->stream_id == 0) {
                 conn->window_send += increment;
 
                 if (conn->window_send >= 0x80000000u) {
-                    if (cno_connection_send_goaway(conn, CNO_STATE_FLOW_CONTROL_ERROR, NULL, 0)) {
-                        return CNO_PROPAGATE;
-                    }
-
-                    return CNO_ERROR_TRANSPORT("flow control window got too big (res = %lu)", conn->window_send);
+                    return cno_frame_write_goaway(conn, CNO_STATE_FLOW_CONTROL_ERROR)
+                        ? CNO_PROPAGATE
+                        : CNO_ERROR_TRANSPORT("flow control window got too big (res = %lu)", conn->window_send);
                 }
             } else if (stream != NULL) {
-                #ifdef CNO_HTTP2_STRICT
-                if (increment == 0) {
-                    if (cno_connection_rst_stream(conn, frame->stream_id, CNO_STATE_PROTOCOL_ERROR)) {
-                        return CNO_PROPAGATE;
-                    }
-
-                    return CNO_OK;  // not a connection error
-                }
-                #endif
-
                 stream->window_send += increment;
 
                 if (stream->window_send >= 0x80000000u) {
-                    if (cno_connection_rst_stream(conn, frame->stream_id, CNO_STATE_PROTOCOL_ERROR)) {
-                        return CNO_PROPAGATE;
-                    }
-
-                    return CNO_OK;
+                    return cno_frame_write_rst_stream(conn, frame->stream_id, CNO_STATE_PROTOCOL_ERROR);
                 }
             }
 
@@ -431,7 +399,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
             return CNO_ERROR_TRANSPORT("connection lost");
         }
 
-        case CNO_FRAME_HEADERS: {
+        case CNO_FRAME_HEADERS: { recv_headers:
             if (stream == NULL) {
                 stream = cno_stream_new(conn, frame->stream_id);
 
@@ -443,18 +411,15 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
             if (stream->state != CNO_STREAM_IDLE &&
                 stream->state != CNO_STREAM_CLOSED_LOCAL &&
                 stream->state != CNO_STREAM_RESERVED_REMOTE) {
-                    if (cno_connection_send_goaway(conn, CNO_STATE_PROTOCOL_ERROR, NULL, 0)) {
-                        return CNO_PROPAGATE;
-                    }
-
-                    return CNO_ERROR_TRANSPORT("got HEADERS while stream is in invalid state");
+                    return cno_frame_write_goaway(conn, CNO_STATE_PROTOCOL_ERROR)
+                        ? CNO_PROPAGATE
+                        : CNO_ERROR_TRANSPORT("got HEADERS while stream is in invalid state");
             }
 
             stream->state = stream->state == CNO_STREAM_IDLE
                 ? CNO_STREAM_OPEN
                 : CNO_STREAM_CLOSED_LOCAL;
 
-        recv_headers:
             if (cno_io_vector_extend(&stream->cache, frame->payload.data, frame->payload.size)) {
                 return CNO_PROPAGATE;
             }
@@ -472,7 +437,8 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                     return CNO_ERROR_NO_MEMORY;
                 }
 
-                if (cno_hpack_decode(&stream->decoder, &stream->cache, headers, &limit)) {
+                if (cno_hpack_decode(&conn->decoder, &stream->cache, headers, &limit)) {
+                    (void) cno_frame_write_goaway(conn, CNO_STATE_COMPRESSION_ERROR);
                     free(headers);
                     return CNO_PROPAGATE;
                 }
@@ -480,8 +446,8 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                 cno_message_t msg = { 2, 0 };
                 msg.headers_len = limit;
                 msg.headers = headers;
-                size_t k;
                 int state = CNO_OK;
+                size_t k;
 
                 for (k = 0; k < limit; ++k) {
                     char * name  = (char *) headers[k].name.data;
@@ -499,11 +465,13 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                             if ('0' <= *ptr && *ptr <= '9') {
                                 msg.code += *ptr - '0';
                             } else {
-                                if (cno_connection_rst_stream(conn, frame->stream_id, CNO_STATE_PROTOCOL_ERROR)) {
-                                    return CNO_PROPAGATE;
+                                if (cno_frame_write_rst_stream(conn, frame->stream_id, CNO_STATE_PROTOCOL_ERROR)) {
+                                    state = CNO_PROPAGATE;
+                                    goto headers_stop;
                                 }
 
-                                return CNO_ERROR_TRANSPORT("bad status code");
+                                state = CNO_OK;
+                                goto headers_stop;
                             }
                         }
                     } else
@@ -524,8 +492,6 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                     goto headers_stop;
                 }
 
-                goto headers_fin;
-
             headers_stop:
                 for (k = 0; k < limit; ++k) {
                     cno_io_vector_clear(&headers[k].name);
@@ -533,18 +499,24 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                 }
 
                 free(headers);
-                return state;
+
+                if (state != CNO_OK) {
+                    return state;
+                }
             }
 
-        headers_fin:
             if (frame->flags & CNO_FLAG_END_STREAM) {
                 if (stream->state == CNO_STREAM_CLOSED_LOCAL) {
                     stream->state = CNO_STREAM_CLOSED;
+                    // This will also fire on_message_end:
                     if (cno_stream_destroy_clean(conn, stream)) {
                         return CNO_PROPAGATE;
                     }
-                } else {
+                } else
+
+                if (stream->state != CNO_STREAM_CLOSED) {
                     stream->state = CNO_STREAM_CLOSED_REMOTE;
+
                     if (CNO_FIRE(conn, on_message_end, frame->stream_id, 0)) {
                         return CNO_PROPAGATE;
                     }
@@ -554,45 +526,34 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
             return CNO_OK;
         }
 
-        case CNO_FRAME_DATA:
-        recv_data:
+        case CNO_FRAME_DATA: recv_data:
         case CNO_FRAME_PRIORITY:
         case CNO_FRAME_RST_STREAM:
         case CNO_FRAME_PUSH_PROMISE:
         case CNO_FRAME_PING: {
-            (void) CNO_ERROR_NOT_IMPLEMENTED("frame type %d (%s)", frame->type, cno_frame_get_name(frame));
-            (void) cno_connection_send_goaway(conn, CNO_STATE_INTERNAL_ERROR, NULL, 0);
-            return CNO_PROPAGATE;
+            return cno_frame_write_goaway(conn, CNO_STATE_INTERNAL_ERROR)
+                ? CNO_PROPAGATE
+                : CNO_ERROR_NOT_IMPLEMENTED("frame type %d (%s)", frame->type, cno_frame_get_name(frame));
         }
 
         case CNO_FRAME_CONTINUATION: {
             if (!stream) {
-                if (cno_connection_send_goaway(conn, CNO_STATE_PROTOCOL_ERROR, NULL, 0)) {
-                    return CNO_PROPAGATE;
-                }
-
-                return CNO_ERROR_TRANSPORT("CONTINUATION on a non-existent stream");
+                return cno_frame_write_goaway(conn, CNO_STATE_PROTOCOL_ERROR)
+                    ? CNO_PROPAGATE
+                    : CNO_ERROR_TRANSPORT("CONTINUATION on a non-existent stream");
             }
 
             switch (stream->last_frame) {
                 case CNO_FRAME_HEADERS: goto recv_headers;
                 case CNO_FRAME_DATA:    goto recv_data;
-                default: {
-                    if (cno_connection_rst_stream(conn, frame->stream_id, CNO_STATE_PROTOCOL_ERROR)) {
-                        return CNO_PROPAGATE;
-                    }
-
-                    return CNO_OK;
-                }
+                default: return cno_frame_write_rst_stream(conn, frame->stream_id, CNO_STATE_PROTOCOL_ERROR);
             }
         }
 
         default: {
-            if (cno_connection_send_goaway(conn, CNO_STATE_PROTOCOL_ERROR, NULL, 0)) {
-                return CNO_PROPAGATE;
-            }
-
-            return CNO_ERROR_TRANSPORT("unknown frame type %d", frame->type);
+            return cno_frame_write_goaway(conn, CNO_STATE_PROTOCOL_ERROR)
+                ? CNO_PROPAGATE
+                : CNO_ERROR_TRANSPORT("unknown frame type %d", frame->type);
         }
     }
 
@@ -610,7 +571,7 @@ static int cno_connection_send_preface(cno_connection_t *conn)
 
     cno_frame_t settings = { CNO_FRAME_SETTINGS };
 
-    if (cno_connection_send_frame(conn, &settings)) {
+    if (cno_frame_write(conn, &settings)) {
         return CNO_PROPAGATE;
     }
 

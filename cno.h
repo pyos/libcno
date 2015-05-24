@@ -123,8 +123,6 @@ struct cno_st_stream_t {
     enum CNO_FRAME_TYPE last_frame;
     enum CNO_STREAM_STATE state;
     struct cno_st_message_t msg;
-    struct cno_st_hpack_t decoder;
-    struct cno_st_hpack_t encoder;
     struct cno_st_io_vector_t cache;
 };
 
@@ -150,6 +148,8 @@ struct cno_st_connection_t {
     struct cno_st_io_vector_tmp_t buffer;
     struct cno_st_frame_t frame;
     struct cno_st_settings_t settings;
+    struct cno_st_hpack_t decoder;
+    struct cno_st_hpack_t encoder;
     void * cb_data;
     void * on_frame;
     void * on_frame_send;
