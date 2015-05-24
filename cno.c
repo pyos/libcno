@@ -183,10 +183,10 @@ int cno_connection_lost(cno_connection_t *conn)
 #define CNO_WRITE_2BYTE(ptr, src) do { *ptr++ = src >>  8; CNO_WRITE_1BYTE(ptr, src); } while (0)
 #define CNO_WRITE_3BYTE(ptr, src) do { *ptr++ = src >> 16; CNO_WRITE_2BYTE(ptr, src); } while (0)
 #define CNO_WRITE_4BYTE(ptr, src) do { *ptr++ = src >> 24; CNO_WRITE_3BYTE(ptr, src); } while (0)
-#define CNO_READ_1BYTE(tg, ptr) tg = *ptr++
-#define CNO_READ_2BYTE(tg, ptr) do { tg = *ptr++ <<  8; CNO_READ_1BYTE(tg, ptr); } while (0)
-#define CNO_READ_3BYTE(tg, ptr) do { tg = *ptr++ << 16; CNO_READ_2BYTE(tg, ptr); } while (0)
-#define CNO_READ_4BYTE(tg, ptr) do { tg = *ptr++ << 24; CNO_READ_3BYTE(tg, ptr); } while (0)
+#define CNO_READ_1BYTE(tg, ptr) tg |= *ptr++
+#define CNO_READ_2BYTE(tg, ptr) do { tg |= *ptr++ <<  8; CNO_READ_1BYTE(tg, ptr); } while (0)
+#define CNO_READ_3BYTE(tg, ptr) do { tg |= *ptr++ << 16; CNO_READ_2BYTE(tg, ptr); } while (0)
+#define CNO_READ_4BYTE(tg, ptr) do { tg |= *ptr++ << 24; CNO_READ_3BYTE(tg, ptr); } while (0)
 
 
 static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
@@ -430,8 +430,8 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
             }
 
             while (ptr != end) {
-                size_t setting; CNO_READ_2BYTE(setting, ptr);
-                size_t value;   CNO_READ_4BYTE(value,   ptr);
+                size_t setting = 0; CNO_READ_2BYTE(setting, ptr);
+                size_t value   = 0; CNO_READ_4BYTE(value,   ptr);
 
                 switch (setting) {
                     case CNO_SETTINGS_HEADER_TABLE_SIZE:      conn->settings.header_table_size      = value; break;
@@ -463,7 +463,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                     : CNO_ERROR_TRANSPORT("bad WINDOW_UPDATE (length = %lu)", sz);
             }
 
-            size_t increment;
+            size_t increment = 0;
             CNO_READ_4BYTE(increment, ptr);
 
             #ifdef CNO_HTTP2_STRICT
@@ -950,12 +950,13 @@ int cno_connection_fire(cno_connection_t *conn)
         case CNO_CONNECTION_READY: {
             WAIT(conn->buffer.size >= 9);
 
+            size_t m = 0;
             unsigned char *base = (unsigned char *) conn->buffer.data;
             CNO_ZERO(&conn->frame);
-            CNO_READ_3BYTE(conn->frame.payload.size, base);
-            CNO_READ_1BYTE(conn->frame.type,         base);
-            CNO_READ_1BYTE(conn->frame.flags,        base);
-            CNO_READ_4BYTE(conn->frame.stream_id,    base);
+            CNO_READ_3BYTE(m, base); conn->frame.payload.size = m; m = 0;
+            CNO_READ_1BYTE(m, base); conn->frame.type         = m; m = 0;
+            CNO_READ_1BYTE(m, base); conn->frame.flags        = m; m = 0;
+            CNO_READ_4BYTE(m, base); conn->frame.stream_id    = m; m = 0;
 
             if (conn->frame.payload.size > conn->settings.max_frame_size) {
                 // TODO send FRAME_SIZE_ERROR
