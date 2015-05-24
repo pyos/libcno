@@ -923,12 +923,14 @@ int cno_connection_fire(cno_connection_t *conn)
         }
 
         case CNO_CONNECTION_INIT: {
+            conn->state = CNO_CONNECTION_PREFACE;
+
             if (cno_connection_send_preface(conn)) {
                 STOP(CNO_PROPAGATE);
             }
 
-            conn->state = CNO_CONNECTION_PREFACE;
-        } // fallthrough
+            break;
+        }
 
         case CNO_CONNECTION_PREFACE: {
             if (!conn->client) {
