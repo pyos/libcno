@@ -29,9 +29,9 @@ CNO_STRUCT_EXPORT(header);
 CNO_STRUCT_EXPORT(hpack);
 
 
-int cno_hpack_decode(cno_hpack_t *state, cno_io_vector_t *source, cno_header_t *array, size_t *limit);
-int cno_hpack_encode(cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *array, size_t amount);
-
+void cno_hpack_clear  (cno_hpack_t *state);
+int  cno_hpack_decode (cno_hpack_t *state, cno_io_vector_t *source, cno_header_t *array, size_t *limit);
+int  cno_hpack_encode (cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *array, size_t amount);
 
 static const struct cno_st_header_t CNO_HPACK_STATIC_TABLE [] = {
     { { ":authority",                  10 }, { 0 } },

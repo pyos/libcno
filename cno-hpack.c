@@ -5,6 +5,21 @@
 #include "cno-hpack-huffman.h"
 
 
+void cno_hpack_clear(cno_hpack_t *state)
+{
+    cno_header_table_t *clear = state->first;
+    cno_header_table_t *next;
+
+    while (clear != (cno_header_table_t *) state) {
+        next = clear->next;
+        cno_io_vector_clear(&clear->data.name);
+        cno_io_vector_clear(&clear->data.value);
+        free(clear);
+        clear = next;
+    }
+}
+
+
 static int cno_hpack_decode_uint(cno_io_vector_tmp_t *source, int prefix, size_t *result)
 {
     if (!source->size) {
@@ -216,12 +231,20 @@ static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source,
 
     if (indexed) {
         cno_header_table_t *entry = malloc(sizeof(cno_header_table_t));
+        CNO_ZERO(entry);
 
-        if (entry == NULL ||
-            cno_io_vector_extend(&entry->data.name, target->name.data, target->name.size)) {
-                cno_io_vector_clear(&target->name);
-                cno_io_vector_clear(&target->value);
-                return CNO_PROPAGATE;
+        if (entry == NULL) {
+            cno_io_vector_clear(&target->name);
+            cno_io_vector_clear(&target->value);
+            return CNO_PROPAGATE;
+        }
+
+        CNO_ZERO(entry);
+
+        if (cno_io_vector_extend(&entry->data.name, target->name.data, target->name.size)) {
+            cno_io_vector_clear(&target->name);
+            cno_io_vector_clear(&target->value);
+            return CNO_PROPAGATE;
         }
 
         if (cno_io_vector_extend(&entry->data.value, target->value.data, target->value.size)) {
