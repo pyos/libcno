@@ -9,9 +9,16 @@
 
 static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
 {
-    if (id <= conn->last_stream) {
-        (void) CNO_ERROR_TRANSPORT("invalid stream ID (%lu <= %lu)", id, conn->last_stream);
-        return NULL;
+    if (id % 2) {
+        if (id <= conn->last_client_stream) {
+            (void) CNO_ERROR_TRANSPORT("invalid client stream ID (%lu <= %lu)", id, conn->last_client_stream);
+            return NULL;
+        }
+    } else {
+        if (id <= conn->last_server_stream) {
+            (void) CNO_ERROR_TRANSPORT("invalid server stream ID (%lu <= %lu)", id, conn->last_server_stream);
+            return NULL;
+        }
     }
 
     cno_stream_t *stream = malloc(sizeof(cno_stream_t));
@@ -22,7 +29,11 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
     }
 
     CNO_ZERO(stream);
-    conn->last_stream = id;
+    if (id % 2) {
+        conn->last_client_stream = id;
+    } else {
+        conn->last_server_stream = id;
+    }
     stream->id = id;
     stream->last_frame = CNO_FRAME_RST_STREAM;
     stream->state = CNO_STREAM_IDLE;
@@ -98,7 +109,6 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     CNO_ZERO(conn);
     conn->kind  = kind;
     conn->state = kind == CNO_HTTP2_CLIENT ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
-    conn->last_stream = 0;
     conn->settings.header_table_size = 4096;
     conn->settings.enable_push = 1;
     conn->settings.max_concurrent_streams = -1;
@@ -237,14 +247,23 @@ static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
 {
     char descr[8];
     char *ptr = descr;
+    size_t last_stream = conn->client
+        ? conn->last_server_stream
+        : code == CNO_STATE_NO_ERROR ? (1UL << 31) - 1 : conn->last_client_stream;
 
-    CNO_WRITE_4BYTE(ptr, conn->last_stream);
+    CNO_WRITE_4BYTE(ptr, last_stream);
     CNO_WRITE_4BYTE(ptr, code);
     cno_frame_t error = { CNO_FRAME_GOAWAY };
     error.payload.data = descr;
     error.payload.size = sizeof(descr);
 
     return cno_frame_write(conn, &error);
+}
+
+
+int cno_connection_stop(cno_connection_t *conn)
+{
+    return cno_frame_write_goaway(conn, CNO_STATE_NO_ERROR);
 }
 
 
@@ -715,7 +734,8 @@ int cno_connection_fire(cno_connection_t *conn)
                 if  (conn->buffer.size >= CNO_PREFACE.size &&  may_be_http2) {
                     // Definitely HTTP2. Stream 1 should be recycled, though.
                     cno_stream_destroy(conn, stream);
-                    conn->last_stream = 0;
+                    conn->last_client_stream = 0;
+                    conn->last_server_stream = 0;
                     conn->state = CNO_CONNECTION_INIT;
                     break;
                 }

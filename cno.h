@@ -42,34 +42,34 @@ enum CNO_STREAM_STATE {
 
 
 enum CNO_FRAME_TYPE {
-    CNO_FRAME_DATA,
-    CNO_FRAME_HEADERS,
-    CNO_FRAME_PRIORITY,
-    CNO_FRAME_RST_STREAM,
-    CNO_FRAME_SETTINGS,
-    CNO_FRAME_PUSH_PROMISE,
-    CNO_FRAME_PING,
-    CNO_FRAME_GOAWAY,
-    CNO_FRAME_WINDOW_UPDATE,
-    CNO_FRAME_CONTINUATION,
+    CNO_FRAME_DATA = 0,
+    CNO_FRAME_HEADERS = 1,
+    CNO_FRAME_PRIORITY = 2,
+    CNO_FRAME_RST_STREAM = 3,
+    CNO_FRAME_SETTINGS = 4,
+    CNO_FRAME_PUSH_PROMISE = 5,
+    CNO_FRAME_PING = 6,
+    CNO_FRAME_GOAWAY = 7,
+    CNO_FRAME_WINDOW_UPDATE = 8,
+    CNO_FRAME_CONTINUATION = 9,
 };
 
 
 enum CNO_STATE_CODE {
-    CNO_STATE_NO_ERROR,
-    CNO_STATE_PROTOCOL_ERROR,
-    CNO_STATE_INTERNAL_ERROR,
-    CNO_STATE_FLOW_CONTROL_ERROR,
-    CNO_STATE_SETTINGS_TIMEOUT,
-    CNO_STATE_STREAM_CLOSED,
-    CNO_STATE_FRAME_SIZE_ERROR,
-    CNO_STATE_REFUSED_STREAM,
-    CNO_STATE_CANCEL,
-    CNO_STATE_COMPRESSION_ERROR,
-    CNO_STATE_CONNECT_ERROR,
-    CNO_STATE_ENHANCE_YOUR_CALM,
-    CNO_STATE_INADEQUATE_SECURITY,
-    CNO_STATE_HTTP_1_1_REQUIRED,
+    CNO_STATE_NO_ERROR = 0,
+    CNO_STATE_PROTOCOL_ERROR = 1,
+    CNO_STATE_INTERNAL_ERROR = 2,
+    CNO_STATE_FLOW_CONTROL_ERROR = 3,
+    CNO_STATE_SETTINGS_TIMEOUT = 4,
+    CNO_STATE_STREAM_CLOSED = 5,
+    CNO_STATE_FRAME_SIZE_ERROR = 6,
+    CNO_STATE_REFUSED_STREAM = 7,
+    CNO_STATE_CANCEL = 8,
+    CNO_STATE_COMPRESSION_ERROR = 9,
+    CNO_STATE_CONNECT_ERROR = 10,
+    CNO_STATE_ENHANCE_YOUR_CALM = 11,
+    CNO_STATE_INADEQUATE_SECURITY = 12,
+    CNO_STATE_HTTP_1_1_REQUIRED = 13,
 };
 
 
@@ -143,7 +143,8 @@ struct cno_st_connection_t {
     int closed;
     size_t window_recv;
     size_t window_send;
-    size_t last_stream;
+    size_t last_client_stream;
+    size_t last_server_stream;
     struct cno_st_io_vector_tmp_t buffer;
     struct cno_st_frame_t frame;
     struct cno_st_settings_t settings;
@@ -267,6 +268,7 @@ int                cno_connection_made          (cno_connection_t *conn);
 int                cno_connection_data_received (cno_connection_t *conn, const char *data, size_t length);
 int                cno_connection_fire          (cno_connection_t *conn);
 int                cno_connection_lost          (cno_connection_t *conn);
+int                cno_connection_stop          (cno_connection_t *conn);
 
 int cno_write_message (cno_connection_t *conn, size_t stream, cno_message_t *msg);
 int cno_write_data    (cno_connection_t *conn, size_t stream, const char *data, size_t length, int chunked);
