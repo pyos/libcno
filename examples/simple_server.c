@@ -7,72 +7,14 @@
 #include <unistd.h>
 
 #include "cno.h"
+// See this file for callbacks:
+#include "simple_common.h"
 
 
-void log_frame(int fd, cno_frame_t *frame, int recv)
+int respond_with_hello_world(cno_connection_t *conn, int *fd, size_t stream, int disconnect)
 {
-    const char *e = recv ? "recv" : "sent";
-    fprintf(stdout, "%d: %s frame %x (%s; flags: %x) on stream %lu\n", fd, e,
-        frame->type, cno_frame_get_name(frame), frame->flags, frame->stream_id);
-}
+    log_recv_message_end(conn, fd, stream, disconnect);
 
-
-void log_message(int fd, cno_message_t *msg, int recv)
-{
-    const char *e = recv ? "recv" : "sent";
-    fprintf(stdout, "%d: %s message HTTP/%d.%d %d, method = ", fd, e, msg->major, msg->minor, msg->code);
-    fwrite(msg->method.data, msg->method.size, 1, stdout);
-    fprintf(stdout, ", path = ");
-    fwrite(msg->path.data, msg->path.size, 1, stdout);
-    fprintf(stdout, ", headers:\n");
-
-    size_t k = 0;
-
-    for (; k < msg->headers_len; ++k) {
-        printf("    (%lu) ", msg->headers[k].name.size);
-        fwrite(msg->headers[k].name.data, msg->headers[k].name.size, 1, stdout);
-        printf(" = (%lu) ", msg->headers[k].value.size);
-        fwrite(msg->headers[k].value.data, msg->headers[k].value.size, 1, stdout);
-        printf("\n");
-    }
-}
-
-
-int frame_cb(cno_connection_t *conn, int *fd, cno_frame_t *frame)
-{
-    log_frame(*fd, frame, 1);
-    return CNO_OK;
-}
-
-
-int frame_send_cb(cno_connection_t *conn, int *fd, cno_frame_t *frame)
-{
-    log_frame(*fd, frame, 0);
-    return CNO_OK;
-}
-
-
-int write_cb(cno_connection_t *conn, int *fd, const char *data, size_t length)
-{
-    size_t wrote = 0;
-
-    do {
-        wrote += write(*fd, data + wrote, length - wrote);
-    } while (wrote < length);
-
-    return CNO_OK;
-}
-
-
-int message_start_cb(cno_connection_t *conn, int *fd, size_t stream, cno_message_t *msg)
-{
-    log_message(*fd, msg, 1);
-    return CNO_OK;
-}
-
-
-int message_end_cb(cno_connection_t *conn, int *fd, size_t stream, int disconnect)
-{
     if (disconnect) return CNO_OK;
 
     cno_message_t message;
@@ -83,7 +25,7 @@ int message_end_cb(cno_connection_t *conn, int *fd, size_t stream, int disconnec
     message.headers_len = 3;
 
     cno_header_t headers[3] = {
-        { { "server", 6 }, { "unix-frame-dump-server/1.0", 26 } },
+        { { "server", 6 }, { "hello-world/1.0", 26 } },
         { { "content-length", 14 }, { "14", 2 } },
         { { "cache-control", 13 }, { "no-cache", 8 } },
     };
@@ -114,12 +56,12 @@ void *handle(void *sockptr)
     }
 
     conn->cb_data          = &fd;
-    conn->on_frame         = &frame_cb;
-    conn->on_frame_send    = &frame_send_cb;
-    conn->on_write         = &write_cb;
-    conn->on_message_start = &message_start_cb;
-    conn->on_message_end   = &message_end_cb;
-    printf("started %d\n", fd);
+    conn->on_write         = &write_to_fd;
+    conn->on_frame         = &log_recv_frame;
+    conn->on_frame_send    = &log_sent_frame;
+    conn->on_message_start = &log_recv_message;
+    conn->on_message_data  = &log_recv_message_data;
+    conn->on_message_end   = &respond_with_hello_world;
 
     if (cno_connection_made(conn)) {
         goto error;

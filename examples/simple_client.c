@@ -2,62 +2,22 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <sys/socket.h>
-#include <netinet/ip.h>
-#include <netdb.h>
 #include <ctype.h>
+
+#include <errno.h>
+#include <netdb.h>
+#include <netinet/ip.h>
+#include <sys/socket.h>
 
 #include "cno.h"
 #include "urlparse.h"
+// See this file for callbacks:
+#include "simple_common.h"
 
 
-int write_cb(cno_connection_t *conn, int *fd, const char *data, size_t length)
+int on_message_end(cno_connection_t *conn, int *fd, size_t stream, int disconnect)
 {
-    size_t wrote = 0;
-
-    do {
-        wrote += write(*fd, data + wrote, length - wrote);
-    } while (wrote < length);
-
-    return CNO_OK;
-}
-
-
-int on_message_start(cno_connection_t *conn, int *fd, size_t stream, cno_message_t *msg)
-{
-    fprintf(stdout, "recv message: HTTP/%d.%d %d, method = ", msg->major, msg->minor, msg->code);
-    fwrite(msg->method.data, msg->method.size, 1, stdout);
-    fprintf(stdout, ", path = ");
-    fwrite(msg->path.data, msg->path.size, 1, stdout);
-    fprintf(stdout, ", headers:\n");
-
-    size_t k = 0;
-
-    for (; k < msg->headers_len; ++k) {
-        printf("    (%lu) ", msg->headers[k].name.size);
-        fwrite(msg->headers[k].name.data, msg->headers[k].name.size, 1, stdout);
-        printf(" = (%lu) ", msg->headers[k].value.size);
-        fwrite(msg->headers[k].value.data, msg->headers[k].value.size, 1, stdout);
-        printf("\n");
-    }
-    return CNO_OK;
-}
-
-
-int on_message_data(cno_connection_t *conn, int *fd, size_t stream, const char *data, size_t length)
-{
-    if (length) {
-        printf("recv data: ");
-        fwrite(data, length, 1, stdout);
-        printf("\n");
-    }
-    return CNO_OK;
-}
-
-
-int on_message_end(cno_connection_t *conn, int *fd, size_t stream)
-{
-    printf("recv message end\n");
+    log_recv_message_end(conn, fd, stream, disconnect);
 
     if (cno_connection_stop(conn)) {
         return CNO_PROPAGATE;
@@ -76,10 +36,9 @@ int main(int argc, char *argv[])
     }
 
     struct parsed_url *url = parse_url(argv[1]);
-    struct sockaddr_in server;
     struct hostent *server_host;
 
-    int fd;
+    int fd, i, found = 0;
     int port = url->port ? atoi(url->port) : 80;
 
     char  root[] = "/";
@@ -91,23 +50,43 @@ int main(int argc, char *argv[])
         strcpy(path + 1, url->path);
     }
 
-    if ((server_host = gethostbyname(url->host)) == NULL) {
-        fprintf(stderr, "error: hostname not found\n");
-        return 1;
-    }
-
-    memset(&server, 0, sizeof(server));
-    server.sin_family = AF_INET;
-    server.sin_port   = htons(port);
-    memcpy(server_host->h_addr, &server.sin_addr.s_addr, server_host->h_length);
-
     if ((fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        fprintf(stderr, "error: could not open socket\n");
+        fprintf(stderr, "error: could not open socket: %s\n", strerror(errno));
         return 1;
     }
 
-    if (connect(fd, (struct sockaddr *) &server, sizeof(server)) < 0) {
-        fprintf(stderr, "error: could not connect to server\n");
+    if ((server_host = gethostbyname2(url->host, AF_INET6)) != NULL) {
+        struct sockaddr_in6 server6;
+        memset(&server6, 0, sizeof(server6));
+        server6.sin6_family = AF_INET6;
+        server6.sin6_port   = htons(port);
+
+        for (i = 0; !found && server_host->h_addr_list[i]; ++i) {
+            memcpy(&server6.sin6_addr.s6_addr, server_host->h_addr_list[i], server_host->h_length);
+
+            if (connect(fd, (struct sockaddr *) &server6, sizeof(server6)) >= 0) {
+                found = 1;
+            }
+        }
+    }
+
+    if ((server_host = gethostbyname2(url->host, AF_INET)) != NULL) {
+        struct sockaddr_in server;
+        memset(&server, 0, sizeof(server));
+        server.sin_family = AF_INET;
+        server.sin_port   = htons(port);
+
+        for (i = 0; !found && server_host->h_addr_list[i]; ++i) {
+            memcpy(&server.sin_addr.s_addr, server_host->h_addr_list[i], server_host->h_length);
+
+            if (connect(fd, (struct sockaddr *) &server, sizeof(server)) >= 0) {
+                found = 1;
+            }
+        }
+    }
+
+    if (!found) {
+        fprintf(stderr, "error: %s\n", strerror(errno));
         return 1;
     }
 
@@ -118,17 +97,19 @@ int main(int argc, char *argv[])
     }
 
     client->cb_data          = &fd;
-    client->on_write         = &write_cb;
-    client->on_message_start = &on_message_start;
-    client->on_message_data  = &on_message_data;
+    client->on_write         = &write_to_fd;
+    client->on_frame         = &log_recv_frame;
+    client->on_frame_send    = &log_sent_frame;
+    client->on_message_start = &log_recv_message;
+    client->on_message_data  = &log_recv_message_data;
     client->on_message_end   = &on_message_end;
 
     cno_message_t message;
     CNO_ZERO(&message);
     message.path.data = path;
     message.path.size = strlen(path);
-    message.method.data = "POST";
-    message.method.size = 4;
+    message.method.data = "GET";
+    message.method.size = 3;
 
     cno_header_t headers[] = {
         { { ":scheme", 7 }, { "http", 4 } },
@@ -141,7 +122,6 @@ int main(int argc, char *argv[])
     if (
         cno_connection_made(client)
      || cno_write_message(client, 1, &message)
-     || cno_write_data(client, 1, "Hello, World!\n", 14, 0)
      || cno_write_end(client, 1, 0)) goto error;
 
     char buf[2048];
