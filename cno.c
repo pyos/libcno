@@ -507,7 +507,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                 stream->state != CNO_STREAM_RESERVED_REMOTE) {
                     return cno_frame_write_goaway(conn, CNO_STATE_PROTOCOL_ERROR)
                         ? CNO_PROPAGATE
-                        : CNO_ERROR_TRANSPORT("got HEADERS while stream is in invalid state");
+                        : CNO_ERROR_TRANSPORT("got HEADERS while stream is in state %lu", stream->state);
             }
 
             stream->state = stream->state == CNO_STREAM_IDLE
