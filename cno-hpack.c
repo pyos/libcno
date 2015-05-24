@@ -492,14 +492,27 @@ static int cno_hpack_encode_one(cno_hpack_t *state, cno_io_vector_t *target, cno
 }
 
 
+void cno_hpack_setlimit(cno_hpack_t *state, size_t limit, int immediate)
+{
+    if (state->limit_update_end == state->limit) return;
+    if (state->limit_update_min > limit)
+        state->limit_update_min = limit;
+    state->limit_update_end = limit;
+
+    if (immediate) state->limit = limit;
+}
+
+
 int cno_hpack_encode(cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *array, size_t amount)
 {
-    if (target->size || target->data) {
-        return CNO_ERROR_ASSERTION("non-empty io vector passed to hpack_encode");
+    if (state->limit != state->limit_update_min) {
+        if (cno_hpack_encode_size_update(state, target, state->limit_update_min)) {
+            return CNO_PROPAGATE;
+        }
     }
 
-    if (state->limit != state->limit_upper) {
-        if (cno_hpack_encode_size_update(state, target, state->limit_upper)) {
+    if (state->limit != state->limit_update_end) {
+        if (cno_hpack_encode_size_update(state, target, state->limit_update_end)) {
             return CNO_PROPAGATE;
         }
     }

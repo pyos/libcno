@@ -96,8 +96,8 @@ int main(int argc, char *argv[])
         return 2;
     }
 
-    cno_hpack_t decoder = { .limit = 170, .limit_upper = 170 };
-    cno_hpack_t encoder = { .limit = 170, .limit_upper = 170 };
+    cno_hpack_t decoder = { .limit = 170, .limit_upper = 0xffffffff, .limit_update_min = 170, .limit_update_end = 170 };
+    cno_hpack_t encoder = { .limit = 170, .limit_upper = 0xffffffff, .limit_update_min = 170, .limit_update_end = 170 };
     cno_list_init(&encoder);
     cno_list_init(&decoder);
 
