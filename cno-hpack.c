@@ -418,7 +418,7 @@ static int cno_hpack_encode_string(cno_io_vector_t *target, cno_io_vector_t *sou
             }
         }
 
-        if (bits_left != 56) {
+        if (bits_left != 64) {
             bits |= ((uint64_t) 1 << bits_left) - 1;
             *ptr++ = bits >> 56;
         }
