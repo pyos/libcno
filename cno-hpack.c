@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "cno-hpack.h"
@@ -17,6 +18,117 @@ void cno_hpack_clear(cno_hpack_t *state)
         free(clear);
         clear = next;
     }
+}
+
+
+static void cno_hpack_evict(cno_hpack_t *state)
+{
+    while (state->size > state->limit) {
+        cno_header_table_t *evicting = state->last;
+        state->size -= 32 + evicting->data.name.size + evicting->data.value.size;
+        cno_list_remove(evicting);
+        cno_io_vector_clear(&evicting->data.name);
+        cno_io_vector_clear(&evicting->data.value);
+        free(evicting);
+    }
+}
+
+
+static int cno_hpack_index(cno_hpack_t *state, cno_header_t *source)
+{
+    cno_header_table_t *entry = malloc(sizeof(cno_header_table_t));
+
+    if (entry == NULL) {
+        return CNO_PROPAGATE;
+    }
+
+    CNO_ZERO(entry);
+
+    if (cno_io_vector_extend(&entry->data.name, source->name.data, source->name.size)) {
+        return CNO_PROPAGATE;
+    }
+
+    if (cno_io_vector_extend(&entry->data.value, source->value.data, source->value.size)) {
+        cno_io_vector_clear(&entry->data.name);
+        return CNO_PROPAGATE;
+    }
+
+    cno_list_insert_after(state, entry);
+    state->size += 32 + source->name.size + source->value.size;
+    return CNO_OK;
+}
+
+
+static int cno_hpack_find_index(cno_hpack_t *state, size_t index, const cno_header_t **out)
+{
+    if (index == 0) {
+        return CNO_ERROR_TRANSPORT("hpack: header index 0 is reserved");
+    }
+
+    if (index <= CNO_HPACK_STATIC_TABLE_SIZE) {
+        *out = CNO_HPACK_STATIC_TABLE + (index - 1);
+        return CNO_OK;
+    }
+
+    cno_header_table_t *hdr = (cno_header_table_t *) state;
+
+    for (index -= CNO_HPACK_STATIC_TABLE_SIZE; index; --index) {
+        hdr = hdr->next;
+
+        if (hdr == (cno_header_table_t *) state) {
+            return CNO_ERROR_TRANSPORT("hpack: dynamic table index out of bounds");
+        }
+    }
+
+    *out = &hdr->data;
+    return CNO_OK;
+}
+
+
+static int cno_hpack_compare_index(cno_hpack_t *state, const cno_header_t *src, size_t *out, int *match)
+{
+    *out = 0;
+    *match = 0;
+
+    size_t i = 1;
+    const cno_header_t *it  = CNO_HPACK_STATIC_TABLE;
+    const cno_header_t *end = CNO_HPACK_STATIC_TABLE + CNO_HPACK_STATIC_TABLE_SIZE;
+    #define __MATCH(a, b) (a).size == (b).size && strncmp((a).data, (b).data, (b).size) == 0
+
+    for (; it != end; ++it, ++i) {
+        if (__MATCH(it->name, src->name)) {
+            if (__MATCH(it->value, src->value)) {
+                *out = i;
+                *match = 2;
+                return CNO_OK;
+            }
+
+            *out = i;
+            *match = 1;
+        }
+    }
+
+    const cno_header_table_t *table = (const cno_header_table_t *) state;
+
+    while ((table = table->next) != (const cno_header_table_t *) state) {
+        if (__MATCH(table->data.name, src->name)) {
+            if (__MATCH(table->data.value, src->value)) {
+                *out = i;
+                *match = 2;
+                return CNO_OK;
+            }
+
+            if (!*match) {
+                *out = i;
+                *match = 1;
+            }
+        }
+
+        ++i;
+    }
+
+    #undef __MATCH
+    return CNO_OK;
 }
 
 
@@ -134,32 +246,6 @@ static int cno_hpack_decode_string(cno_io_vector_tmp_t *source, cno_io_vector_t 
 }
 
 
-static int cno_hpack_find_index(cno_hpack_t *state, size_t index, const cno_header_t **out)
-{
-    if (index == 0) {
-        return CNO_ERROR_TRANSPORT("hpack: header index 0 is reserved");
-    }
-
-    if (index <= CNO_HPACK_STATIC_TABLE_SIZE) {
-        *out = CNO_HPACK_STATIC_TABLE + (index - 1);
-        return CNO_OK;
-    }
-
-    cno_header_table_t *hdr = (cno_header_table_t *) state;
-
-    for (index -= CNO_HPACK_STATIC_TABLE_SIZE; index; --index) {
-        hdr = hdr->next;
-
-        if (hdr == (cno_header_table_t *) state) {
-            return CNO_ERROR_TRANSPORT("hpack: dynamic table index out of bounds");
-        }
-    }
-
-    *out = &hdr->data;
-    return CNO_OK;
-}
-
-
 static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source, cno_header_t *target)
 {
     if (!source->size) {
@@ -205,7 +291,8 @@ static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source,
         }
 
         state->limit = new_size;
-        goto dyntable_evict;
+        cno_hpack_evict(state);
+        return CNO_OK;
     } else {
         return CNO_ERROR_TRANSPORT("hpack: invalid header field representation");
     }
@@ -230,50 +317,14 @@ static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source,
     }
 
     if (indexed) {
-        cno_header_table_t *entry = malloc(sizeof(cno_header_table_t));
-        CNO_ZERO(entry);
-
-        if (entry == NULL) {
+        if (cno_hpack_index(state, target)) {
             cno_io_vector_clear(&target->name);
             cno_io_vector_clear(&target->value);
             return CNO_PROPAGATE;
-        }
-
-        CNO_ZERO(entry);
-
-        if (cno_io_vector_extend(&entry->data.name, target->name.data, target->name.size)) {
-            cno_io_vector_clear(&target->name);
-            cno_io_vector_clear(&target->value);
-            return CNO_PROPAGATE;
-        }
-
-        if (cno_io_vector_extend(&entry->data.value, target->value.data, target->value.size)) {
-            cno_io_vector_clear(&entry->data.name);
-            cno_io_vector_clear(&target->name);
-            cno_io_vector_clear(&target->value);
-            return CNO_PROPAGATE;
-        }
-
-        cno_list_insert_after(state, entry);
-        state->size += 32 + target->name.size + target->value.size;
-
-        dyntable_evict: while (state->size > state->limit) {
-            cno_header_table_t *evicting = state->last;
-            state->size -= 32 + evicting->data.name.size + evicting->data.value.size;
-            cno_list_remove(evicting);
-            cno_io_vector_clear(&evicting->data.name);
-            cno_io_vector_clear(&evicting->data.value);
-            free(evicting);
         }
     }
 
     return CNO_OK;
-}
-
-
-static int cno_hpack_encode_one(cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *source)
-{
-    return CNO_ERROR_NOT_IMPLEMENTED("hpack");
 }
 
 
@@ -307,14 +358,154 @@ int cno_hpack_decode(cno_hpack_t *state, cno_io_vector_t *source, cno_header_t *
 }
 
 
+static int cno_hpack_encode_uint(cno_io_vector_t *target, int prefix, size_t num, unsigned char mark)
+{
+    unsigned char mask = ~(0xFF << prefix);
+
+    if ((num >> prefix) == 0 && num != mask) {
+        mark |= (unsigned char) num;
+        return cno_io_vector_extend(target, (char *) &mark, 1);
+    }
+
+    unsigned char  buf[sizeof(num) * 2];
+    unsigned char *end = buf + sizeof(num) * 2;
+    unsigned char *ptr = end - 1; *ptr = 0;
+
+    while (num) {
+        *ptr-- |= (num & 0x7F);
+        *ptr = 0x80;
+        num >>= 7;
+    }
+
+    *ptr = mark | mask;
+
+    return cno_io_vector_extend(target, (char *) ptr, end - ptr);
+}
+
+
+static int cno_hpack_encode_string(cno_io_vector_t *target, cno_io_vector_t *source)
+{
+    if (source->size) {
+        // Try Huffman first.
+        unsigned char *data = malloc(source->size);
+        unsigned char *end  = data + source->size;
+        unsigned char *ptr  = data;
+
+        if (data == NULL) {
+            return CNO_ERROR_NO_MEMORY;
+        }
+
+        unsigned char *src  = (unsigned char *) source->data;
+        unsigned char *stop = src + source->size;
+
+        uint64_t bits = 0;
+        uint8_t  bits_left = 64;
+
+        while (src != stop) {
+            const cno_huffman_item_t it = CNO_HUFFMAN_TABLE[*src++];
+
+            bits |= ((uint64_t) it.code) << (bits_left - it.bits);
+            bits_left -= it.bits;
+
+            while (bits_left <= 56) {
+                *ptr++ = bits >> 56;
+                bits <<= 8;
+                bits_left += 8;
+
+                if (ptr == end) {
+                    goto huffman_inefficient;
+                }
+            }
+        }
+
+        if (bits_left != 56) {
+            bits |= ((uint64_t) 1 << bits_left) - 1;
+            *ptr++ = bits >> 56;
+        }
+
+        if (ptr == end) {
+            goto huffman_inefficient;
+        }
+
+        if (cno_hpack_encode_uint(target, 7, ptr - data, 0x80) ||
+            cno_io_vector_extend(target, (char *) data, ptr - data)) {
+                free(data);
+                return CNO_PROPAGATE;
+        }
+
+        free(data);
+        return CNO_OK;
+
+    huffman_inefficient:
+        free(data);
+    }
+
+    if (cno_hpack_encode_uint(target, 7, source->size, 0)) {
+        return CNO_PROPAGATE;
+    }
+
+    return cno_io_vector_extend(target, source->data, source->size);
+}
+
+
+static int cno_hpack_encode_size_update(cno_hpack_t *state, cno_io_vector_t *target, size_t size)
+{
+    return cno_hpack_encode_uint(target, 5, state->limit = size, 0x20);
+}
+
+
+static int cno_hpack_encode_one(cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *source, int indexed)
+{
+    int    match = 0;
+    size_t index = 0;
+
+    if (cno_hpack_compare_index(state, source, &index, &match)) {
+        return CNO_PROPAGATE;
+    }
+
+    if (!indexed) {
+        if (cno_hpack_encode_uint(target, 4, index, 0x10)) {
+            return CNO_PROPAGATE;
+        }
+    } else if (match == 2) {
+        // Matched the whole header. Note that non-indexed headers cannot be full matches.
+        return cno_hpack_encode_uint(target, 7, index, 0x80);
+    } else {
+        if (cno_hpack_encode_uint(target, 6, index, 0x40)) {
+            return CNO_PROPAGATE;
+        }
+
+        if (cno_hpack_index(state, source)) {
+            return CNO_PROPAGATE;
+        }
+
+        cno_hpack_evict(state);
+    }
+
+    if (!match) {
+        if (cno_hpack_encode_string(target, &source->name)) {
+            return CNO_PROPAGATE;
+        }
+    }
+
+    return cno_hpack_encode_string(target, &source->value);
+}
+
+
 int cno_hpack_encode(cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *array, size_t amount)
 {
     if (target->size || target->data) {
         return CNO_ERROR_ASSERTION("non-empty io vector passed to hpack_encode");
     }
 
+    if (state->limit != state->limit_upper) {
+        if (cno_hpack_encode_size_update(state, target, state->limit_upper)) {
+            return CNO_PROPAGATE;
+        }
+    }
+
     for (; amount; --amount) {
-        if (cno_hpack_encode_one(state, target, array++)) {
+        if (cno_hpack_encode_one(state, target, array++, 1)) {
             cno_io_vector_clear(target);
             return CNO_PROPAGATE;
         }
