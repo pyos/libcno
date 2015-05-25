@@ -170,6 +170,7 @@ static int cno_hpack_decode_uint(cno_io_vector_tmp_t *source, int prefix, size_t
         *result  |= *src & 0x7F;
     } while (*src++ & 0x80);
 
+    *result += (1 << prefix) - 1;
     return cno_io_vector_shift(source, size + 1);
 }
 
@@ -370,6 +371,7 @@ static int cno_hpack_encode_uint(cno_io_vector_t *target, int prefix, size_t num
     unsigned char  buf[sizeof(num) * 2];
     unsigned char *end = buf + sizeof(num) * 2;
     unsigned char *ptr = end - 1; *ptr = 0;
+    num -= (1 << prefix) - 1;
 
     while (num) {
         *ptr-- |= (num & 0x7F);
