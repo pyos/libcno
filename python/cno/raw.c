@@ -24,6 +24,10 @@ typedef struct
     PyObject *on_message_start;
     PyObject *on_message_data;
     PyObject *on_message_end;
+    PyObject *on_frame;
+    PyObject *on_frame_send;
+    PyObject *on_pong;
+    PyObject *on_flow_control_update;
 } PyCNO;
 
 
@@ -46,52 +50,26 @@ static PyObject * pycno_handle_cno_error(PyCNO *self)
 }
 
 
-static int pycno_on_write(cno_connection_t *conn, PyCNO *self, const char *data, size_t length)
-{
-    if (self->on_write) {
-        PyObject *ret = PyObject_CallFunction(self->on_write, "y#", data, length);
-
-        if (ret == NULL) {
-            return CNO_ERROR_PYTHON;
-        }
-
-        Py_DECREF(ret);
-    }
-
-    return CNO_OK;
+#define PYCNO_SIMPLE_CALLBACK(f, ...) {                        \
+    if (f) {                                                   \
+        PyObject *ret = PyObject_CallFunction(f, __VA_ARGS__); \
+        if (ret == NULL) return CNO_ERROR_PYTHON;              \
+        Py_DECREF(ret);                                        \
+    }                                                          \
+    return CNO_OK;                                             \
 }
+
+
+static int pycno_on_write(cno_connection_t *conn, PyCNO *self, const char *data, size_t length)
+           PYCNO_SIMPLE_CALLBACK(self->on_write, "y#", data, length);
 
 
 static int pycno_on_stream_start(cno_connection_t *conn, PyCNO *self, size_t stream)
-{
-    if (self->on_stream_start) {
-        PyObject *ret = PyObject_CallFunction(self->on_stream_start, "n", stream);
-
-        if (ret == NULL) {
-            return CNO_ERROR_PYTHON;
-        }
-
-        Py_DECREF(ret);
-    }
-
-    return CNO_OK;
-}
+           PYCNO_SIMPLE_CALLBACK(self->on_stream_start, "n", stream);
 
 
 static int pycno_on_stream_end(cno_connection_t *conn, PyCNO *self, size_t stream)
-{
-    if (self->on_stream_end) {
-        PyObject *ret = PyObject_CallFunction(self->on_stream_end, "n", stream);
-
-        if (ret == NULL) {
-            return CNO_ERROR_PYTHON;
-        }
-
-        Py_DECREF(ret);
-    }
-
-    return CNO_OK;
-}
+           PYCNO_SIMPLE_CALLBACK(self->on_stream_end, "n", stream);
 
 
 static int pycno_on_message_start(cno_connection_t *conn, PyCNO *self, size_t stream, cno_message_t *msg)
@@ -134,35 +112,29 @@ static int pycno_on_message_start(cno_connection_t *conn, PyCNO *self, size_t st
 
 
 static int pycno_on_message_data(cno_connection_t *conn, PyCNO *self, size_t stream, const char *data, size_t length)
-{
-    if (self->on_message_data) {
-        PyObject *ret = PyObject_CallFunction(self->on_message_data, "ny#", stream, data, length);
-
-        if (ret == NULL) {
-            return CNO_ERROR_PYTHON;
-        }
-
-        Py_DECREF(ret);
-    }
-
-    return CNO_OK;
-}
+           PYCNO_SIMPLE_CALLBACK(self->on_message_data, "ny#", stream, data, length);
 
 
 static int pycno_on_message_end(cno_connection_t *conn, PyCNO *self, size_t stream, int disconnect)
-{
-    if (self->on_message_end) {
-        PyObject *ret = PyObject_CallFunction(self->on_message_end, "ni", stream, disconnect);
+           PYCNO_SIMPLE_CALLBACK(self->on_message_end, "ni", stream, disconnect);
 
-        if (ret == NULL) {
-            return CNO_ERROR_PYTHON;
-        }
 
-        Py_DECREF(ret);
-    }
+static int pycno_on_frame(cno_connection_t *conn, PyCNO *self, cno_frame_t *frame)
+           PYCNO_SIMPLE_CALLBACK(self->on_frame, "nnny#", frame->type, frame->flags,
+               frame->stream_id, frame->payload.data, frame->payload.size);
 
-    return CNO_OK;
-}
+
+static int pycno_on_frame_send(cno_connection_t *conn, PyCNO *self, cno_frame_t *frame)
+           PYCNO_SIMPLE_CALLBACK(self->on_frame_send, "nnny#", frame->type, frame->flags,
+               frame->stream_id, frame->payload.data, frame->payload.size);
+
+
+static int pycno_on_pong(cno_connection_t *conn, PyCNO *self, const char data[8])
+           PYCNO_SIMPLE_CALLBACK(self->on_pong, "y#", data, 8);
+
+
+static int pycno_on_flow_control_update(cno_connection_t *conn, PyCNO *self, size_t stream)
+           PYCNO_SIMPLE_CALLBACK(self->on_flow_control_update, "n", stream);
 
 
 static PyCNO * pycno_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
@@ -173,13 +145,17 @@ static PyCNO * pycno_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
-    self->conn             = NULL;
-    self->on_write         = NULL;
-    self->on_stream_start  = NULL;
-    self->on_stream_end    = NULL;
-    self->on_message_start = NULL;
-    self->on_message_data  = NULL;
-    self->on_message_end   = NULL;
+    self->conn                   = NULL;
+    self->on_write               = NULL;
+    self->on_stream_start        = NULL;
+    self->on_stream_end          = NULL;
+    self->on_message_start       = NULL;
+    self->on_message_data        = NULL;
+    self->on_message_end         = NULL;
+    self->on_frame               = NULL;
+    self->on_frame_send          = NULL;
+    self->on_pong                = NULL;
+    self->on_flow_control_update = NULL;
     return self;
 }
 
@@ -187,26 +163,30 @@ static PyCNO * pycno_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 static PyObject * pycno_init(PyCNO *self, PyObject *args, PyObject *kwargs)
 {
     int http2  = 1;
-    int server = 0;
-    char *kwds[] = { "server", "http2", NULL };
+    int client = 1;
+    char *kwds[] = { "client", "http2", NULL };
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|pp", kwds, &server, &http2)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|pp", kwds, &client, &http2)) {
         return NULL;
     }
 
-    self->conn = cno_connection_new(server ? CNO_HTTP2_SERVER : http2 ? CNO_HTTP2_CLIENT : CNO_HTTP1_CLIENT);
+    self->conn = cno_connection_new(client ? http2 ? CNO_HTTP2_CLIENT : CNO_HTTP1_CLIENT : CNO_HTTP2_SERVER);
 
     if (self->conn == NULL) {
         return pycno_handle_cno_error(self);
     }
 
     self->conn->cb_data = self;
-    self->conn->on_write         = &pycno_on_write;
-    self->conn->on_stream_start  = &pycno_on_stream_start;
-    self->conn->on_stream_end    = &pycno_on_stream_end;
-    self->conn->on_message_start = &pycno_on_message_start;
-    self->conn->on_message_data  = &pycno_on_message_data;
-    self->conn->on_message_end   = &pycno_on_message_end;
+    self->conn->on_write               = &pycno_on_write;
+    self->conn->on_stream_start        = &pycno_on_stream_start;
+    self->conn->on_stream_end          = &pycno_on_stream_end;
+    self->conn->on_message_start       = &pycno_on_message_start;
+    self->conn->on_message_data        = &pycno_on_message_data;
+    self->conn->on_message_end         = &pycno_on_message_end;
+    self->conn->on_frame               = &pycno_on_frame;
+    self->conn->on_frame_send          = &pycno_on_frame_send;
+    self->conn->on_pong                = &pycno_on_pong;
+    self->conn->on_flow_control_update = &pycno_on_flow_control_update;
     Py_RETURN_NONE;
 }
 
@@ -328,7 +308,7 @@ static PyObject * pycno_write_message(PyCNO *self, PyObject *args, PyObject *kwa
             Py_DECREF(item);
             Py_DECREF(iter);
             PyMem_RawFree(msg.headers);
-            return NULL;
+            return PyErr_Format(PyExc_ValueError, "headers must be 2-tuples of strings");
         }
 
         Py_DECREF(item);
@@ -389,6 +369,16 @@ static PyObject * pycno_write_end(PyCNO *self, PyObject *args, PyObject *kwargs)
 }
 
 
+static PyObject * pycno_is_client(PyCNO *self, void *closure)
+{
+    if (self->conn && self->conn->client) {
+        Py_RETURN_TRUE;
+    }
+
+    Py_RETURN_FALSE;
+}
+
+
 static void pycno_dealloc(PyCNO *self)
 {
     if (self->conn) {
@@ -396,9 +386,15 @@ static void pycno_dealloc(PyCNO *self)
     }
 
     Py_XDECREF(self->on_write);
+    Py_XDECREF(self->on_stream_start);
+    Py_XDECREF(self->on_stream_end);
     Py_XDECREF(self->on_message_start);
     Py_XDECREF(self->on_message_data);
     Py_XDECREF(self->on_message_end);
+    Py_XDECREF(self->on_frame);
+    Py_XDECREF(self->on_frame_send);
+    Py_XDECREF(self->on_pong);
+    Py_XDECREF(self->on_flow_control_update);
     Py_TYPE(self)->tp_free(self);
 }
 
@@ -417,13 +413,23 @@ static PyMethodDef PyCNOMethods[] = {
 };
 
 
+static PyGetSetDef PyCNOGetSetters[] = {
+    { "is_client", (getter) pycno_is_client, NULL, NULL, NULL },
+    { NULL }
+};
+
+
 static PyMemberDef PyCNOMembers[] = {
-    { "_on_write",         T_OBJECT_EX, offsetof(PyCNO, on_write),         0, NULL },
-    { "_on_stream_start",  T_OBJECT_EX, offsetof(PyCNO, on_stream_start),  0, NULL },
-    { "_on_stream_end",    T_OBJECT_EX, offsetof(PyCNO, on_stream_end),    0, NULL },
-    { "_on_message_start", T_OBJECT_EX, offsetof(PyCNO, on_message_start), 0, NULL },
-    { "_on_message_data",  T_OBJECT_EX, offsetof(PyCNO, on_message_data),  0, NULL },
-    { "_on_message_end",   T_OBJECT_EX, offsetof(PyCNO, on_message_end),   0, NULL },
+    { "on_write",               T_OBJECT_EX, offsetof(PyCNO, on_write),               0, NULL },
+    { "on_stream_start",        T_OBJECT_EX, offsetof(PyCNO, on_stream_start),        0, NULL },
+    { "on_stream_end",          T_OBJECT_EX, offsetof(PyCNO, on_stream_end),          0, NULL },
+    { "on_message_start",       T_OBJECT_EX, offsetof(PyCNO, on_message_start),       0, NULL },
+    { "on_message_data",        T_OBJECT_EX, offsetof(PyCNO, on_message_data),        0, NULL },
+    { "on_message_end",         T_OBJECT_EX, offsetof(PyCNO, on_message_end),         0, NULL },
+    { "on_frame",               T_OBJECT_EX, offsetof(PyCNO, on_frame),               0, NULL },
+    { "on_frame_send",          T_OBJECT_EX, offsetof(PyCNO, on_frame_send),          0, NULL },
+    { "on_pong",                T_OBJECT_EX, offsetof(PyCNO, on_pong),                0, NULL },
+    { "on_flow_control_update", T_OBJECT_EX, offsetof(PyCNO, on_flow_control_update), 0, NULL },
     { NULL }
 };
 
@@ -439,16 +445,12 @@ static PyTypeObject PyCNOType = {
     .tp_dealloc   = (destructor) pycno_dealloc,
     .tp_methods   = PyCNOMethods,
     .tp_members   = PyCNOMembers,
-};
-
-
-static PyMethodDef functions[] = {
-    { NULL }
+    .tp_getset    = PyCNOGetSetters
 };
 
 
 static PyModuleDef module = {
-    PyModuleDef_HEAD_INIT, PyModuleDef_NAME, NULL, -1, functions
+    PyModuleDef_HEAD_INIT, PyModuleDef_NAME, NULL, -1, NULL
 };
 
 
@@ -466,5 +468,20 @@ PyMODINIT_FUNC PyMODINIT_FUNC_NAME(void)
 
     Py_INCREF(&PyCNOType);
     PyModule_AddObject(m, "Connection", (PyObject*) &PyCNOType);
+    PyModule_AddIntMacro(m, CNO_FRAME_DATA);
+    PyModule_AddIntMacro(m, CNO_FRAME_HEADERS);
+    PyModule_AddIntMacro(m, CNO_FRAME_PRIORITY);
+    PyModule_AddIntMacro(m, CNO_FRAME_RST_STREAM);
+    PyModule_AddIntMacro(m, CNO_FRAME_SETTINGS);
+    PyModule_AddIntMacro(m, CNO_FRAME_PUSH_PROMISE);
+    PyModule_AddIntMacro(m, CNO_FRAME_PING);
+    PyModule_AddIntMacro(m, CNO_FRAME_GOAWAY);
+    PyModule_AddIntMacro(m, CNO_FRAME_WINDOW_UPDATE);
+    PyModule_AddIntMacro(m, CNO_FRAME_CONTINUATION);
+    PyModule_AddIntMacro(m, CNO_FLAG_ACK);
+    PyModule_AddIntMacro(m, CNO_FLAG_END_STREAM);
+    PyModule_AddIntMacro(m, CNO_FLAG_END_HEADERS);
+    PyModule_AddIntMacro(m, CNO_FLAG_PADDED);
+    PyModule_AddIntMacro(m, CNO_FLAG_PRIORITY);
     return m;
 }

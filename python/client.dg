@@ -9,7 +9,7 @@ main = async $ loop host port ->
   resp = await client.request 'GET' '/' [(':scheme', 'http'), (':authority', 'localhost')] b''
   print resp.code
   print resp.headers
-  print resp.data
+  print $ await resp.payload
 
 
 loop = asyncio.get_event_loop!

@@ -3,124 +3,143 @@ import asyncio
 from .raw import Connection
 
 
-def _add_content_length(headers, data):
-    headers = list(headers)
-    for name, value in headers:
-        if name.lower() == 'content-length':
-            if len(data) != int(value):
-                raise ValueError('content-length does not match data length')
-            break
-    else:
-        headers.append(('content-length', str(len(data))))
-    return headers
+class Bufferable:
+    @property
+    @asyncio.coroutine
+    def payload(self):
+        eof = False
+        data = b''
+        while not eof:
+            part, eof = yield from self.fragments.get()
+            data += part
+        return data
 
 
-class Request:
-    def __init__(self, conn, stream, method, path, headers, data):
-        self.conn    = conn
-        self.stream  = stream
-        self.method  = method
-        self.path    = path
-        self.headers = headers
-        self.data    = data
+class Request (Bufferable):
+    def __init__(self, conn, stream, method, path, headers):
+        super().__init__()
+        self.connection = conn
+        self.stream     = stream
+        self.method     = method
+        self.path       = path
+        self.headers    = headers
+        self.fragments  = asyncio.Queue(loop=conn._loop)
 
     def respond(self, code, headers, data):
-        self.conn.write_message(self.stream, code, _add_content_length(headers, data))
-        self.conn.write_data(self.stream, data)
-        self.conn.write_end(self.stream)
+        self.connection.write_message(self.stream, code, headers)
+        while True:
+            try:
+                self.connection.write_data(self.stream, data)
+            except BlockingIOError:
+                yield from self.connection._wait_for_flow_control_update(self.stream)
+            else:
+                break
+        self.connection.write_end(self.stream)
 
 
-class Response:
-    def __init__(self, conn, stream, code, headers, data):
-        self.conn    = conn
-        self.stream  = stream
-        self.code    = code
-        self.headers = headers
-        self.data    = data
+class Response (Bufferable):
+    def __init__(self, conn, stream, code, headers):
+        self.connection = conn
+        self.stream     = stream
+        self.code       = code
+        self.headers    = headers
+        self.fragments  = asyncio.Queue(loop=conn._loop)
 
 
-class _BufferedConnection (Connection):
-    def __init__(self, server, http2):
-        super().__init__(server, http2)
-        self._on_stream_start  = self.on_stream_start
-        self._on_message_start = self.on_message_start
-        self._on_message_data  = self.on_message_data
-        self._on_message_end   = self.on_message_end
-        self._on_stream_end    = self.on_stream_end
-        self._streams = {}
-        self._client  = not server
-        self._http1   = not http2
+class AIOConnection (Connection):
+    def __init__(self, *args, loop=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._loop     = loop or asyncio.get_event_loop()
+        self._tasks    = {}
+        self._readers  = {}
+        self._writers  = {}
+        self.on_message_start       = self._msg_start
+        self.on_message_data        = self._msg_data
+        self.on_message_end         = self._msg_end
+        self.on_stream_end          = self._msg_abort
+        self.on_flow_control_update = self._reopen_flow
 
-    def on_stream_start(self, stream):
-        self._streams[stream] = None
-
-    def on_stream_end(self, stream):
-        self._streams.pop(stream)
-
-    def on_message_start(self, stream, *args):
-        self._streams[stream] = list(args) + [b'']
-
-    def on_message_data(self, stream, data):
-        self._streams[stream][-1] += data
-
-    def on_message_end(self, stream, disconnect):
-        if self._client:
-            self.on_message(Response(self, stream, *self._streams[stream]))
-        elif not disconnect:
-            self.on_message(Request(self, stream, *self._streams[stream]))
-
-    def on_message(self, msg):
+    def _msg_start(self, stream, *args):
         pass
 
+    def _msg_data(self, stream, data):
+        rd = self._readers.get(stream, None)
+        rd and rd.put_nowait((data, False))
 
-class AIOClient (_BufferedConnection):
+    def _msg_end(self, stream, disconnected):
+        task = self._tasks.get(stream, None)
+        rd = self._readers.pop(stream, None)
+        rd and rd.put_nowait((b'', True))
+        wr = self._writers.pop(stream, None)
+        wr and wr.cancel()
+        if task and disconnected and not self.is_client and not task.done():
+            return task.set_exception(ConnectionError())
+
+    def _msg_abort(self, stream):
+        return self._msg_end(stream, True)
+
+    def _reopen_flow(self, stream):
+        if stream == 0:
+            for s in self._writers:
+                if s != 0:
+                    self._reopen_flow(s)
+        wr = self._writers.pop(stream, None)
+        wr and wr.set_result(True)
+
+    @asyncio.coroutine
+    def _wait_for_flow_control_update(self, stream):
+        wr = self._writers.get(stream, None)
+        if wr:
+            wr = self._writers[stream] = asyncio.Future(loop=self._loop)
+        return (yield from wr)
+
+
+class AIOServer (AIOConnection):
+    def __init__(self, callback, loop=None):
+        super().__init__(client=False, loop=loop)
+        self._callback = callback
+
+    def _msg_start(self, stream, *args):
+        item = Request(self, stream, *args)
+        task = self._tasks[stream] = asyncio.async(self._callback(item, loop=self._loop), loop=self._loop)
+        task.add_done_callback(lambda _: (self._tasks.pop(stream, None), self._readers.pop(stream, None)))
+        self._readers[stream] = item.fragments
+
+
+class AIOClient (AIOConnection):
     def __init__(self, http2=True, loop=None):
-        super().__init__(False, http2)
-        self._futures = {}
-        self._stream  = 1
-        self._strinc  = 2 if http2 else 0
-        self._loop = loop
+        super().__init__(http2=http2, loop=loop)
+        self._stream = 1
+        self._strinc = 2 if http2 else 0
 
-    def on_stream_end(self, stream):
-        super().on_stream_end(stream)
-        fut = self._futures.pop(stream, None)
-        if fut:
-            fut.set_exception(ConnectionError())
+    def _msg_start(self, stream, *args):
+        item = Response(self, stream, *args)
+        task = self._tasks.get(stream, None)
+        task and task.set_result(item)
+        self._readers[stream] = item.fragments
 
     @asyncio.coroutine
     def request(self, method, path, headers, data):
         stream = self._stream
 
-        if stream in self._futures:
+        if stream in self._tasks:
             raise RuntimeError("already waiting for a response on this connection")
 
         self._stream += self._strinc
-        self.write_message(stream, method, path, _add_content_length(headers, data))
-        try:
-            self.write_data(stream, data)
-        except BlockingIOError:
-            # TODO wait for an increase in flow control window, then retry
-            raise
+        self.write_message(stream, method, path, headers)
+        while True:
+            try:
+                self.write_data(stream, data)
+            except BlockingIOError:
+                # TODO wait for an increase in flow control window, then retry
+                yield from self._wait_for_flow_control_update(stream)
+            else:
+                break
         self.write_end(stream)
 
-        self._futures[stream] = fut = asyncio.Future(loop=self._loop)
+        self._tasks[stream] = fut = asyncio.Future(loop=self._loop)
         try:
             return (yield from fut)
         finally:
             fut.cancel()
-            self._futures.pop(stream, None)
-
-    def on_message(self, obj):
-        fut = self._futures.pop(obj.stream, None)
-        if fut:
-            fut.set_result(obj)
-
-
-class AIOServer (_BufferedConnection):
-    def __init__(self, coroutine, loop=None):
-        super().__init__(True, True)
-        self._loop = loop
-        self._coroutine = coroutine
-
-    def on_message(self, obj):
-        asyncio.async(self._coroutine(obj, loop=self._loop), loop=self._loop)
+            self._tasks.pop(stream, None)
