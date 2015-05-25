@@ -40,16 +40,16 @@ class Response:
 
 
 class _BufferedConnection (Connection):
-    def __init__(self, kind):
-        super().__init__(kind)
+    def __init__(self, server, http2):
+        super().__init__(server, http2)
         self._on_stream_start  = self.on_stream_start
         self._on_message_start = self.on_message_start
         self._on_message_data  = self.on_message_data
         self._on_message_end   = self.on_message_end
         self._on_stream_end    = self.on_stream_end
         self._streams = {}
-        self._client  = kind != "server"
-        self._http1   = kind == "http1"
+        self._client  = not server
+        self._http1   = not http2
 
     def on_stream_start(self, stream):
         self._streams[stream] = None
@@ -75,7 +75,7 @@ class _BufferedConnection (Connection):
 
 class AIOClient (_BufferedConnection):
     def __init__(self, http2=True, loop=None):
-        super().__init__("http2" if http2 else "http1")
+        super().__init__(False, http2)
         self._futures = {}
         self._stream  = 1
         self._strinc  = 2 if http2 else 0
@@ -118,7 +118,7 @@ class AIOClient (_BufferedConnection):
 
 class AIOServer (_BufferedConnection):
     def __init__(self, coroutine, loop=None):
-        super().__init__("server")
+        super().__init__(True, True)
         self._loop = loop
         self._coroutine = coroutine
 

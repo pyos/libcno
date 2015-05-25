@@ -46,6 +46,22 @@ static PyObject * pycno_handle_cno_error(PyCNO *self)
 }
 
 
+static int pycno_on_write(cno_connection_t *conn, PyCNO *self, const char *data, size_t length)
+{
+    if (self->on_write) {
+        PyObject *ret = PyObject_CallFunction(self->on_write, "y#", data, length);
+
+        if (ret == NULL) {
+            return CNO_ERROR_PYTHON;
+        }
+
+        Py_DECREF(ret);
+    }
+
+    return CNO_OK;
+}
+
+
 static int pycno_on_stream_start(cno_connection_t *conn, PyCNO *self, size_t stream)
 {
     if (self->on_stream_start) {
@@ -149,22 +165,6 @@ static int pycno_on_message_end(cno_connection_t *conn, PyCNO *self, size_t stre
 }
 
 
-static int pycno_on_write(cno_connection_t *conn, PyCNO *self, const char *data, size_t length)
-{
-    if (self->on_write) {
-        PyObject *ret = PyObject_CallFunction(self->on_write, "y#", data, length);
-
-        if (ret == NULL) {
-            return CNO_ERROR_PYTHON;
-        }
-
-        Py_DECREF(ret);
-    }
-
-    return CNO_OK;
-}
-
-
 static PyCNO * pycno_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
     PyCNO *self = (PyCNO *) type->tp_alloc(type, 0);
@@ -173,6 +173,7 @@ static PyCNO * pycno_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
+    self->conn             = NULL;
     self->on_write         = NULL;
     self->on_stream_start  = NULL;
     self->on_stream_end    = NULL;
@@ -185,25 +186,18 @@ static PyCNO * pycno_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 
 static PyObject * pycno_init(PyCNO *self, PyObject *args, PyObject *kwargs)
 {
-    char *kind = "http2";
-    char *kwds[] = { "kind", NULL };
+    int http2  = 1;
+    int server = 0;
+    char *kwds[] = { "server", "http2", NULL };
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|s", kwds, &kind)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|pp", kwds, &server, &http2)) {
         return NULL;
     }
 
-    int kind_enum = strcmp(kind, "server") == 0 ? CNO_HTTP2_SERVER
-                  : strcmp(kind, "http2")  == 0 ? CNO_HTTP2_CLIENT
-                  : strcmp(kind, "http1")  == 0 ? CNO_HTTP1_CLIENT : -1;
-
-    if (kind_enum == -1) {
-        return PyErr_Format(PyExc_ValueError, "kind should be either 'server', 'http2', or 'http1'");
-    }
-
-    self->conn = cno_connection_new(kind_enum);
+    self->conn = cno_connection_new(server ? CNO_HTTP2_SERVER : http2 ? CNO_HTTP2_CLIENT : CNO_HTTP1_CLIENT);
 
     if (self->conn == NULL) {
-        return NULL;
+        return pycno_handle_cno_error(self);
     }
 
     self->conn->cb_data = self;
