@@ -263,7 +263,11 @@ static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
 
 int cno_connection_stop(cno_connection_t *conn)
 {
-    return cno_frame_write_goaway(conn, CNO_STATE_NO_ERROR);
+    if (conn->state < CNO_CONNECTION_HTTP1_INIT) {
+        return cno_frame_write_goaway(conn, CNO_STATE_NO_ERROR);
+    }
+
+    return CNO_OK;
 }
 
 
@@ -883,7 +887,7 @@ int cno_connection_fire(cno_connection_t *conn)
                     }
                 } else {
                     // That was the last chunk.
-                    stream->msg.remaining = 0;
+                    stream->msg.remaining = stream->msg.chunked = 0;
                 }
 
                 cno_io_vector_shift(&conn->buffer, data_len + head_len);
@@ -1112,7 +1116,17 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
                 }
 
                 tg = head;
-                memcpy(tg, name->data,  name->size);  tg += name->size;  *tg++ = ':';  *tg++ = ' ';
+
+                if (strncmp(name->data, ":authority", name->size) == 0) {
+                    memcpy(tg, "Host: ", 6);
+                    tg += 6;
+                } else if (strncmp(name->data, ":status", name->size) == 0) {
+                    return CNO_ERROR_ASSERTION("set `message.code` instead of sending :status");
+                } else if (name->data[0] == ':') {
+                    continue;
+                } else {
+                    memcpy(tg, name->data, name->size); tg += name->size;  *tg++ = ':';  *tg++ = ' ';
+                }
                 memcpy(tg, value->data, value->size); tg += value->size; *tg++ = '\r'; *tg++ = '\n';
             }
 
