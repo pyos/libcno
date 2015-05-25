@@ -494,7 +494,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                 }
             }
 
-            return CNO_OK;
+            return CNO_FIRE(conn, on_flow_control_update, frame->stream_id);
         }
 
         case CNO_FRAME_HEADERS: { recv_headers:

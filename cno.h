@@ -152,15 +152,16 @@ struct cno_st_connection_t {
     struct cno_st_hpack_t decoder;
     struct cno_st_hpack_t encoder;
     void * cb_data;
-    void * on_frame;
-    void * on_frame_send;
     void * on_write;
     void * on_stream_start;
     void * on_stream_end;
     void * on_message_start;
     void * on_message_data;
     void * on_message_end;
+    void * on_frame;
+    void * on_frame_send;
     void * on_pong;
+    void * on_flow_control_update;
 };
 
 
@@ -172,15 +173,16 @@ CNO_STRUCT_EXPORT(header);
 CNO_STRUCT_EXPORT(message);
 
 
-CNO_DEF_CALLBACK(cno_connection_t, on_frame, cno_frame_t *);
-CNO_DEF_CALLBACK(cno_connection_t, on_frame_send, cno_frame_t *);
 CNO_DEF_CALLBACK(cno_connection_t, on_write, const char *, size_t);
 CNO_DEF_CALLBACK(cno_connection_t, on_stream_start,  size_t);
 CNO_DEF_CALLBACK(cno_connection_t, on_stream_end,    size_t);
 CNO_DEF_CALLBACK(cno_connection_t, on_message_start, size_t, cno_message_t *);
 CNO_DEF_CALLBACK(cno_connection_t, on_message_data,  size_t, const char *, size_t);
 CNO_DEF_CALLBACK(cno_connection_t, on_message_end,   size_t, int disconnect);
+CNO_DEF_CALLBACK(cno_connection_t, on_frame, cno_frame_t *);
+CNO_DEF_CALLBACK(cno_connection_t, on_frame_send, cno_frame_t *);
 CNO_DEF_CALLBACK(cno_connection_t, on_pong, const char [8]);
+CNO_DEF_CALLBACK(cno_connection_t, on_flow_control_update, size_t);
 
 
 static const struct cno_st_io_vector_t CNO_PREFACE = { "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24 };
