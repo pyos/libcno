@@ -7,7 +7,7 @@ import '/cno'
 main = async $ loop host port ->
   x = cno._BufferedConnection "http2"
   _, client = await loop.create_connection (-> cno.AIOClient True loop) host port
-  resp = await client.request 'GET' '/' [] b''
+  resp = await client.request 'GET' '/' [(':scheme', 'http'), (':authority', 'localhost')] b''
   print resp.code
   print resp.headers
   print resp.data
