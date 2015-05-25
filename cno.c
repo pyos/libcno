@@ -21,6 +21,11 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
         }
     }
 
+    if (conn->stream_count >= conn->settings.max_concurrent_streams) {
+        (void) CNO_ERROR_TRANSPORT("reached the limit on concurrent streams");
+        return NULL;
+    }
+
     cno_stream_t *stream = malloc(sizeof(cno_stream_t));
 
     if (!stream) {
@@ -34,6 +39,7 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
     } else {
         conn->last_server_stream = id;
     }
+    conn->stream_count++;
     stream->id = id;
     stream->last_frame = CNO_FRAME_RST_STREAM;
     stream->state = CNO_STREAM_IDLE;
@@ -56,6 +62,7 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
 
 static void cno_stream_destroy(cno_connection_t *conn, cno_stream_t *stream)
 {
+    conn->stream_count--;
     cno_io_vector_clear(&stream->cache);
     cno_list_remove(stream);
     free(stream);
@@ -117,6 +124,7 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     conn->settings.max_header_list_size = -1;
     conn->window_recv = conn->settings.initial_window_size;
     conn->window_send = conn->settings.initial_window_size;
+    conn->stream_count = 0;
     cno_hpack_setlimit(&conn->decoder, conn->settings.header_table_size, 1);
     cno_hpack_setlimit(&conn->encoder, conn->settings.header_table_size, 0);
     cno_list_init(&conn->decoder);

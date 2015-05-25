@@ -146,6 +146,7 @@ struct cno_st_connection_t {
     size_t window_send;
     size_t last_client_stream;
     size_t last_server_stream;
+    size_t stream_count;
     struct cno_st_io_vector_tmp_t buffer;
     struct cno_st_frame_t frame;
     struct cno_st_settings_t settings;
