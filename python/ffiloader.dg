@@ -1,0 +1,65 @@
+import '/os'
+import '/sys'
+import '/importlib'
+import '/importlib/abc'
+import '/importlib/machinery'
+import '/distutils/core/Extension'
+import '/distutils/core/Distribution'
+import '/distutils/errors/CompileError'
+import '/distutils/command/build_ext'
+import '/distutils/ccompiler/new_compiler'
+
+
+BuildExtInplace = subclass build_ext.build_ext where
+  get_ext_fullpath = ext_name ~>
+    fullname = @get_ext_fullname ext_name
+    filename = @get_ext_filename $ fullname.rsplit '.' 1 !! -1
+    os.path.join @build_into filename
+
+
+CModuleLoader = subclass abc.Loader where
+  __init__    = @name @filename ~>
+  exec_module = module ~>
+    dir = os.path.dirname @filename or os.curdir
+    mod = @name.rsplit '.' 1 !! -1
+    ext = Extension @name [@filename]
+    # Use `PyMODINIT_FUNC_NAME` in place of `PyInit_something` and
+    # `PyModuleDef_NAME` as the name of the module in a `PyModuleDef`.
+    ext.define_macros.append ('PyMODINIT_FUNC_NAME', 'PyInit_' + mod)
+    ext.define_macros.append ('PyModuleDef_NAME', '"' + mod.replace '"' '\\"' + '"')
+    # C files may include some metadata in comments
+    # at the start of the file. Like this:
+    #
+    #    //! library: m
+    #    //! library: h2o
+    #    //! library_dir: ./contrib
+    #    //! file: something_else.c
+    #
+    for line in takewhile (x -> x.startswith '//! ') (open @filename) =>
+      param, ok, value = line !! slice 4 None |>.partition ':'
+      param = param.strip!
+      value = value.strip!
+      ok => if param == 'library'     => ext.libraries.append value
+               param == 'library_dir' => ext.library_dirs.append $ os.path.join dir value
+               param == 'include_dir' => ext.include_dirs.append $ os.path.join dir value
+               param == 'file' => ext.sources.append $ os.path.join dir value
+
+    cmd = BuildExtInplace $ Distribution $ dict ext_modules: [ext]
+    cmd.build_into = os.path.dirname  @filename
+    cmd.build_temp = os.path.join dir '__pycache__/clib'
+    cmd.finalize_options!
+    except err => cmd.run!
+           err :: CompileError =>
+             e = ImportError $ str err
+             e.__cause__ = None
+             raise e
+
+    sys.modules.pop @name ''
+    actual = importlib.import_module @name
+    module.__dict__.update actual.__dict__
+
+
+loaders = list ((sys.path_hooks.pop -1).__closure__ !! -1).cell_contents
+loaders.append (CModuleLoader, ['.c'])
+sys.path_importer_cache.clear!
+sys.path_hooks.append $ machinery.FileFinder.path_hook *: loaders

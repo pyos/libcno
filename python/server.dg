@@ -1,0 +1,14 @@
+import '/ffiloader'
+
+import '/asyncio'
+import '/cno'
+
+
+respond = async $ msg loop -> msg.respond 200 [('server', 'libcno/0.1')] b'Hello, World!\n'
+
+
+loop = asyncio.get_event_loop!
+server = loop.run_until_complete $ loop.create_server (-> cno.AIOServer respond loop) '' 8000
+except err => loop.run_forever!
+       err :: KeyboardInterrupt =>
+       finally => server.close!

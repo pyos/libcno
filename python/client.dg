@@ -1,0 +1,17 @@
+import '/ffiloader'
+
+import '/asyncio'
+import '/cno'
+
+
+main = async $ loop host port ->
+  x = cno._BufferedConnection "http2"
+  _, client = await loop.create_connection (-> cno.AIOClient True loop) host port
+  resp = await client.request 'GET' '/' [] b''
+  print resp.code
+  print resp.headers
+  print resp.data
+
+
+loop = asyncio.get_event_loop!
+loop.run_until_complete $ main loop 'localhost' 8000
