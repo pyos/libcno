@@ -7,7 +7,14 @@
 #include "picohttpparser/picohttpparser.h"
 
 
-static int cno_is_own_stream(cno_connection_t *conn, size_t id)
+size_t cno_stream_next_id(cno_connection_t *conn)
+{
+    size_t last = conn->last_stream[CNO_CFG_LOCAL];
+    return last == 0 ? 1 + !conn->client : cno_connection_is_http2(conn) ? last + 2 : last;
+}
+
+
+static int cno_stream_is_local(cno_connection_t *conn, size_t id)
 {
     return (id % 2) == (conn->client);
 }
@@ -15,7 +22,7 @@ static int cno_is_own_stream(cno_connection_t *conn, size_t id)
 
 static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
 {
-    int i = cno_is_own_stream(conn, id);
+    int i = cno_stream_is_local(conn, id);
 
     if (id <= conn->last_stream[i]) {
         (void) CNO_ERROR_TRANSPORT("invalid stream ID (%lu <= %lu)", id, conn->last_stream[i]);
@@ -59,7 +66,7 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
 
 static void cno_stream_destroy(cno_connection_t *conn, cno_stream_t *stream)
 {
-    conn->stream_count[cno_is_own_stream(conn, stream->id)]--;
+    conn->stream_count[cno_stream_is_local(conn, stream->id)]--;
     cno_io_vector_clear(&stream->cache);
     cno_list_remove(stream);
     free(stream);
@@ -261,7 +268,7 @@ static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
 
 int cno_connection_stop(cno_connection_t *conn)
 {
-    if (conn->state < CNO_CONNECTION_HTTP1_INIT) {
+    if (cno_connection_is_http2(conn)) {
         return cno_frame_write_goaway(conn, CNO_STATE_NO_ERROR);
     }
 
@@ -690,6 +697,14 @@ static int cno_connection_send_preface(cno_connection_t *conn)
 }
 
 
+int cno_connection_is_http2(cno_connection_t *conn)
+{
+    return conn->state != CNO_CONNECTION_HTTP1_INIT &&
+           conn->state != CNO_CONNECTION_HTTP1_READY &&
+           conn->state != CNO_CONNECTION_HTTP1_READING;
+}
+
+
 int cno_connection_fire(cno_connection_t *conn)
 {
     int __retcode = CNO_OK;
@@ -1046,21 +1061,30 @@ static int cno_write_get_mode(cno_connection_t *conn, size_t id, cno_stream_t **
             return 1;
 
         default:
-            if (stream) {
-                *stream = cno_stream_find(conn, id);
+            *stream = cno_stream_find(conn, id);
+
+            if (*stream == NULL) {
+                // Clients can create streams with odd ids, while
+                // servers reserve the even ids.
+                if (conn->client ^ (id & 1)) {
+                    return CNO_ERROR_INVALID_STREAM(id);
+                }
+
+                *stream = cno_stream_new(conn, id);
 
                 if (*stream == NULL) {
-                    // Clients can create streams with odd ids, while
-                    // servers reserve the even ids.
-                    if (conn->client ^ (id & 1)) {
-                        return CNO_ERROR_INVALID_STREAM(id);
-                    }
+                    return CNO_PROPAGATE;
+                }
+            }
 
-                    *stream = cno_stream_new(conn, id);
-
-                    if (*stream == NULL) {
-                        return CNO_PROPAGATE;
-                    }
+            if (conn->client) {
+                if ((*stream)->state != CNO_STREAM_IDLE && (*stream)->state != CNO_STREAM_OPEN) {
+                    return CNO_ERROR_INVALID_STREAM(id);
+                }
+            } else {
+                if ((*stream)->state != CNO_STREAM_IDLE          && (*stream)->state != CNO_STREAM_OPEN
+                 && (*stream)->state != CNO_STREAM_CLOSED_REMOTE && (*stream)->state != CNO_STREAM_RESERVED_LOCAL) {
+                    return CNO_ERROR_INVALID_STREAM(id);
                 }
             }
 
@@ -1129,6 +1153,8 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
             if (CNO_FIRE(conn, on_write, head, tg - head)) {
                 return CNO_PROPAGATE;
             }
+
+            streamobj->state = CNO_STREAM_OPEN;
             return CNO_OK;
         }
     }
@@ -1166,6 +1192,12 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
     if (cno_frame_write(conn, &frame)) {
         cno_io_vector_clear(&frame.payload);
         return CNO_PROPAGATE;
+    }
+
+    if (streamobj->state == CNO_STREAM_IDLE) {
+        streamobj->state = CNO_STREAM_OPEN;
+    } else if (streamobj->state == CNO_STREAM_RESERVED_LOCAL) {
+        streamobj->state = CNO_STREAM_CLOSED_REMOTE;
     }
 
     cno_io_vector_clear(&frame.payload);
@@ -1225,10 +1257,20 @@ int cno_write_end(cno_connection_t *conn, size_t stream, int chunked)
                 return CNO_PROPAGATE;
             }
 
+            streamobj->state = CNO_STREAM_IDLE;
             return CNO_OK;
         }
     }
 
     cno_frame_t endstream = { CNO_FRAME_DATA, CNO_FLAG_END_STREAM, stream };
-    return cno_frame_write(conn, &endstream);
+
+    if (cno_frame_write(conn, &endstream)) {
+        return CNO_PROPAGATE;
+    }
+
+    streamobj->state = streamobj->state == CNO_STREAM_CLOSED_REMOTE
+        ? CNO_STREAM_CLOSED
+        : CNO_STREAM_CLOSED_LOCAL;
+
+    return CNO_OK;
 }
