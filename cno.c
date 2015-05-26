@@ -7,22 +7,23 @@
 #include "picohttpparser/picohttpparser.h"
 
 
+static int cno_is_own_stream(cno_connection_t *conn, size_t id)
+{
+    return (id % 2) == (conn->client);
+}
+
+
 static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
 {
-    if (id % 2) {
-        if (id <= conn->last_client_stream) {
-            (void) CNO_ERROR_TRANSPORT("invalid client stream ID (%lu <= %lu)", id, conn->last_client_stream);
-            return NULL;
-        }
-    } else {
-        if (id <= conn->last_server_stream) {
-            (void) CNO_ERROR_TRANSPORT("invalid server stream ID (%lu <= %lu)", id, conn->last_server_stream);
-            return NULL;
-        }
-    }
+    int i = cno_is_own_stream(conn, id);
 
-    if (conn->stream_count >= conn->settings.max_concurrent_streams) {
-        (void) CNO_ERROR_TRANSPORT("reached the limit on concurrent streams");
+    if (id <= conn->last_stream[i]) {
+        (void) CNO_ERROR_TRANSPORT("invalid stream ID (%lu <= %lu)", id, conn->last_stream[i]);
+        return NULL;
+    }
+    // The peer enforces a limit on how many streams we create and vice versa.
+    if (conn->stream_count[i] >= conn->settings[!i].max_concurrent_streams) {
+        (void) CNO_ERROR_TRANSPORT("reached the limit on streams");
         return NULL;
     }
 
@@ -34,17 +35,13 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
     }
 
     CNO_ZERO(stream);
-    if (id % 2) {
-        conn->last_client_stream = id;
-    } else {
-        conn->last_server_stream = id;
-    }
-    conn->stream_count++;
+    conn->last_stream[i] = id;
+    conn->stream_count[i]++;
     stream->id = id;
     stream->last_frame = CNO_FRAME_RST_STREAM;
     stream->state = CNO_STREAM_IDLE;
-    stream->window_recv = conn->settings.initial_window_size;
-    stream->window_send = conn->settings.initial_window_size;
+    stream->window_recv = conn->settings[i].initial_window_size;
+    stream->window_send = conn->settings[i].initial_window_size;
     stream->cache.data = NULL;
     stream->cache.size = 0;
     cno_list_insert_after(conn, stream);
@@ -62,7 +59,7 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id)
 
 static void cno_stream_destroy(cno_connection_t *conn, cno_stream_t *stream)
 {
-    conn->stream_count--;
+    conn->stream_count[cno_is_own_stream(conn, stream->id)]--;
     cno_io_vector_clear(&stream->cache);
     cno_list_remove(stream);
     free(stream);
@@ -116,17 +113,12 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     CNO_ZERO(conn);
     conn->kind  = kind;
     conn->state = kind == CNO_HTTP2_CLIENT ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
-    conn->settings.header_table_size = 4096;
-    conn->settings.enable_push = 1;
-    conn->settings.max_concurrent_streams = -1;
-    conn->settings.initial_window_size = 65536;
-    conn->settings.max_frame_size = 16384;
-    conn->settings.max_header_list_size = -1;
-    conn->window_recv = conn->settings.initial_window_size;
-    conn->window_send = conn->settings.initial_window_size;
-    conn->stream_count = 0;
-    cno_hpack_setlimit(&conn->decoder, conn->settings.header_table_size, 1);
-    cno_hpack_setlimit(&conn->encoder, conn->settings.header_table_size, 0);
+    memcpy(conn->settings,     &cno_settings_initial, sizeof(cno_settings_initial));
+    memcpy(conn->settings + 1, &cno_settings_initial, sizeof(cno_settings_initial));
+    conn->window_recv = conn->settings[CNO_CFG_LOCAL].initial_window_size;
+    conn->window_send = conn->settings[CNO_CFG_LOCAL].initial_window_size;
+    cno_hpack_setlimit(&conn->decoder, conn->settings[CNO_CFG_LOCAL].header_table_size, 1);
+    cno_hpack_setlimit(&conn->encoder, conn->settings[CNO_CFG_LOCAL].header_table_size, 0);
     cno_list_init(&conn->decoder);
     cno_list_init(&conn->encoder);
     cno_list_init(conn);
@@ -208,8 +200,8 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
         frame->stream = cno_stream_find(conn, stream);
     }
 
-    if (length > conn->settings.max_frame_size) {
-        return CNO_ERROR_ASSERTION("frame too big (%lu > %lu)", length, conn->settings.max_frame_size);
+    if (length > conn->settings[CNO_CFG_REMOTE].max_frame_size) {
+        return CNO_ERROR_ASSERTION("frame too big (%lu > %lu)", length, conn->settings[CNO_CFG_REMOTE].max_frame_size);
     }
 
     if (cno_frame_is_flow_controlled(frame)) {
@@ -255,9 +247,7 @@ static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
 {
     char descr[8];
     char *ptr = descr;
-    size_t last_stream = conn->client
-        ? conn->last_server_stream
-        : code == CNO_STATE_NO_ERROR ? (1UL << 31) - 1 : conn->last_client_stream;
+    size_t last_stream = code == CNO_STATE_NO_ERROR ? (1UL << 31) - !conn->client : conn->last_stream[CNO_CFG_LOCAL];
 
     CNO_WRITE_4BYTE(ptr, last_stream);
     CNO_WRITE_4BYTE(ptr, code);
@@ -445,18 +435,13 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                 size_t setting = 0; CNO_READ_2BYTE(setting, ptr);
                 size_t value   = 0; CNO_READ_4BYTE(value,   ptr);
 
-                switch (setting) {
-                    case CNO_SETTINGS_HEADER_TABLE_SIZE:      conn->settings.header_table_size      = value; break;
-                    case CNO_SETTINGS_ENABLE_PUSH:            conn->settings.enable_push            = value; break;
-                    case CNO_SETTINGS_MAX_CONCURRENT_STREAMS: conn->settings.max_concurrent_streams = value; break;
-                    case CNO_SETTINGS_INITIAL_WINDOW_SIZE:    conn->settings.initial_window_size    = value; break;
-                    case CNO_SETTINGS_MAX_FRAME_SIZE:         conn->settings.max_frame_size         = value; break;
-                    case CNO_SETTINGS_MAX_HEADER_LIST_SIZE:   conn->settings.max_header_list_size   = value; break;
+                if (setting && setting < CNO_SETTINGS_UNDEFINED) {
+                    conn->settings[CNO_CFG_REMOTE].array[setting] = value;
                 }
             }
 
-            conn->encoder.limit_upper = conn->settings.header_table_size;
-            conn->decoder.limit_upper = conn->settings.header_table_size;
+            conn->encoder.limit_upper = conn->settings[CNO_CFG_REMOTE].header_table_size;
+            conn->decoder.limit_upper = conn->settings[CNO_CFG_REMOTE].header_table_size;
             cno_hpack_setlimit(&conn->encoder, conn->encoder.limit_upper, 0);
 
             cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK };
@@ -531,7 +516,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
             }
 
             if (frame->flags & CNO_FLAG_END_HEADERS) {
-                size_t limit = conn->settings.max_header_list_size;
+                size_t limit = conn->settings[CNO_CFG_LOCAL].max_header_list_size;
 
                 if (limit > 255) {
                     limit = 255;
@@ -746,8 +731,8 @@ int cno_connection_fire(cno_connection_t *conn)
                 if  (conn->buffer.size >= CNO_PREFACE.size &&  may_be_http2) {
                     // Definitely HTTP2. Stream 1 should be recycled, though.
                     cno_stream_destroy(conn, stream);
-                    conn->last_client_stream = 0;
-                    conn->last_server_stream = 0;
+                    conn->last_stream[0] = 0;
+                    conn->last_stream[0] = 0;
                     conn->state = CNO_CONNECTION_INIT;
                     break;
                 }
@@ -970,7 +955,7 @@ int cno_connection_fire(cno_connection_t *conn)
             CNO_READ_1BYTE(m, base); conn->frame.flags        = m; m = 0;
             CNO_READ_4BYTE(m, base); conn->frame.stream_id    = m; m = 0;
 
-            if (conn->frame.payload.size > conn->settings.max_frame_size) {
+            if (conn->frame.payload.size > conn->settings[CNO_CFG_LOCAL].max_frame_size) {
                 // TODO send FRAME_SIZE_ERROR
                 //      if HEADERS, PUSH_PROMISE, CONTINUATION, SETTINGS, or stream is 0
                 //      => CONNECTION_ERROR

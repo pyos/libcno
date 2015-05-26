@@ -43,34 +43,34 @@ enum CNO_STREAM_STATE {
 
 
 enum CNO_FRAME_TYPE {
-    CNO_FRAME_DATA = 0,
-    CNO_FRAME_HEADERS = 1,
-    CNO_FRAME_PRIORITY = 2,
-    CNO_FRAME_RST_STREAM = 3,
-    CNO_FRAME_SETTINGS = 4,
-    CNO_FRAME_PUSH_PROMISE = 5,
-    CNO_FRAME_PING = 6,
-    CNO_FRAME_GOAWAY = 7,
-    CNO_FRAME_WINDOW_UPDATE = 8,
-    CNO_FRAME_CONTINUATION = 9,
+    CNO_FRAME_DATA          = 0x0,
+    CNO_FRAME_HEADERS       = 0x1,
+    CNO_FRAME_PRIORITY      = 0x2,
+    CNO_FRAME_RST_STREAM    = 0x3,
+    CNO_FRAME_SETTINGS      = 0x4,
+    CNO_FRAME_PUSH_PROMISE  = 0x5,
+    CNO_FRAME_PING          = 0x6,
+    CNO_FRAME_GOAWAY        = 0x7,
+    CNO_FRAME_WINDOW_UPDATE = 0x8,
+    CNO_FRAME_CONTINUATION  = 0x9,
 };
 
 
 enum CNO_STATE_CODE {
-    CNO_STATE_NO_ERROR = 0,
-    CNO_STATE_PROTOCOL_ERROR = 1,
-    CNO_STATE_INTERNAL_ERROR = 2,
-    CNO_STATE_FLOW_CONTROL_ERROR = 3,
-    CNO_STATE_SETTINGS_TIMEOUT = 4,
-    CNO_STATE_STREAM_CLOSED = 5,
-    CNO_STATE_FRAME_SIZE_ERROR = 6,
-    CNO_STATE_REFUSED_STREAM = 7,
-    CNO_STATE_CANCEL = 8,
-    CNO_STATE_COMPRESSION_ERROR = 9,
-    CNO_STATE_CONNECT_ERROR = 10,
-    CNO_STATE_ENHANCE_YOUR_CALM = 11,
-    CNO_STATE_INADEQUATE_SECURITY = 12,
-    CNO_STATE_HTTP_1_1_REQUIRED = 13,
+    CNO_STATE_NO_ERROR            = 0x0,
+    CNO_STATE_PROTOCOL_ERROR      = 0x1,
+    CNO_STATE_INTERNAL_ERROR      = 0x2,
+    CNO_STATE_FLOW_CONTROL_ERROR  = 0x3,
+    CNO_STATE_SETTINGS_TIMEOUT    = 0x4,
+    CNO_STATE_STREAM_CLOSED       = 0x5,
+    CNO_STATE_FRAME_SIZE_ERROR    = 0x6,
+    CNO_STATE_REFUSED_STREAM      = 0x7,
+    CNO_STATE_CANCEL              = 0x8,
+    CNO_STATE_COMPRESSION_ERROR   = 0x9,
+    CNO_STATE_CONNECT_ERROR       = 0xa,
+    CNO_STATE_ENHANCE_YOUR_CALM   = 0xb,
+    CNO_STATE_INADEQUATE_SECURITY = 0xc,
+    CNO_STATE_HTTP_1_1_REQUIRED   = 0xd,
 };
 
 
@@ -90,6 +90,7 @@ enum CNO_CONNECTION_SETTINGS {
     CNO_SETTINGS_INITIAL_WINDOW_SIZE    = 0x4,
     CNO_SETTINGS_MAX_FRAME_SIZE         = 0x5,
     CNO_SETTINGS_MAX_HEADER_LIST_SIZE   = 0x6,
+    CNO_SETTINGS_UNDEFINED              = 0x7,
 };
 
 
@@ -128,12 +129,22 @@ struct cno_st_stream_t {
 
 
 struct cno_st_settings_t {
-    size_t header_table_size;
-    size_t enable_push;
-    size_t max_concurrent_streams;
-    size_t initial_window_size;
-    size_t max_frame_size;
-    size_t max_header_list_size;
+    union {
+        struct {
+            size_t header_table_size;
+            size_t enable_push;
+            size_t max_concurrent_streams;
+            size_t initial_window_size;
+            size_t max_frame_size;
+            size_t max_header_list_size;
+        };
+        size_t array[6];
+    };
+};
+
+
+static const struct cno_st_settings_t cno_settings_initial = {
+    { { 4096, 1, -1, 65536, 16384, -1 } }
 };
 
 
@@ -144,12 +155,13 @@ struct cno_st_connection_t {
     int closed;
     size_t window_recv;
     size_t window_send;
-    size_t last_client_stream;
-    size_t last_server_stream;
-    size_t stream_count;
+    size_t last_stream[2];   // [0] -> peer's data
+    size_t stream_count[2];  // [1] -> our data
+    #define CNO_CFG_REMOTE 0
+    #define CNO_CFG_LOCAL  1
+    struct cno_st_settings_t settings[2];
     struct cno_st_io_vector_tmp_t buffer;
     struct cno_st_frame_t frame;
-    struct cno_st_settings_t settings;
     struct cno_st_hpack_t decoder;
     struct cno_st_hpack_t encoder;
     void * cb_data;
