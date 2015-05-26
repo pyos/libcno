@@ -25,7 +25,7 @@ int respond_with_hello_world(cno_connection_t *conn, int *fd, size_t stream, int
     message.headers_len = 3;
 
     cno_header_t headers[3] = {
-        { { "server", 6 }, { "hello-world/1.0", 26 } },
+        { { "server", 6 }, { "hello-world/1.0", 15 } },
         { { "content-length", 14 }, { "14", 2 } },
         { { "cache-control", 13 }, { "no-cache", 8 } },
     };
