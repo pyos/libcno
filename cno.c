@@ -218,16 +218,16 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
                 length, conn->window_send);
         }
 
-        if (frame->stream && !frame->flags) {
+        if (frame->stream) {
             if (length > frame->stream->window_send) {
                 return CNO_ERROR_WOULD_BLOCK("frame exceeds stream flow window (%lu > %lu)",
                     length, frame->stream->window_send);
             }
 
-            frame->stream->window_send -= 9 + length;
+            frame->stream->window_send -= length;
         }
 
-        conn->window_send -= 9 + length;
+        conn->window_send -= length;
     }
 
     CNO_WRITE_3BYTE(ptr, length);
