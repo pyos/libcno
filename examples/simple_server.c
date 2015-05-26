@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <netinet/ip.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <unistd.h>
 
@@ -45,9 +46,15 @@ int respond_with_hello_world(cno_connection_t *conn, int *fd, size_t stream, int
 
 void *handle(void *sockptr)
 {
-    int fd = (int) (size_t) sockptr;
+    int fd  = (int) (size_t) sockptr;
+    int one = 1;
     ssize_t read;
     char message[2048];
+
+    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(int)) < 0) {
+        fprintf(stderr, "error: could not set TCP_NODELAY");
+        return NULL;
+    }
 
     cno_connection_t *conn = cno_connection_new(CNO_HTTP2_SERVER);
 
