@@ -75,15 +75,16 @@ static void cno_stream_destroy(cno_connection_t *conn, cno_stream_t *stream)
 
 static int cno_stream_destroy_clean(cno_connection_t *conn, cno_stream_t *stream)
 {
-    if (stream->state == CNO_STREAM_OPEN || stream->state == CNO_STREAM_CLOSED_LOCAL) {
+    size_t  state = stream->state;
+    stream->state = CNO_STREAM_CLOSED;
+
+    if (state == CNO_STREAM_OPEN || state == CNO_STREAM_CLOSED_LOCAL) {
         // Note that second argument is `1`. Callback should know that the stream
         // is dead, but shouldn't try to actually do anything with the message.
         if (CNO_FIRE(conn, on_message_end, stream->id, 1)) {
             return CNO_PROPAGATE;
         }
     }
-
-    stream->state = CNO_STREAM_CLOSED;
 
     if (CNO_FIRE(conn, on_stream_end, stream->id)) {
         return CNO_PROPAGATE;
@@ -217,7 +218,7 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
                 length, conn->window_send);
         }
 
-        if (frame->stream) {
+        if (frame->stream && !frame->flags) {
             if (length > frame->stream->window_send) {
                 return CNO_ERROR_WOULD_BLOCK("frame exceeds stream flow window (%lu > %lu)",
                     length, frame->stream->window_send);
@@ -254,7 +255,7 @@ static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
 {
     char descr[8];
     char *ptr = descr;
-    size_t last_stream = code == CNO_STATE_NO_ERROR ? (1UL << 31) - !conn->client : conn->last_stream[CNO_CFG_LOCAL];
+    size_t last_stream = code == CNO_STATE_NO_ERROR && !conn->client ? (1UL << 31) - !conn->client : conn->last_stream[CNO_CFG_REMOTE];
 
     CNO_WRITE_4BYTE(ptr, last_stream);
     CNO_WRITE_4BYTE(ptr, code);
@@ -399,8 +400,6 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                     ? CNO_PROPAGATE
                     : CNO_ERROR_TRANSPORT("reset of a nonexistent stream");
             }
-
-            stream->state = CNO_STREAM_CLOSED;
 
             if (cno_stream_destroy_clean(conn, stream)) {
                 return CNO_PROPAGATE;
@@ -607,7 +606,6 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
         end_stream:
             if (frame->flags & CNO_FLAG_END_STREAM) {
                 if (stream->state == CNO_STREAM_CLOSED_LOCAL) {
-                    stream->state = CNO_STREAM_CLOSED;
                     // This will also fire on_message_end:
                     if (cno_stream_destroy_clean(conn, stream)) {
                         return CNO_PROPAGATE;
