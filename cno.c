@@ -848,11 +848,6 @@ int cno_connection_fire(cno_connection_t *conn)
 
             memcpy(stream->msg.headers, headers, sizeof(headers));
 
-            if (CNO_FIRE(conn, on_message_start, stream->id, &stream->msg)) {
-                free(stream->msg.headers);
-                STOP(CNO_PROPAGATE);
-            }
-
             stream->state = CNO_STREAM_OPEN;
 
             if (conn->state == CNO_CONNECTION_HTTP1_READY) {
@@ -860,6 +855,12 @@ int cno_connection_fire(cno_connection_t *conn)
             }
 
             cno_io_vector_shift(&conn->buffer, (size_t) ok);
+
+            if (CNO_FIRE(conn, on_message_start, stream->id, &stream->msg)) {
+                free(stream->msg.headers);
+                STOP(CNO_PROPAGATE);
+            }
+
             free(stream->msg.headers);
             break;
         }
@@ -917,16 +918,16 @@ int cno_connection_fire(cno_connection_t *conn)
                 break;
             }
 
-            if (CNO_FIRE(conn, on_message_end, stream->id, 0)) {
-                STOP(CNO_PROPAGATE);
-            }
-
             if (conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE) {
                 conn->state = CNO_CONNECTION_PREFACE;
                 conn->streams.first->state = CNO_STREAM_CLOSED_REMOTE;
             } else {
                 conn->state = CNO_CONNECTION_HTTP1_READY;
                 conn->streams.first->state = CNO_STREAM_IDLE;
+            }
+
+            if (CNO_FIRE(conn, on_message_end, stream->id, 0)) {
+                STOP(CNO_PROPAGATE);
             }
 
             break;
@@ -1164,10 +1165,6 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg,
                 return CNO_PROPAGATE;
             }
 
-            if (!final) {
-                streamobj->state = CNO_STREAM_OPEN;
-            }
-
             return CNO_OK;;
         }
     }
@@ -1252,9 +1249,6 @@ int cno_write_data(cno_connection_t *conn, size_t stream, const char *data, size
                 if (CNO_FIRE(conn, on_write, data, length)) {
                     return CNO_PROPAGATE;
                 }
-            }
-            if (final) {
-                streamobj->state = CNO_STREAM_IDLE;
             }
             return CNO_OK;
         }
