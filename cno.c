@@ -696,12 +696,6 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                 default: return cno_frame_write_rst_stream(conn, frame->stream_id, CNO_STATE_PROTOCOL_ERROR);
             }
         }
-
-        default: {
-            return cno_frame_write_goaway(conn, CNO_STATE_PROTOCOL_ERROR)
-                ? CNO_PROPAGATE
-                : CNO_ERROR_TRANSPORT("unknown frame type %d", frame->type);
-        }
     }
 
     return CNO_OK;
