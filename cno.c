@@ -188,13 +188,13 @@ int cno_connection_lost(cno_connection_t *conn)
 
 
 #define CNO_WRITE_1BYTE(ptr, src) *ptr++ = src
-#define CNO_WRITE_2BYTE(ptr, src) do { *ptr++ = src >>  8; CNO_WRITE_1BYTE(ptr, src); } while (0)
-#define CNO_WRITE_3BYTE(ptr, src) do { *ptr++ = src >> 16; CNO_WRITE_2BYTE(ptr, src); } while (0)
-#define CNO_WRITE_4BYTE(ptr, src) do { *ptr++ = src >> 24; CNO_WRITE_3BYTE(ptr, src); } while (0)
-#define CNO_READ_1BYTE(tg, ptr) tg |= *ptr++
-#define CNO_READ_2BYTE(tg, ptr) do { tg |= *ptr++ <<  8; CNO_READ_1BYTE(tg, ptr); } while (0)
-#define CNO_READ_3BYTE(tg, ptr) do { tg |= *ptr++ << 16; CNO_READ_2BYTE(tg, ptr); } while (0)
-#define CNO_READ_4BYTE(tg, ptr) do { tg |= *ptr++ << 24; CNO_READ_3BYTE(tg, ptr); } while (0)
+#define CNO_WRITE_2BYTE(ptr, src) do { ptr[0] = src >>  8; ptr[1] = src; ptr += 2; } while (0)
+#define CNO_WRITE_3BYTE(ptr, src) do { ptr[0] = src >> 16; ptr[1] = src >>  8; ptr[2] = src; ptr += 3; } while (0)
+#define CNO_WRITE_4BYTE(ptr, src) do { ptr[0] = src >> 24; ptr[1] = src >> 16; ptr[2] = src >> 8; ptr[3] = src; ptr += 4; } while (0)
+#define CNO_READ_1BYTE(tg, ptr) tg = *ptr++
+#define CNO_READ_2BYTE(tg, ptr) do { tg = ptr[0] <<  8 | ptr[1]; ptr += 2; } while (0)
+#define CNO_READ_3BYTE(tg, ptr) do { tg = ptr[0] << 16 | ptr[1] <<  8 | ptr[2]; ptr += 3; } while (0)
+#define CNO_READ_4BYTE(tg, ptr) do { tg = ptr[0] << 24 | ptr[1] << 16 | ptr[2] << 8 | ptr[3]; ptr += 4; } while (0)
 
 
 static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
@@ -960,13 +960,13 @@ int cno_connection_fire(cno_connection_t *conn)
         case CNO_CONNECTION_READY: {
             WAIT(conn->buffer.size >= 9);
 
-            size_t m = 0;
+            size_t m;
             unsigned char *base = (unsigned char *) conn->buffer.data;
             CNO_ZERO(&conn->frame);
-            CNO_READ_3BYTE(m, base); conn->frame.payload.size = m; m = 0;
-            CNO_READ_1BYTE(m, base); conn->frame.type         = m; m = 0;
-            CNO_READ_1BYTE(m, base); conn->frame.flags        = m; m = 0;
-            CNO_READ_4BYTE(m, base); conn->frame.stream_id    = m; m = 0;
+            CNO_READ_3BYTE(m, base); conn->frame.payload.size = m;
+            CNO_READ_1BYTE(m, base); conn->frame.type         = m;
+            CNO_READ_1BYTE(m, base); conn->frame.flags        = m;
+            CNO_READ_4BYTE(m, base); conn->frame.stream_id    = m;
 
             if (conn->frame.payload.size > conn->settings[CNO_CFG_LOCAL].max_frame_size) {
                 // TODO send FRAME_SIZE_ERROR
@@ -1052,10 +1052,7 @@ static int cno_write_get_mode(cno_connection_t *conn, size_t id, cno_stream_t **
                 return CNO_ERROR_INVALID_STREAM(id);
             }
 
-            if (stream) {
-                *stream = conn->streams.first;
-            }
-
+            *stream = conn->streams.first;
             return 1;
 
         default:
@@ -1266,9 +1263,14 @@ int cno_write_end(cno_connection_t *conn, size_t stream, int chunked)
         return CNO_PROPAGATE;
     }
 
-    streamobj->state = streamobj->state == CNO_STREAM_CLOSED_REMOTE
-        ? CNO_STREAM_CLOSED
-        : CNO_STREAM_CLOSED_LOCAL;
+    if (streamobj->state == CNO_STREAM_CLOSED_REMOTE) {
+        if (cno_stream_destroy_clean(conn, streamobj)) {
+            cno_stream_destroy(conn, streamobj);
+            return CNO_PROPAGATE;
+        }
+    } else {
+        streamobj->state = CNO_STREAM_CLOSED_LOCAL;
+    }
 
     return CNO_OK;
 }
