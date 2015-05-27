@@ -442,7 +442,7 @@ static int cno_connection_handle_frame(cno_connection_t *conn, cno_frame_t *fram
                 size_t value   = 0; CNO_READ_4BYTE(value,   ptr);
 
                 if (setting && setting < CNO_SETTINGS_UNDEFINED) {
-                    conn->settings[CNO_CFG_REMOTE].array[setting] = value;
+                    conn->settings[CNO_CFG_REMOTE].array[setting - 1] = value;
                 }
             }
 
