@@ -121,8 +121,7 @@ int main(int argc, char *argv[])
 
     if (
         cno_connection_made(client)
-     || cno_write_message(client, 1, &message)
-     || cno_write_end(client, 1, 0)) goto error;
+     || cno_write_message(client, 1, &message, 1)) goto error;
 
     char buf[2048];
     ssize_t ln;

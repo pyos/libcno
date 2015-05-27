@@ -116,7 +116,7 @@ static int pycno_on_message_data(cno_connection_t *conn, PyCNO *self, size_t str
 
 
 static int pycno_on_message_end(cno_connection_t *conn, PyCNO *self, size_t stream, int disconnect)
-           PYCNO_SIMPLE_CALLBACK(self->on_message_end, "ni", stream, disconnect);
+           PYCNO_SIMPLE_CALLBACK(self->on_message_end, "nO", stream, disconnect ? Py_True : Py_False);
 
 
 static int pycno_on_frame(cno_connection_t *conn, PyCNO *self, cno_frame_t *frame)
@@ -265,17 +265,18 @@ static PyObject * pycno_write_message(PyCNO *self, PyObject *args, PyObject *kwa
     cno_message_t msg = { 0 };
     PyObject *headers;
     Py_ssize_t stream;
+    int eof = 0;
 
     if (self->conn->client) {
-        char *kwds[] = { "stream", "method", "path", "headers", NULL };
-        if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ns#s#O", kwds, &stream,
+        char *kwds[] = { "stream", "method", "path", "headers", "eof", NULL };
+        if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ns#s#O|p", kwds, &stream,
                 &msg.method.data, &msg.method.size,
-                &msg.path.data,   &msg.path.size, &headers)) {
+                &msg.path.data,   &msg.path.size, &headers, &eof)) {
             return NULL;
         }
     } else {
-        char *kwds[] = { "stream", "code", "headers", NULL };
-        if (!PyArg_ParseTupleAndKeywords(args, kwargs, "niO", kwds, &stream, &msg.code, &headers)) {
+        char *kwds[] = { "stream", "code", "headers", "eof", NULL };
+        if (!PyArg_ParseTupleAndKeywords(args, kwargs, "niO|p", kwds, &stream, &msg.code, &headers, &eof)) {
             return NULL;
         }
     }
@@ -322,7 +323,7 @@ static PyObject * pycno_write_message(PyCNO *self, PyObject *args, PyObject *kwa
         return NULL;
     }
 
-    if (cno_write_message(self->conn, (size_t) stream, &msg)) {
+    if (cno_write_message(self->conn, (size_t) stream, &msg, eof)) {
         return pycno_handle_cno_error(self);
     }
 
@@ -336,32 +337,14 @@ static PyObject * pycno_write_data(PyCNO *self, PyObject *args, PyObject *kwargs
     Py_ssize_t stream;
     Py_ssize_t length;
     const char *data;
-    int chunked = 0;
-    char *kwds[] = { "stream", "data", "chunked", NULL };
+    int eof = 0;
+    char *kwds[] = { "stream", "data", "eof", NULL };
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ny#|p", kwds, &stream, &data, &length, &chunked)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ny#|p", kwds, &stream, &data, &length, &eof)) {
         return NULL;
     }
 
-    if (cno_write_data(self->conn, stream, data, length, chunked)) {
-        return pycno_handle_cno_error(self);
-    }
-
-    Py_RETURN_NONE;
-}
-
-
-static PyObject * pycno_write_end(PyCNO *self, PyObject *args, PyObject *kwargs)
-{
-    Py_ssize_t stream;
-    int chunked = 0;
-    char *kwds[] = { "stream", "chunked", NULL };
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "n|p", kwds, &stream, &chunked)) {
-        return NULL;
-    }
-
-    if (cno_write_end(self->conn, stream, chunked)) {
+    if (cno_write_data(self->conn, stream, data, length, eof)) {
         return pycno_handle_cno_error(self);
     }
 
@@ -408,7 +391,6 @@ static PyMethodDef PyCNOMethods[] = {
     { "connection_lost", (PyCFunction) pycno_connection_lost, METH_VARARGS, NULL },
     { "write_message",   (PyCFunction) pycno_write_message,   METH_VARARGS | METH_KEYWORDS, NULL },
     { "write_data",      (PyCFunction) pycno_write_data,      METH_VARARGS | METH_KEYWORDS, NULL },
-    { "write_end",       (PyCFunction) pycno_write_end,       METH_VARARGS | METH_KEYWORDS, NULL },
     { NULL }
 };
 

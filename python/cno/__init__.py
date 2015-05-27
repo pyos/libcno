@@ -26,15 +26,14 @@ class Request (Bufferable):
         self.fragments  = asyncio.Queue(loop=conn._loop)
 
     def respond(self, code, headers, data):
-        self.connection.write_message(self.stream, code, headers)
-        while True:
+        self.connection.write_message(self.stream, code, headers, not data)
+        while data:
             try:
-                self.connection.write_data(self.stream, data)
+                self.connection.write_data(self.stream, data, True)
             except BlockingIOError:
                 yield from self.connection._wait_for_flow_control_update(self.stream)
             else:
                 break
-        self.connection.write_end(self.stream)
 
 
 class Response (Bufferable):
@@ -59,6 +58,12 @@ class AIOConnection (Connection):
         self.on_stream_end          = self._msg_abort
         self.on_flow_control_update = self._reopen_flow
 
+    def connection_lost(self, exc):
+        super().connection_lost(exc)
+        for task in self._tasks.values():
+            if not task.done():
+                task.cancel()
+
     def _msg_start(self, stream, *args):
         pass
 
@@ -73,7 +78,7 @@ class AIOConnection (Connection):
         wr = self._writers.pop(stream, None)
         wr and wr.cancel()
         if task and disconnected and not self.is_client and not task.done():
-            return task.set_exception(ConnectionError())
+            return task.cancel()
 
     def _msg_abort(self, stream):
         return self._msg_end(stream, True)
@@ -126,8 +131,8 @@ class AIOClient (AIOConnection):
             raise RuntimeError("already waiting for a response on this connection")
 
         self._stream += self._strinc
-        self.write_message(stream, method, path, headers)
-        while True:
+        self.write_message(stream, method, path, headers, not data)
+        while data:
             try:
                 self.write_data(stream, data)
             except BlockingIOError:
@@ -135,7 +140,6 @@ class AIOClient (AIOConnection):
                 yield from self._wait_for_flow_control_update(stream)
             else:
                 break
-        self.write_end(stream)
 
         self._tasks[stream] = fut = asyncio.Future(loop=self._loop)
         try:

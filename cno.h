@@ -288,8 +288,7 @@ int                cno_connection_stop          (cno_connection_t *conn);
 int                cno_connection_is_http2      (cno_connection_t *conn);
 size_t             cno_stream_next_id           (cno_connection_t *conn);
 
-int cno_write_message (cno_connection_t *conn, size_t stream, cno_message_t *msg);
-int cno_write_data    (cno_connection_t *conn, size_t stream, const char *data, size_t length, int chunked);
-int cno_write_end     (cno_connection_t *conn, size_t stream, int chunked);
+int cno_write_message (cno_connection_t *conn, size_t stream, cno_message_t *msg, int final);
+int cno_write_data    (cno_connection_t *conn, size_t stream, const char *data, size_t length, int final);
 
 #endif

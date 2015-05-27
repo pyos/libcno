@@ -806,7 +806,7 @@ int cno_connection_fire(cno_connection_t *conn)
                         /* headers_len */ 2, upgrade_headers
                     };
 
-                    if (cno_write_message(conn, stream->id, &upgrade_msg)) {
+                    if (cno_write_message(conn, stream->id, &upgrade_msg, 1)) {
                         STOP(CNO_PROPAGATE);
                     }
 
@@ -1088,7 +1088,22 @@ static int cno_write_get_mode(cno_connection_t *conn, size_t id, cno_stream_t **
 }
 
 
-int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
+static inline int cno_finalize_http2(cno_connection_t *conn, cno_stream_t *streamobj)
+{
+    if (streamobj->state == CNO_STREAM_CLOSED_REMOTE) {
+        if (cno_stream_destroy_clean(conn, streamobj)) {
+            cno_stream_destroy(conn, streamobj);
+            return CNO_PROPAGATE;
+        }
+    } else {
+        streamobj->state = CNO_STREAM_CLOSED_LOCAL;
+    }
+
+    return CNO_OK;
+}
+
+
+int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg, int final)
 {
     cno_stream_t *streamobj;
 
@@ -1149,14 +1164,21 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
                 return CNO_PROPAGATE;
             }
 
-            streamobj->state = CNO_STREAM_OPEN;
-            return CNO_OK;
+            if (!final) {
+                streamobj->state = CNO_STREAM_OPEN;
+            }
+
+            return CNO_OK;;
         }
     }
 
     cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, stream };
     msg->major = 2;
     msg->minor = 0;
+
+    if (final) {
+        frame.flags |= CNO_FLAG_END_STREAM;
+    }
 
     if (conn->client) {
         cno_header_t head[2] = {
@@ -1189,18 +1211,19 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg)
         return CNO_PROPAGATE;
     }
 
+    cno_io_vector_clear(&frame.payload);
+
     if (streamobj->state == CNO_STREAM_IDLE) {
         streamobj->state = CNO_STREAM_OPEN;
     } else if (streamobj->state == CNO_STREAM_RESERVED_LOCAL) {
         streamobj->state = CNO_STREAM_CLOSED_REMOTE;
     }
 
-    cno_io_vector_clear(&frame.payload);
-    return CNO_OK;
+    return final ? cno_finalize_http2(conn, streamobj) : CNO_OK;
 }
 
 
-int cno_write_data(cno_connection_t *conn, size_t stream, const char *data, size_t length, int chunked)
+int cno_write_data(cno_connection_t *conn, size_t stream, const char *data, size_t length, int final)
 {
     cno_stream_t *streamobj;
 
@@ -1209,7 +1232,7 @@ int cno_write_data(cno_connection_t *conn, size_t stream, const char *data, size
         case  1: {
             if (!length) {
                 // Nothing to do.
-            } else if (chunked) {
+            } /* else if (chunked) {
                 size_t enc;
                 char  encd[sizeof(size_t) + 2];
                 char *it = encd + sizeof(size_t) + 2;
@@ -1225,52 +1248,25 @@ int cno_write_data(cno_connection_t *conn, size_t stream, const char *data, size
                 if (CNO_FIRE(conn, on_write, it, sizeof(size_t) + 2 - (it - encd))
                  || CNO_FIRE(conn, on_write, data, length)
                  || CNO_FIRE(conn, on_write, "\r\n", 2)) return CNO_PROPAGATE;
-            } else {
+            } */ else {
                 if (CNO_FIRE(conn, on_write, data, length)) {
                     return CNO_PROPAGATE;
                 }
             }
+            if (final) {
+                streamobj->state = CNO_STREAM_IDLE;
+            }
             return CNO_OK;
         }
     }
 
-    cno_frame_t frame = { CNO_FRAME_DATA, 0, stream };
+    cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, stream };
     frame.payload.data = (char *) data;
     frame.payload.size = length;
-    return cno_frame_write(conn, &frame);
-}
 
-
-int cno_write_end(cno_connection_t *conn, size_t stream, int chunked)
-{
-    cno_stream_t *streamobj;
-
-    switch (cno_write_get_mode(conn, stream, &streamobj)) {
-        case -1: return CNO_PROPAGATE;
-        case  1: {
-            if (chunked && CNO_FIRE(conn, on_write, "0\r\n\r\n", 5)) {
-                return CNO_PROPAGATE;
-            }
-
-            streamobj->state = CNO_STREAM_IDLE;
-            return CNO_OK;
-        }
-    }
-
-    cno_frame_t endstream = { CNO_FRAME_DATA, CNO_FLAG_END_STREAM, stream };
-
-    if (cno_frame_write(conn, &endstream)) {
+    if (cno_frame_write(conn, &frame)) {
         return CNO_PROPAGATE;
     }
 
-    if (streamobj->state == CNO_STREAM_CLOSED_REMOTE) {
-        if (cno_stream_destroy_clean(conn, streamobj)) {
-            cno_stream_destroy(conn, streamobj);
-            return CNO_PROPAGATE;
-        }
-    } else {
-        streamobj->state = CNO_STREAM_CLOSED_LOCAL;
-    }
-
-    return CNO_OK;
+    return final ? cno_finalize_http2(conn, streamobj) : CNO_OK;
 }

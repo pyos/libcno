@@ -34,9 +34,8 @@ int respond_with_hello_world(cno_connection_t *conn, int *fd, size_t stream, int
     message.headers = headers;
 
     if (
-        cno_write_message(conn, stream, &message)
-     || cno_write_data(conn, stream, "Hello, World!\n", 14, 0)
-     || cno_write_end(conn, stream, 0)
+        cno_write_message(conn, stream, &message, 0)
+     || cno_write_data(conn, stream, "Hello, World!\n", 14, 1)
     ) return CNO_PROPAGATE;
 
     log_message(*fd, &message, 0);
