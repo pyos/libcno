@@ -203,13 +203,44 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
     char *ptr = header;
     size_t length = frame->payload.size;
     size_t stream = frame->stream_id;
+    size_t limit  = conn->settings[CNO_CFG_REMOTE].max_frame_size;
 
     if (frame->stream == NULL) {
         frame->stream = cno_stream_find(conn, stream);
     }
 
-    if (length > conn->settings[CNO_CFG_REMOTE].max_frame_size) {
-        return CNO_ERROR_ASSERTION("frame too big (%lu > %lu)", length, conn->settings[CNO_CFG_REMOTE].max_frame_size);
+    if (length > limit) {
+        if (frame->type != CNO_FRAME_DATA && frame->type != CNO_FRAME_HEADERS) {
+            return CNO_ERROR_ASSERTION("frame too big (%lu > %lu)", length, limit);
+        }
+
+        if (frame->flags & (CNO_FLAG_PADDED | CNO_FLAG_PRIORITY)) {
+            return CNO_ERROR_NOT_IMPLEMENTED("don't know how to split padded frames");
+        }
+
+        size_t erased = frame->flags & (CNO_FLAG_END_STREAM | CNO_FLAG_END_HEADERS);
+        frame->flags &= ~erased;
+        frame->payload.size -= limit;
+
+        if (cno_frame_write(conn, frame)) {
+            frame->payload.size += limit;
+            frame->flags        |= erased;
+            return CNO_PROPAGATE;
+        }
+
+        frame->payload.data += frame->payload.size;
+        frame->payload.size  = limit;
+        frame->flags |= erased;
+
+        if (cno_frame_write(conn, frame)) {
+            frame->payload.data -= length - limit;
+            frame->payload.size  = length;
+            return CNO_PROPAGATE;
+        }
+
+        frame->payload.data -= length - limit;
+        frame->payload.size  = length;
+        return CNO_OK;
     }
 
     if (cno_frame_is_flow_controlled(frame)) {
