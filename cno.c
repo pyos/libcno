@@ -16,7 +16,7 @@ size_t cno_stream_next_id(cno_connection_t *conn)
 
 static int cno_stream_is_local(cno_connection_t *conn, size_t id)
 {
-    return (id % 2) == (conn->client);
+    return (int) (id % 2) == (conn->client);
 }
 
 
@@ -1106,7 +1106,7 @@ static inline int cno_finalize_http2(cno_connection_t *conn, cno_stream_t *strea
 
 int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg, int final)
 {
-    cno_stream_t *streamobj;
+    cno_stream_t *streamobj = NULL;
 
     switch (cno_write_get_mode(conn, stream, &streamobj)) {
         case -1: return CNO_PROPAGATE;
@@ -1222,7 +1222,7 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg,
 
 int cno_write_data(cno_connection_t *conn, size_t stream, const char *data, size_t length, int final)
 {
-    cno_stream_t *streamobj;
+    cno_stream_t *streamobj = NULL;
 
     switch (cno_write_get_mode(conn, stream, &streamobj)) {
         case -1: return CNO_PROPAGATE;

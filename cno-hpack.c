@@ -258,7 +258,7 @@ static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source,
 
     unsigned char head = (unsigned char) *source->data;
     unsigned char indexed;
-    const cno_header_t *header;
+    const cno_header_t *header = NULL;
     size_t index;
 
     // Indexed header field.
