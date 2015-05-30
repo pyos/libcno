@@ -362,6 +362,12 @@ static PyObject * pycno_is_client(PyCNO *self, void *closure)
 }
 
 
+static PyObject * pycno_next_stream(PyCNO *self, void *closure)
+{
+    return PyLong_FromLong(cno_stream_next_id(self->conn));
+}
+
+
 static void pycno_dealloc(PyCNO *self)
 {
     if (self->conn) {
@@ -396,7 +402,8 @@ static PyMethodDef PyCNOMethods[] = {
 
 
 static PyGetSetDef PyCNOGetSetters[] = {
-    { "is_client", (getter) pycno_is_client, NULL, NULL, NULL },
+    { "is_client",   (getter) pycno_is_client,   NULL, NULL, NULL },
+    { "next_stream", (getter) pycno_next_stream, NULL, NULL, NULL },
     { NULL }
 };
 
