@@ -182,7 +182,7 @@ static int cno_hpack_decode_string(cno_io_vector_tmp_t *source, cno_io_vector_t 
     }
 
     char huffman = *source->data >> 7;
-    size_t length;
+    size_t length = 0;
 
     if (cno_hpack_decode_uint(source, 7, &length)) {
         return CNO_PROPAGATE;
