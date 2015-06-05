@@ -276,6 +276,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
     unsigned char *ptr = (unsigned char *) frame->payload.data;
     unsigned char *end = sz + ptr;
     cno_stream_t *stream = frame->stream = cno_stream_find(conn, frame->stream_id);
+    int stream_may_be_reset = frame->stream_id && frame->stream_id <= conn->last_stream[CNO_CFG_REMOTE];
 
     if (cno_frame_is_flow_controlled(frame) && sz) {
         if (conn->window_recv < sz) {
@@ -315,6 +316,10 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
     if (frame->type == CNO_FRAME_CONTINUATION) {
         if (!stream) {
+            if (stream_may_be_reset) {
+                return CNO_OK;
+            }
+
             return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "CONTINUATION on a non-existent stream");
         }
 
@@ -366,6 +371,10 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
         }
 
         case CNO_FRAME_GOAWAY: {
+            if (frame->stream_id) {
+                return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "got GOAWAY on stream %lu", frame->stream_id);
+            }
+
             if (cno_connection_lost(conn)) {
                 return CNO_PROPAGATE;
             }
@@ -376,6 +385,10 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
         case CNO_FRAME_RST_STREAM: {
             if (!stream) {
+                if (stream_may_be_reset) {
+                    return CNO_OK;
+                }
+
                 return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "reset of a nonexistent stream");
             }
 
@@ -397,6 +410,10 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
         }
 
         case CNO_FRAME_SETTINGS: {
+            if (frame->stream_id) {
+                return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "got SETTINGS on stream %lu", frame->stream_id);
+            }
+
             if (frame->flags & CNO_FLAG_ACK) {
                 if (sz) {
                     return CNO_ERROR_GOAWAY(conn, CNO_STATE_FRAME_SIZE_ERROR, "bad SETTINGS (ack with length = %lu)", sz);
@@ -503,6 +520,10 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
             }
 
             if (!stream || (stream->state != CNO_STREAM_OPEN && stream->state != CNO_STREAM_CLOSED_LOCAL)) {
+                if (stream_may_be_reset) {
+                    return CNO_OK;
+                }
+
                 return cno_frame_write_rst_stream(conn, frame->stream_id, CNO_STATE_STREAM_CLOSED);
             }
 
