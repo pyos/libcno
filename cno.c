@@ -437,7 +437,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
             conn->encoder.limit_upper = conn->settings[CNO_CFG_REMOTE].header_table_size;
             conn->decoder.limit_upper = conn->settings[CNO_CFG_REMOTE].header_table_size;
-            cno_hpack_setlimit(&conn->encoder, conn->encoder.limit_upper, 0);
+            cno_hpack_setlimit(&conn->encoder, conn->encoder.limit_upper);
 
             cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK };
 
@@ -644,12 +644,10 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     conn->state = kind == CNO_HTTP2_CLIENT ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
     memcpy(conn->settings,     &cno_settings_initial, sizeof(cno_settings_initial));
     memcpy(conn->settings + 1, &cno_settings_initial, sizeof(cno_settings_initial));
-    conn->window_recv = conn->settings[CNO_CFG_LOCAL].initial_window_size;
-    conn->window_send = conn->settings[CNO_CFG_LOCAL].initial_window_size;
-    cno_hpack_setlimit(&conn->decoder, conn->settings[CNO_CFG_LOCAL].header_table_size, 1);
-    cno_hpack_setlimit(&conn->encoder, conn->settings[CNO_CFG_LOCAL].header_table_size, 0);
-    cno_list_init(&conn->decoder);
-    cno_list_init(&conn->encoder);
+    conn->window_recv = cno_settings_initial.initial_window_size;
+    conn->window_send = cno_settings_initial.initial_window_size;
+    cno_hpack_init(&conn->decoder, cno_settings_initial.header_table_size);
+    cno_hpack_init(&conn->encoder, cno_settings_initial.header_table_size);
     cno_list_init(conn);
     return conn;
 }

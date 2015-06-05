@@ -31,8 +31,9 @@ CNO_STRUCT_EXPORT(header);
 CNO_STRUCT_EXPORT(hpack);
 
 
+void cno_hpack_init     (cno_hpack_t *state, size_t limit);
 void cno_hpack_clear    (cno_hpack_t *state);
-void cno_hpack_setlimit (cno_hpack_t *state, size_t limit, int immediate);
+void cno_hpack_setlimit (cno_hpack_t *state, size_t limit);
 int  cno_hpack_decode   (cno_hpack_t *state, cno_io_vector_t *source, cno_header_t *array, size_t *limit);
 int  cno_hpack_encode   (cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *array, size_t amount);
 

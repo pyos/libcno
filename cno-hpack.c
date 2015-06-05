@@ -6,6 +6,16 @@
 #include "cno-hpack-huffman.h"
 
 
+void cno_hpack_init(cno_hpack_t *state, size_t limit)
+{
+    cno_list_init(state);
+    state->limit            = \
+    state->limit_upper      = \
+    state->limit_update_min = \
+    state->limit_update_end = limit;
+}
+
+
 void cno_hpack_clear(cno_hpack_t *state)
 {
     cno_header_table_t *clear = state->first;
@@ -494,14 +504,12 @@ static int cno_hpack_encode_one(cno_hpack_t *state, cno_io_vector_t *target, cno
 }
 
 
-void cno_hpack_setlimit(cno_hpack_t *state, size_t limit, int immediate)
+void cno_hpack_setlimit(cno_hpack_t *state, size_t limit)
 {
-    if (state->limit_update_end == state->limit) return;
     if (state->limit_update_min > limit)
         state->limit_update_min = limit;
-    state->limit_update_end = limit;
 
-    if (immediate) state->limit = limit;
+    state->limit_update_end = limit;
 }
 
 
@@ -517,6 +525,7 @@ int cno_hpack_encode(cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *
         if (cno_hpack_encode_size_update(state, target, state->limit_update_end)) {
             return CNO_PROPAGATE;
         }
+        state->limit_update_min = state->limit;
     }
 
     for (; amount; --amount) {
