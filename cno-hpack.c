@@ -63,8 +63,9 @@ static int cno_hpack_index(cno_hpack_t *state, cno_header_t *source)
         return CNO_PROPAGATE;
     }
 
-    cno_list_insert_after(state, entry);
     state->size += 32 + source->name.size + source->value.size;
+    cno_list_insert_after(state, entry);
+    cno_hpack_evict(state);
     return CNO_OK;
 }
 
@@ -490,8 +491,6 @@ static int cno_hpack_encode_one(cno_hpack_t *state, cno_io_vector_t *target, cno
         if (cno_hpack_index(state, source)) {
             return CNO_PROPAGATE;
         }
-
-        cno_hpack_evict(state);
     }
 
     if (!match) {
