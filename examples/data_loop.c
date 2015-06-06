@@ -9,36 +9,12 @@
 #include <unistd.h>
 
 #include "cno.h"
+#include "simple_common.h"
 
 
 int write_cb(cno_connection_t *conn, cno_connection_t *other, const char *data, size_t length)
 {
     return cno_connection_data_received(other, data, length);
-}
-
-
-int on_message_start(cno_connection_t *conn, cno_connection_t *other, size_t stream, cno_message_t *msg)
-{
-    printf("recv message: HTTP/%d.%d %d\n", msg->major, msg->minor, msg->code);
-    return CNO_OK;
-}
-
-
-int on_message_data(cno_connection_t *conn, cno_connection_t *other, size_t stream, const char *data, size_t length)
-{
-    if (length) {
-        printf("recv data: ");
-        fwrite(data, length, 1, stdout);
-        printf("\n");
-    }
-    return CNO_OK;
-}
-
-
-int on_message_end(cno_connection_t *conn, cno_connection_t *other, size_t stream)
-{
-    printf("recv message end\n");
-    return CNO_OK;
 }
 
 
@@ -60,9 +36,8 @@ int respond(cno_connection_t *conn, cno_connection_t *other, size_t stream, int 
     message.headers = headers;
 
     if (
-        cno_write_message(conn, stream, &message)
-     || cno_write_data(conn, stream, "Hello, World!\n", 14, 0)
-     || cno_write_end(conn, stream, 0)
+        cno_write_message(conn, stream, &message, 0)
+     || cno_write_data(conn, stream, "Hello, World!\n", 14, 1)
     ) return CNO_PROPAGATE;
 
     return CNO_OK;
@@ -80,9 +55,11 @@ int main(int argc, char *argv[])
 
     client->cb_data          = server;
     client->on_write         = &write_cb;
-    client->on_message_start = &on_message_start;
-    client->on_message_data  = &on_message_data;
-    client->on_message_end   = &on_message_end;
+    client->on_message_start = &log_recv_message;
+    client->on_message_data  = &log_recv_message_data;
+    client->on_message_end   = &log_recv_message_end;
+    client->on_frame         = &log_recv_frame;
+    client->on_frame_send    = &log_sent_frame;
 
     server->cb_data          = client;
     server->on_write         = &write_cb;
@@ -105,9 +82,8 @@ int main(int argc, char *argv[])
     if (
         cno_connection_made(client)
      || cno_connection_made(server)
-     || cno_write_message(client, 1, &message)
-     || cno_write_data(client, 1, "Hello, World!\n", 14, 0)
-     || cno_write_end(client, 1, 0)
+     || cno_write_message(client, 1, &message, 0)
+     || cno_write_data(client, 1, "Hello, World!\n", 14, 1)
      || cno_connection_lost(client)
      || cno_connection_lost(server)
     ) goto error;
