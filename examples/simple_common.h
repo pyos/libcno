@@ -23,10 +23,8 @@ void log_message(int fd, cno_message_t *msg, int recv)
     size_t k = 0;
 
     for (; k < msg->headers_len; ++k) {
-        fprintf(stdout, "    (%lu) ", msg->headers[k].name.size);
-        fwrite(msg->headers[k].name.data, msg->headers[k].name.size, 1, stdout);
-        fprintf(stdout, " = (%lu) ", msg->headers[k].value.size);
-        fwrite(msg->headers[k].value.data, msg->headers[k].value.size, 1, stdout);
+        fprintf(stdout, "    "); fwrite(msg->headers[k].name.data,  msg->headers[k].name.size,  1, stdout);
+        fprintf(stdout, ": ");   fwrite(msg->headers[k].value.data, msg->headers[k].value.size, 1, stdout);
         fprintf(stdout, "\n");
     }
 }
