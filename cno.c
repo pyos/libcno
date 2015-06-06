@@ -252,24 +252,6 @@ static int cno_frame_write_rst_stream(cno_connection_t *conn, size_t stream, siz
 }
 
 
-static int cno_frame_write_preface(cno_connection_t *conn)
-{
-    if (conn->client && CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size)) {
-        return CNO_PROPAGATE;
-    }
-
-    // TODO send actual settings
-
-    cno_frame_t settings = { CNO_FRAME_SETTINGS };
-
-    if (cno_frame_write(conn, &settings)) {
-        return CNO_PROPAGATE;
-    }
-
-    return CNO_OK;
-}
-
-
 static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 {
     size_t sz = frame->payload.size;
@@ -492,6 +474,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
             }
 
             if (stream->state != CNO_STREAM_IDLE &&
+                stream->state != CNO_STREAM_OPEN &&
                 stream->state != CNO_STREAM_CLOSED_LOCAL &&
                 stream->state != CNO_STREAM_RESERVED_REMOTE) {
                     return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR,
@@ -677,6 +660,24 @@ int cno_connection_is_http2(cno_connection_t *conn)
 }
 
 
+int cno_connection_upgrade(cno_connection_t *conn)
+{
+    if (conn->client && CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size)) {
+        return CNO_PROPAGATE;
+    }
+
+    // TODO send actual settings
+
+    cno_frame_t settings = { CNO_FRAME_SETTINGS };
+
+    if (cno_frame_write(conn, &settings)) {
+        return CNO_PROPAGATE;
+    }
+
+    return CNO_OK;
+}
+
+
 int cno_connection_made(cno_connection_t *conn)
 {
     return cno_connection_fire(conn);
@@ -833,7 +834,7 @@ int cno_connection_fire(cno_connection_t *conn)
 
                     // If we send the preface now, we'll be able to send HTTP 2 frames
                     // while in the HTTP1_READING_UPGRADE state.
-                    if (cno_frame_write_preface(conn)) {
+                    if (cno_connection_upgrade(conn)) {
                         STOP(CNO_PROPAGATE);
                     }
                     // Technically, server should refuse if HTTP2-Settings are not present.
@@ -957,7 +958,7 @@ int cno_connection_fire(cno_connection_t *conn)
         case CNO_CONNECTION_INIT: {
             conn->state = CNO_CONNECTION_PREFACE;
 
-            if (cno_frame_write_preface(conn)) {
+            if (cno_connection_upgrade(conn)) {
                 STOP(CNO_PROPAGATE);
             }
 

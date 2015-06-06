@@ -286,6 +286,7 @@ int                cno_connection_fire          (cno_connection_t *conn);
 int                cno_connection_lost          (cno_connection_t *conn);
 int                cno_connection_stop          (cno_connection_t *conn);
 int                cno_connection_is_http2      (cno_connection_t *conn);
+int                cno_connection_upgrade       (cno_connection_t *conn);
 size_t             cno_stream_next_id           (cno_connection_t *conn);
 
 int cno_write_message (cno_connection_t *conn, size_t stream, cno_message_t *msg, int final);
