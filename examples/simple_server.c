@@ -85,7 +85,7 @@ void *handle(void *sockptr)
         }
     }
 
-    if (recv < 0) {
+    if (read < 0) {
         (void) CNO_ERROR_TRANSPORT("recv() failed");
         goto error;
     }
