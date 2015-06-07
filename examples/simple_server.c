@@ -61,6 +61,12 @@ void *handle(void *sockptr)
         goto error;
     }
 
+    cno_settings_t settings;
+    cno_settings_copy(conn, &settings);
+    settings.enable_push = 0;
+    settings.max_concurrent_streams = 1024;
+    cno_settings_apply(conn, &settings);
+
     conn->cb_data          = &fd;
     conn->on_write         = &write_to_fd;
     conn->on_frame         = &log_recv_frame;

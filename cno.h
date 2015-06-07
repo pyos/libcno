@@ -138,7 +138,7 @@ struct cno_st_settings_t {
             size_t max_frame_size;
             size_t max_header_list_size;
         };
-        size_t array[6];
+        size_t array[CNO_SETTINGS_UNDEFINED - 1];
     };
 };
 
@@ -178,8 +178,8 @@ struct cno_st_connection_t {
 };
 
 
-CNO_STRUCT_EXPORT(io_vector);
 CNO_STRUCT_EXPORT(connection);
+CNO_STRUCT_EXPORT(settings);
 CNO_STRUCT_EXPORT(frame);
 CNO_STRUCT_EXPORT(stream);
 CNO_STRUCT_EXPORT(header);
@@ -287,6 +287,8 @@ int                cno_connection_lost          (cno_connection_t *conn);
 int                cno_connection_stop          (cno_connection_t *conn);
 int                cno_connection_is_http2      (cno_connection_t *conn);
 int                cno_connection_upgrade       (cno_connection_t *conn);
+void               cno_settings_copy            (cno_connection_t *conn, cno_settings_t *target);
+int                cno_settings_apply           (cno_connection_t *conn, const cno_settings_t *new_settings);
 size_t             cno_stream_next_id           (cno_connection_t *conn);
 
 int cno_write_message (cno_connection_t *conn, size_t stream, cno_message_t *msg, int final);

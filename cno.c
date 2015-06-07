@@ -418,7 +418,6 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
             }
 
             conn->encoder.limit_upper = conn->settings[CNO_CFG_REMOTE].header_table_size;
-            conn->decoder.limit_upper = conn->settings[CNO_CFG_REMOTE].header_table_size;
             cno_hpack_setlimit(&conn->encoder, conn->encoder.limit_upper);
 
             cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK };
@@ -525,12 +524,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
     if (stream && frame->flags & CNO_FLAG_END_HEADERS) {
         stream->last_frame = 0;
 
-        size_t limit = conn->settings[CNO_CFG_LOCAL].max_header_list_size;
-
-        if (limit > 255) {
-            limit = 255;
-        }
-
+        size_t limit = 256;
         cno_header_t *headers = malloc(sizeof(cno_header_t) * limit);
         cno_header_t *it;
 
@@ -660,21 +654,67 @@ int cno_connection_is_http2(cno_connection_t *conn)
 }
 
 
+static int cno_settings_diff(cno_connection_t *conn, const cno_settings_t *old, const cno_settings_t *updated)
+{
+    size_t i = 0;
+    // no. of configurable parameters * (2 byte id + 4 byte value)
+    unsigned char payload[(CNO_SETTINGS_UNDEFINED - 1) * 6];
+    unsigned char *ptr = payload;
+    size_t *current = (size_t *) old;
+    size_t *replace = (size_t *) updated;
+
+    for (; ++i < CNO_SETTINGS_UNDEFINED; ++current, ++replace) {
+        if (*current != *replace) {
+            CNO_WRITE_2BYTE(ptr, i);
+            CNO_WRITE_4BYTE(ptr, *replace);
+        }
+    }
+
+    cno_frame_t frame = { CNO_FRAME_SETTINGS };
+    frame.payload.data = (char *) payload;
+    frame.payload.size = ptr - payload;
+    return cno_frame_write(conn, &frame);
+}
+
+
+void cno_settings_copy(cno_connection_t *conn, cno_settings_t *target)
+{
+    memcpy(target, conn->settings + CNO_CFG_LOCAL, sizeof(cno_settings_t));
+}
+
+
+int cno_settings_apply(cno_connection_t *conn, const cno_settings_t *new_settings)
+{
+    if (new_settings->enable_push != 0 && new_settings->enable_push != 1) {
+        return CNO_ERROR_ASSERTION("enable_push neither 0 nor 1");
+    }
+
+    if (new_settings->max_frame_size < 16384 || new_settings->max_frame_size > 16777215) {
+        return CNO_ERROR_ASSERTION("maximum frame size out of bounds (2^14..2^24-1)");
+    }
+
+    if (conn->state != CNO_CONNECTION_INIT && cno_connection_is_http2(conn)) {
+        // If not yet in HTTP2 mode, `cno_connection_upgrade` will send the SETTINGS frame.
+        if (cno_settings_diff(conn, conn->settings + CNO_CFG_LOCAL, new_settings)) {
+            return CNO_PROPAGATE;
+        }
+    }
+
+    memcpy(conn->settings + CNO_CFG_LOCAL, new_settings, sizeof(cno_settings_t));
+    conn->decoder.limit_upper = new_settings->header_table_size;
+    // TODO the difference in initial flow control window size should be subtracted
+    //      from the flow control window size of all active streams.
+    return CNO_OK;
+}
+
+
 int cno_connection_upgrade(cno_connection_t *conn)
 {
     if (conn->client && CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size)) {
         return CNO_PROPAGATE;
     }
 
-    // TODO send actual settings
-
-    cno_frame_t settings = { CNO_FRAME_SETTINGS };
-
-    if (cno_frame_write(conn, &settings)) {
-        return CNO_PROPAGATE;
-    }
-
-    return CNO_OK;
+    return cno_settings_diff(conn, &cno_settings_initial, conn->settings + CNO_CFG_LOCAL);
 }
 
 
