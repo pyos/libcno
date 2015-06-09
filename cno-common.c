@@ -6,7 +6,7 @@
 #include "cno-common.h"
 
 
-static struct {
+static _Thread_local struct {
     int          code;
     int          line;
     const char * file;
@@ -24,9 +24,6 @@ int cno_error_set(int code, const char *file, int line, const char *fmt, ...)
     va_start(vl, fmt);
     vsnprintf(_cno_error.text, sizeof(_cno_error.text), fmt, vl);
     va_end(vl);
-    #ifdef CNO_ABORT_ON_ERROR
-    abort();
-    #endif
     return CNO_PROPAGATE;
 }
 
