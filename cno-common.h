@@ -19,14 +19,6 @@
 #define CNO_ERROR_WOULD_BLOCK(m, ...)     CNO_ERROR_SET(CNO_ERRNO_WOULD_BLOCK,     m,  ##__VA_ARGS__)
 
 
-#define CNO_LIST_LINK(T) T *prev; T *next
-#define CNO_LIST_ROOT(T) T *last; T *first
-
-
-#define CNO_IO_VECTOR_CONST(str) { str, sizeof(str) - 1 }
-#define CNO_IO_VECTOR_REFER(vec) { (vec).data, (vec).size }
-
-
 enum CNO_ERRNO {
     CNO_ERRNO_UNKNOWN,
     CNO_ERRNO_ASSERTION,
@@ -40,6 +32,8 @@ enum CNO_ERRNO {
 
 
 struct cno_st_list_link_t {
+    #define CNO_LIST_LINK(T) T *prev; T *next
+    #define CNO_LIST_ROOT(T) T *last; T *first
     CNO_LIST_LINK(struct cno_st_list_link_t);
 };
 
@@ -73,6 +67,9 @@ void cno_list_init         (void *node);
 void cno_list_insert_after (void *node, void *next);
 void cno_list_remove       (void *node);
 
+#define CNO_IO_VECTOR_CONST(str) { str, sizeof(str) - 1 }
+#define CNO_IO_VECTOR_REFER(vec) { (vec).data, (vec).size }
+#define CNO_IO_VECTOR_EMPTY      { NULL, 0 }
 void   cno_io_vector_clear      (struct cno_st_io_vector_t *vec);
 void   cno_io_vector_reset      (struct cno_st_io_vector_tmp_t *vec);
 char * cno_io_vector_slice      (struct cno_st_io_vector_tmp_t *vec, size_t size);
