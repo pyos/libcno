@@ -24,7 +24,7 @@
 
 size_t cno_stream_next_id(cno_connection_t *conn)
 {
-    size_t last = conn->last_stream[CNO_CFG_LOCAL];
+    size_t last = conn->last_stream[CNO_PEER_LOCAL];
     return last == 0 ? 1 + !conn->client : cno_connection_is_http2(conn) ? last + 2 : last;
 }
 
@@ -138,7 +138,7 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
     char *headptr = header;
     size_t length = frame->payload.size;
     size_t stream = frame->stream_id;
-    size_t limit  = conn->settings[CNO_CFG_REMOTE].max_frame_size;
+    size_t limit  = conn->settings[CNO_PEER_REMOTE].max_frame_size;
 
     if (frame->stream == NULL) {
         frame->stream = cno_stream_find(conn, stream);
@@ -221,7 +221,7 @@ static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
 {
     char descr[8];
     char *ptr = descr;
-    size_t last_stream = code == CNO_STATE_NO_ERROR && !conn->client ? (1UL << 31) - !conn->client : conn->last_stream[CNO_CFG_REMOTE];
+    size_t last_stream = code == CNO_STATE_NO_ERROR && !conn->client ? (1UL << 31) - !conn->client : conn->last_stream[CNO_PEER_REMOTE];
 
     CNO_WRITE_4BYTE(ptr, last_stream);
     CNO_WRITE_4BYTE(ptr, code);
@@ -263,7 +263,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
     unsigned char *ptr = (unsigned char *) frame->payload.data;
     unsigned char *end = sz + ptr;
     cno_stream_t *stream = frame->stream = cno_stream_find(conn, frame->stream_id);
-    int stream_may_be_reset = frame->stream_id && frame->stream_id <= conn->last_stream[CNO_CFG_REMOTE];
+    int stream_may_be_reset = frame->stream_id && frame->stream_id <= conn->last_stream[CNO_PEER_REMOTE];
 
     if (cno_frame_is_flow_controlled(frame) && sz) {
         if (conn->window_recv < sz) {
@@ -418,11 +418,11 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
                 size_t value   = 0; CNO_READ_4BYTE(value,   ptr);
 
                 if (setting && setting < CNO_SETTINGS_UNDEFINED) {
-                    conn->settings[CNO_CFG_REMOTE].array[setting - 1] = value;
+                    conn->settings[CNO_PEER_REMOTE].array[setting - 1] = value;
                 }
             }
 
-            conn->encoder.limit_upper = conn->settings[CNO_CFG_REMOTE].header_table_size;
+            conn->encoder.limit_upper = conn->settings[CNO_PEER_REMOTE].header_table_size;
             cno_hpack_setlimit(&conn->encoder, conn->encoder.limit_upper);
 
             cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK };
@@ -470,7 +470,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
         case CNO_FRAME_HEADERS: {
             if (stream == NULL) {
-                stream = cno_stream_new(conn, frame->stream_id, CNO_CFG_REMOTE);
+                stream = cno_stream_new(conn, frame->stream_id, CNO_PEER_REMOTE);
 
                 if (stream == NULL) {
                     return CNO_PROPAGATE;
@@ -682,7 +682,7 @@ static int cno_settings_diff(cno_connection_t *conn, const cno_settings_t *old, 
 
 void cno_settings_copy(cno_connection_t *conn, cno_settings_t *target)
 {
-    memcpy(target, conn->settings + CNO_CFG_LOCAL, sizeof(cno_settings_t));
+    memcpy(target, conn->settings + CNO_PEER_LOCAL, sizeof(cno_settings_t));
 }
 
 
@@ -698,12 +698,12 @@ int cno_settings_apply(cno_connection_t *conn, const cno_settings_t *new_setting
 
     if (conn->state != CNO_CONNECTION_INIT && cno_connection_is_http2(conn)) {
         // If not yet in HTTP2 mode, `cno_connection_upgrade` will send the SETTINGS frame.
-        if (cno_settings_diff(conn, conn->settings + CNO_CFG_LOCAL, new_settings)) {
+        if (cno_settings_diff(conn, conn->settings + CNO_PEER_LOCAL, new_settings)) {
             return CNO_PROPAGATE;
         }
     }
 
-    memcpy(conn->settings + CNO_CFG_LOCAL, new_settings, sizeof(cno_settings_t));
+    memcpy(conn->settings + CNO_PEER_LOCAL, new_settings, sizeof(cno_settings_t));
     conn->decoder.limit_upper = new_settings->header_table_size;
     // TODO the difference in initial flow control window size should be subtracted
     //      from the flow control window size of all active streams.
@@ -717,7 +717,7 @@ int cno_connection_upgrade(cno_connection_t *conn)
         return CNO_PROPAGATE;
     }
 
-    return cno_settings_diff(conn, &cno_settings_initial, conn->settings + CNO_CFG_LOCAL);
+    return cno_settings_diff(conn, &cno_settings_initial, conn->settings + CNO_PEER_LOCAL);
 }
 
 
@@ -1020,7 +1020,7 @@ int cno_connection_fire(cno_connection_t *conn)
             unsigned char *base = (unsigned char *) conn->buffer.data;
             CNO_READ_3BYTE(m, base);
 
-            if (m > conn->settings[CNO_CFG_LOCAL].max_frame_size) {
+            if (m > conn->settings[CNO_PEER_LOCAL].max_frame_size) {
                 STOP(CNO_ERROR_GOAWAY(conn, CNO_STATE_FRAME_SIZE_ERROR, "recv'd a frame that is too big"));
             }
 
@@ -1153,7 +1153,7 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
     cno_stream_t *streamobj = cno_stream_find(conn, stream);
 
     if (streamobj == NULL) {
-        streamobj = cno_stream_new(conn, stream, CNO_CFG_LOCAL);
+        streamobj = cno_stream_new(conn, stream, CNO_PEER_LOCAL);
 
         if (streamobj == NULL) {
             return CNO_PROPAGATE;

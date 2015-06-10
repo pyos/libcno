@@ -25,6 +25,12 @@
 #define CNO_FIRE(ob, cb, ...) (ob->cb && ((cno_cb_ ## cb ## _t) ob->cb)(ob, ob->cb_data, ## __VA_ARGS__))
 
 
+enum CNO_PEER_KIND {
+    CNO_PEER_REMOTE = 0,
+    CNO_PEER_LOCAL  = 1,
+};
+
+
 enum CNO_CONNECTION_KIND {
     CNO_HTTP2_SERVER = 0,
     CNO_HTTP2_CLIENT = 1,
@@ -131,11 +137,11 @@ struct cno_st_stream_t {
     size_t id;
     size_t window_recv;
     size_t window_send;
+    size_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
     enum CNO_FRAME_TYPE last_frame;
     enum CNO_STREAM_STATE state;
     struct cno_st_message_t msg;
     struct cno_st_io_vector_t cache;
-    size_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
 };
 
 
@@ -161,15 +167,16 @@ static const struct cno_st_settings_t cno_settings_initial = {
 
 struct cno_st_connection_t {
     struct { CNO_LIST_ROOT(struct cno_st_stream_t); } streams;
-    union { int kind; int client; };
+    union {
+        enum CNO_CONNECTION_KIND kind;
+        enum CNO_PEER_KIND client;  // == CNO_PEER_LOCAL iff we are the client
+    };
     enum CNO_CONNECTION_STATE state;
     int closed;
     size_t window_recv;
     size_t window_send;
-    size_t last_stream[2];   // [0] -> peer's data
-    size_t stream_count[2];  // [1] -> our data
-    #define CNO_CFG_REMOTE 0
-    #define CNO_CFG_LOCAL  1
+    size_t last_stream[2];  // dereferencable with CNO_PEER_REMOTE/CNO_PEER_LOCAL
+    size_t stream_count[2];
     struct cno_st_settings_t settings[2];
     struct cno_st_io_vector_tmp_t buffer;
     struct cno_st_frame_t frame;
