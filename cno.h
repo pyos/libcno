@@ -6,6 +6,21 @@
 #include "cno-common.h"
 #include "cno-hpack.h"
 
+
+#ifndef CNO_MAX_HTTP1_HEADER_SIZE
+// Max. length of a header, i.e. length of the name + length of the value
+// + 4 bytes (the ": " separator and the CRLF.) If a header longer than this is passed
+// to `cno_write_message`, it will return an assertion error.
+#define CNO_MAX_HTTP1_HEADER_SIZE 4096
+#endif
+
+
+#ifndef CNO_MAX_HTTP1_HEADERS
+// Max. number of entries in the header table of inbound messages.
+#define CNO_MAX_HTTP1_HEADERS 128
+#endif
+
+
 #define CNO_DEF_CALLBACK(ob, cb, ...) typedef int (* cno_cb_ ## cb ## _t)(ob *, void *, ## __VA_ARGS__)
 #define CNO_FIRE(ob, cb, ...) (ob->cb && ((cno_cb_ ## cb ## _t) ob->cb)(ob, ob->cb_data, ## __VA_ARGS__))
 
@@ -105,14 +120,10 @@ struct cno_st_frame_t {
 
 struct cno_st_message_t {
     int code;
-    int chunked;
     struct cno_st_io_vector_t method;
     struct cno_st_io_vector_t path;
-    size_t headers_len;
     struct cno_st_header_t *headers;
-    size_t remaining;
-    int major;
-    int minor;
+    size_t headers_len;
 };
 
 
@@ -125,6 +136,7 @@ struct cno_st_stream_t {
     enum CNO_STREAM_STATE state;
     struct cno_st_message_t msg;
     struct cno_st_io_vector_t cache;
+    size_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
 };
 
 
@@ -201,7 +213,7 @@ CNO_DEF_CALLBACK(cno_connection_t, on_flow_control_update, size_t);
 static const struct cno_st_io_vector_t CNO_PREFACE = { "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24 };
 
 
-static inline const char *cno_frame_get_name(struct cno_st_frame_t *frame)
+static inline const char *cno_frame_get_name(const struct cno_st_frame_t *frame)
 {
     switch (frame->type) {
         case CNO_FRAME_DATA:          return "DATA";
@@ -219,13 +231,13 @@ static inline const char *cno_frame_get_name(struct cno_st_frame_t *frame)
 };
 
 
-static inline int cno_frame_is_flow_controlled(struct cno_st_frame_t *frame)
+static inline int cno_frame_is_flow_controlled(const struct cno_st_frame_t *frame)
 {
     return frame->type == CNO_FRAME_DATA;
 }
 
 
-static inline const char *cno_message_literal(struct cno_st_message_t *msg)
+static inline const char *cno_message_literal(const struct cno_st_message_t *msg)
 {
     switch (msg->code) {
         case 100: return "Continue";
@@ -291,7 +303,7 @@ void               cno_settings_copy            (cno_connection_t *conn, cno_set
 int                cno_settings_apply           (cno_connection_t *conn, const cno_settings_t *new_settings);
 size_t             cno_stream_next_id           (cno_connection_t *conn);
 
-int cno_write_message (cno_connection_t *conn, size_t stream, cno_message_t *msg, int final);
+int cno_write_message (cno_connection_t *conn, size_t stream, const cno_message_t *msg, int final);
 int cno_write_data    (cno_connection_t *conn, size_t stream, const char *data, size_t length, int final);
 
 #endif

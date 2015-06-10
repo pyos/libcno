@@ -14,11 +14,11 @@ void log_frame(int fd, cno_frame_t *frame, int recv)
 void log_message(int fd, cno_message_t *msg, int recv)
 {
     const char *e = recv ? "recv" : "sent";
-    fprintf(stdout, "%d: %s message HTTP/%d.%d %d, method = ", fd, e, msg->major, msg->minor, msg->code);
+    fprintf(stdout, "%d: %s message [code = %d, method = ", fd, e, msg->code);
     fwrite(msg->method.data, msg->method.size, 1, stdout);
     fprintf(stdout, ", path = ");
     fwrite(msg->path.data, msg->path.size, 1, stdout);
-    fprintf(stdout, ", headers:\n");
+    fprintf(stdout, "]\n");
 
     size_t k = 0;
 

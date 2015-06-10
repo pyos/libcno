@@ -7,6 +7,21 @@
 #include "picohttpparser/picohttpparser.h"
 
 
+#define CNO_READ_1BYTE(tg, ptr) tg = *ptr++
+#define CNO_READ_2BYTE(tg, ptr) do { tg = ptr[0] <<  8 | ptr[1]; ptr += 2; } while (0)
+#define CNO_READ_3BYTE(tg, ptr) do { tg = ptr[0] << 16 | ptr[1] <<  8 | ptr[2]; ptr += 3; } while (0)
+#define CNO_READ_4BYTE(tg, ptr) do { tg = ptr[0] << 24 | ptr[1] << 16 | ptr[2] << 8 | ptr[3]; ptr += 4; } while (0)
+
+#define CNO_WRITE_1BYTE(ptr, src) *ptr++ = src
+#define CNO_WRITE_2BYTE(ptr, src) do { ptr[0] = src >>  8; ptr[1] = src; ptr += 2; } while (0)
+#define CNO_WRITE_3BYTE(ptr, src) do { ptr[0] = src >> 16; ptr[1] = src >>  8; ptr[2] = src; ptr += 3; } while (0)
+#define CNO_WRITE_4BYTE(ptr, src) do { ptr[0] = src >> 24; ptr[1] = src >> 16; ptr[2] = src >> 8; ptr[3] = src; ptr += 4; } while (0)
+
+#define CNO_WRITE_VECTOR(ptr, vec) do { memcpy((ptr), (vec).data, (vec).size); (ptr) += (vec).size; } while (0)
+#define CNO_WRITE_CONSTC(ptr, str) do { memcpy((ptr), (str), sizeof(str) - 1); (ptr) += sizeof(str) - 1; } while (0);
+#define CNO_WRITE_FORMAT(ptr, ...) do { (ptr) += sprintf(ptr, ##__VA_ARGS__); } while (0)
+
+
 size_t cno_stream_next_id(cno_connection_t *conn)
 {
     size_t last = conn->last_stream[CNO_CFG_LOCAL];
@@ -113,16 +128,6 @@ static cno_stream_t * cno_stream_find(cno_connection_t *conn, size_t id)
     return NULL;
 }
 
-
-#define CNO_WRITE_1BYTE(ptr, src) *ptr++ = src
-#define CNO_WRITE_2BYTE(ptr, src) do { ptr[0] = src >>  8; ptr[1] = src; ptr += 2; } while (0)
-#define CNO_WRITE_3BYTE(ptr, src) do { ptr[0] = src >> 16; ptr[1] = src >>  8; ptr[2] = src; ptr += 3; } while (0)
-#define CNO_WRITE_4BYTE(ptr, src) do { ptr[0] = src >> 24; ptr[1] = src >> 16; ptr[2] = src >> 8; ptr[3] = src; ptr += 4; } while (0)
-
-#define CNO_READ_1BYTE(tg, ptr) tg = *ptr++
-#define CNO_READ_2BYTE(tg, ptr) do { tg = ptr[0] <<  8 | ptr[1]; ptr += 2; } while (0)
-#define CNO_READ_3BYTE(tg, ptr) do { tg = ptr[0] << 16 | ptr[1] <<  8 | ptr[2]; ptr += 3; } while (0)
-#define CNO_READ_4BYTE(tg, ptr) do { tg = ptr[0] << 24 | ptr[1] << 16 | ptr[2] << 8 | ptr[3]; ptr += 4; } while (0)
 
 #define CNO_ERROR_GOAWAY(conn, type, ...) (cno_frame_write_goaway(conn, type) ? CNO_PROPAGATE : CNO_ERROR_TRANSPORT(__VA_ARGS__))
 
@@ -465,7 +470,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
         case CNO_FRAME_HEADERS: {
             if (stream == NULL) {
-                stream = cno_stream_new(conn, frame->stream_id, 0);
+                stream = cno_stream_new(conn, frame->stream_id, CNO_CFG_REMOTE);
 
                 if (stream == NULL) {
                     return CNO_PROPAGATE;
@@ -543,7 +548,6 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
         cno_message_t msg = { 0 };
         msg.headers_len = limit;
         msg.headers = headers;
-        msg.major = 2;
 
         for (it = headers ; it != headers + limit; ++it) {
             if (strncmp(it->name.data, ":status", it->name.size) == 0) {
@@ -793,13 +797,11 @@ int cno_connection_fire(cno_connection_t *conn)
             // Should be exactly one stream right now.
             cno_stream_t *stream = conn->streams.first;
             CNO_ZERO(&stream->msg);
-            stream->msg.major = 1;
-            stream->msg.minor = 1;
+            stream->http1_remaining = 0;
             WAIT(conn->buffer.size);
 
-            // The HTTP 2 preface starts with pseudo-broken HTTP/1.x.
-            // PicoHTTPParser will reject it, but we want to know if the client
-            // speaks HTTP 2.
+            // The HTTP 2 client preface starts with pseudo-broken HTTP/1.x.
+            // PicoHTTPParser will reject it, but we want to know if the client speaks HTTP 2.
             if (!conn->client) {
                 int may_be_http2 = strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size) == 0;
                 WAIT(conn->buffer.size >= CNO_PREFACE.size || !may_be_http2);
@@ -813,13 +815,13 @@ int cno_connection_fire(cno_connection_t *conn)
                 }
             }
 
-            struct phr_header headers[100];
-            size_t header_num = 100;
-            size_t it;
+            size_t header_num = CNO_MAX_HTTP1_HEADERS;
+            struct phr_header headers[CNO_MAX_HTTP1_HEADERS], *it = headers, *end;
 
+            int minor;
             int ok = conn->client
-              ? phr_parse_response(conn->buffer.data, conn->buffer.size,
-                                    &stream->msg.minor, &stream->msg.code,
+              ? phr_parse_response(conn->buffer.data, conn->buffer.size, &minor,
+                                    &stream->msg.code,
                     (const char **) &stream->msg.method.data,
                                     &stream->msg.method.size,
                                     headers, &header_num, 1)
@@ -828,8 +830,7 @@ int cno_connection_fire(cno_connection_t *conn)
                                     &stream->msg.method.size,
                     (const char **) &stream->msg.path.data,
                                     &stream->msg.path.size,
-                                    &stream->msg.minor,
-                                    headers, &header_num, 1);
+                                    &minor, headers, &header_num, 1);
 
             WAIT(ok != -2);
 
@@ -837,15 +838,15 @@ int cno_connection_fire(cno_connection_t *conn)
                 STOP(CNO_ERROR_TRANSPORT("bad HTTP/1.x request"));
             }
 
-            if (stream->msg.minor != 1) {
-                STOP(CNO_ERROR_TRANSPORT("HTTP/1.%d not supported", stream->msg.minor));
+            if (minor != 1) {
+                STOP(CNO_ERROR_TRANSPORT("HTTP/1.%d not supported", minor));
             }
 
-            for (it = 0; it < header_num; ++it) {
-                char * name  = (char *) headers[it].name;
-                size_t size  = (size_t) headers[it].name_len;
-                char * value = (char *) headers[it].value;
-                size_t vsize = (size_t) headers[it].value_len;
+            for (end = it + header_num; it != end; ++it) {
+                char * name  = (char *) it->name;
+                size_t size  = (size_t) it->name_len;
+                char * value = (char *) it->value;
+                size_t vsize = (size_t) it->value_len;
 
                 {
                     char *it  = name;
@@ -859,14 +860,13 @@ int cno_connection_fire(cno_connection_t *conn)
 
                 if (strncmp(name, "upgrade", size) == 0 && strncmp(value, "h2c", vsize) == 0) {
                     cno_header_t upgrade_headers[] = {
-                        { { "connection", 10 }, { "upgrade", 7 } },
-                        { { "upgrade",     7 }, { "h2c",     3 } },
+                        { CNO_IO_VECTOR_CONST("connection"), CNO_IO_VECTOR_CONST("upgrade") },
+                        { CNO_IO_VECTOR_CONST("upgrade"),    CNO_IO_VECTOR_CONST("h2c")     },
                     };
 
-                    cno_message_t upgrade_msg = {
-                        101, /* chunked */  0, /* method */ {0}, /* path */ {0},
-                        /* headers_len */ 2, upgrade_headers
-                    };
+                    cno_message_t upgrade_msg = { 101 };
+                    upgrade_msg.headers     = upgrade_headers;
+                    upgrade_msg.headers_len = 2;
 
                     if (cno_write_message(conn, stream->id, &upgrade_msg, 1)) {
                         STOP(CNO_PROPAGATE);
@@ -883,33 +883,29 @@ int cno_connection_fire(cno_connection_t *conn)
                 } else
 
                 if (strncmp(name, "content-length", size) == 0) {
-                    if (stream->msg.remaining) {
+                    if (stream->http1_remaining) {
                         STOP(CNO_ERROR_TRANSPORT("bad HTTP/1.x request: multiple content-lengths"));
                     }
 
-                    stream->msg.remaining = (size_t) atoi(headers[it].value);
+                    stream->http1_remaining = (size_t) atoi(value);
                 } else
 
                 if (strncmp(name, "transfer-encoding", size) == 0) {
-                    if (strncmp(headers[it].value, "chunked", headers[it].value_len) != 0) {
+                    if (strncmp(value, "chunked", vsize) != 0) {
                         STOP(CNO_ERROR_TRANSPORT("bad HTTP/1.x request: unknown transfer-encoding"));
                     }
 
-                    if (stream->msg.remaining) {
+                    if (stream->http1_remaining) {
                         STOP(CNO_ERROR_TRANSPORT("bad HTTP/1.x request: chunked encoding w/ fixed length"));
                     }
 
-                    stream->msg.chunked   = 1;
-                    stream->msg.remaining = 1;
+                    stream->http1_remaining = (size_t) -1;
                 }
             }
 
+            // `phr_header` and `cno_header_t` have same contents.
+            stream->msg.headers     = (cno_header_t *) &headers;
             stream->msg.headers_len = header_num;
-            stream->msg.headers     = malloc(sizeof(headers));
-            if (!stream->msg.headers) STOP(CNO_ERROR_NO_MEMORY);
-
-            memcpy(stream->msg.headers, headers, sizeof(headers));
-
             stream->state = CNO_STREAM_OPEN;
 
             if (conn->state == CNO_CONNECTION_HTTP1_READY) {
@@ -919,11 +915,9 @@ int cno_connection_fire(cno_connection_t *conn)
             cno_io_vector_shift(&conn->buffer, (size_t) ok);
 
             if (CNO_FIRE(conn, on_message_start, stream->id, &stream->msg)) {
-                free(stream->msg.headers);
                 STOP(CNO_PROPAGATE);
             }
 
-            free(stream->msg.headers);
             break;
         }
 
@@ -931,9 +925,9 @@ int cno_connection_fire(cno_connection_t *conn)
         case CNO_CONNECTION_HTTP1_READING_UPGRADE: {
             cno_stream_t *stream = conn->streams.first;
 
-            WAIT(conn->buffer.size || !stream->msg.remaining);
+            WAIT(conn->buffer.size || !stream->http1_remaining);
 
-            if (stream->msg.chunked) {
+            if (stream->http1_remaining == (size_t) -1) {
                 char *it  = conn->buffer.data;
                 char *end = conn->buffer.size + it;
                 char *eol = it; while (eol != end && *eol++ != '\n');
@@ -956,15 +950,15 @@ int cno_connection_fire(cno_connection_t *conn)
                     }
                 } else {
                     // That was the last chunk.
-                    stream->msg.remaining = stream->msg.chunked = 0;
+                    stream->http1_remaining = 0;
                 }
 
                 cno_io_vector_shift(&conn->buffer, data_len + head_len);
                 break;
             }
 
-            if (stream->msg.remaining) {
-                size_t data_len = stream->msg.remaining;
+            if (stream->http1_remaining) {
+                size_t data_len = stream->http1_remaining;
                 char * data_buf = conn->buffer.data;
 
                 if (data_len > conn->buffer.size) {
@@ -975,7 +969,7 @@ int cno_connection_fire(cno_connection_t *conn)
                     STOP(CNO_PROPAGATE);
                 }
 
-                stream->msg.remaining -= data_len;
+                stream->http1_remaining -= data_len;
                 cno_io_vector_shift(&conn->buffer, data_len);
                 break;
             }
@@ -1096,53 +1090,6 @@ done:
 }
 
 
-static int cno_write_get_mode(cno_connection_t *conn, size_t id, cno_stream_t **stream)
-{
-    switch (conn->state) {
-        case CNO_CONNECTION_CLOSED:
-            return CNO_ERROR_INVALID_STATE("connection already closed");
-
-        case CNO_CONNECTION_INIT:
-        case CNO_CONNECTION_HTTP1_INIT:
-            return CNO_ERROR_INVALID_STATE("connection not yet initialized");
-
-        case CNO_CONNECTION_HTTP1_READY:
-        case CNO_CONNECTION_HTTP1_READING:
-        // HTTP1_READING_UPGRADE is treated as HTTP 2 for writing
-            if (id != conn->streams.first->id) {
-                return CNO_ERROR_INVALID_STREAM("can only write to stream 1 in HTTP 1 mode, not %lu", id);
-            }
-
-            *stream = conn->streams.first;
-            return 1;
-
-        default:
-            *stream = cno_stream_find(conn, id);
-
-            if (*stream == NULL) {
-                *stream = cno_stream_new(conn, id, 1);
-
-                if (*stream == NULL) {
-                    return CNO_PROPAGATE;
-                }
-            }
-
-            if (conn->client) {
-                if ((*stream)->state != CNO_STREAM_IDLE && (*stream)->state != CNO_STREAM_OPEN) {
-                    return CNO_ERROR_INVALID_STREAM("stream %lu not idle or open", id);
-                }
-            } else {
-                if ((*stream)->state != CNO_STREAM_IDLE          && (*stream)->state != CNO_STREAM_OPEN
-                 && (*stream)->state != CNO_STREAM_CLOSED_REMOTE && (*stream)->state != CNO_STREAM_RESERVED_LOCAL) {
-                    return CNO_ERROR_INVALID_STREAM("stream %lu not idle, open, or reserved", id);
-                }
-            }
-
-            return 0;
-    }
-}
-
-
 static inline int cno_finalize_http2(cno_connection_t *conn, cno_stream_t *streamobj)
 {
     if (streamobj->state == CNO_STREAM_CLOSED_REMOTE) {
@@ -1158,97 +1105,102 @@ static inline int cno_finalize_http2(cno_connection_t *conn, cno_stream_t *strea
 }
 
 
-int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg, int final)
+int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t *msg, int final)
 {
-    cno_stream_t *streamobj = NULL;
+    if (!cno_connection_is_http2(conn)) {
+        if (stream != 1) {
+            return CNO_ERROR_INVALID_STREAM("can only write to stream 1 in HTTP 1 mode, not %lu", stream);
+        }
 
-    switch (cno_write_get_mode(conn, stream, &streamobj)) {
-        case -1: return CNO_PROPAGATE;
-        case  1: {
-            size_t i;
-            char head[4096];
-            char *tg = head;
-            msg->major = 1;
-            msg->minor = 1;
+        char head[CNO_MAX_HTTP1_HEADER_SIZE], *ptr = head;
+        cno_header_t *it  = msg->headers;
+        cno_header_t *end = msg->headers_len + it;
 
-            if (conn->client) {
-                if (msg->method.size + msg->path.size >= 4084) {
-                    return CNO_ERROR_TRANSPORT("path too long (>= 4096 total)");
-                }
-
-                memcpy(tg, msg->method.data, msg->method.size); tg += msg->method.size; *tg++ = ' ';
-                memcpy(tg, msg->path.data,   msg->path.size);   tg += msg->path.size;
-                sprintf(tg, " HTTP/1.1\r\n");
-                tg += strlen(tg);
-            } else {
-                sprintf(head, "HTTP/1.1 %d %s\r\n", msg->code, cno_message_literal(msg));
-                tg += strlen(head);
+        if (conn->client) {
+            if (msg->method.size + msg->path.size >= CNO_MAX_HTTP1_HEADER_SIZE - sizeof(" HTTP/1.1\r\n")) {
+                return CNO_ERROR_ASSERTION("path + method too long");
             }
 
-            for (i = 0; i < msg->headers_len; ++i) {
-                if (CNO_FIRE(conn, on_write, head, tg - head)) {
-                    return CNO_PROPAGATE;
-                }
+            CNO_WRITE_VECTOR(ptr, msg->method);
+            CNO_WRITE_CONSTC(ptr, " ");
+            CNO_WRITE_VECTOR(ptr, msg->path);
+            CNO_WRITE_CONSTC(ptr, " HTTP/1.1\r\n");
+        } else {
+            CNO_WRITE_FORMAT(ptr, "HTTP/1.1 %d %s\r\n", msg->code, cno_message_literal(msg));
+        }
 
-                cno_io_vector_t *name  = &msg->headers[i].name;
-                cno_io_vector_t *value = &msg->headers[i].value;
-
-                if (name->size + value->size >= 4090) {
-                    return CNO_ERROR_TRANSPORT("header too long (>= 4096 total)");
-                }
-
-                tg = head;
-
-                if (strncmp(name->data, ":authority", name->size) == 0) {
-                    memcpy(tg, "Host: ", 6);
-                    tg += 6;
-                } else if (strncmp(name->data, ":status", name->size) == 0) {
-                    return CNO_ERROR_ASSERTION("set `message.code` instead of sending :status");
-                } else if (name->data[0] == ':') {
-                    continue;
-                } else {
-                    memcpy(tg, name->data, name->size); tg += name->size;  *tg++ = ':';  *tg++ = ' ';
-                }
-                memcpy(tg, value->data, value->size); tg += value->size; *tg++ = '\r'; *tg++ = '\n';
-            }
-
-            *tg++ = '\r';
-            *tg++ = '\n';
-
-            if (CNO_FIRE(conn, on_write, head, tg - head)) {
+        for (; it != end; ++it) {
+            if (CNO_FIRE(conn, on_write, head, ptr - head)) {
                 return CNO_PROPAGATE;
             }
 
-            return CNO_OK;;
+            ptr = head;
+
+            if (it->name.size + it->value.size + 4 >= CNO_MAX_HTTP1_HEADER_SIZE) {
+                return CNO_ERROR_TRANSPORT("header too long");
+            }
+
+            if (strncmp(it->name.data, ":authority", it->name.size) == 0) {
+                CNO_WRITE_CONSTC(ptr, "host: ")
+            } else if (strncmp(it->name.data, ":status", it->name.size) == 0) {
+                return CNO_ERROR_ASSERTION("set `message.code` instead of sending :status");
+            } else if (it->name.data[0] == ':') {
+                continue;
+            } else {
+                CNO_WRITE_VECTOR(ptr, it->name);
+                CNO_WRITE_CONSTC(ptr, ": ");
+            }
+            CNO_WRITE_VECTOR(ptr, it->value);
+            CNO_WRITE_CONSTC(ptr, "\r\n");
+        }
+
+        CNO_WRITE_CONSTC(ptr, "\r\n");
+        return CNO_FIRE(conn, on_write, head, ptr - head);
+    }
+
+    cno_stream_t *streamobj = cno_stream_find(conn, stream);
+
+    if (streamobj == NULL) {
+        streamobj = cno_stream_new(conn, stream, CNO_CFG_LOCAL);
+
+        if (streamobj == NULL) {
+            return CNO_PROPAGATE;
         }
     }
 
     cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, stream };
-    msg->major = 2;
-    msg->minor = 0;
 
     if (final) {
         frame.flags |= CNO_FLAG_END_STREAM;
     }
 
     if (conn->client) {
+        if (streamobj->state != CNO_STREAM_IDLE && streamobj->state != CNO_STREAM_OPEN) {
+            return CNO_ERROR_INVALID_STREAM("stream %lu not idle or open", stream);
+        }
+
         cno_header_t head[2] = {
-            { { ":method", 7 }, { msg->method.data, msg->method.size } },
-            { { ":path",   5 }, { msg->path.data, msg->path.size } },
+            { CNO_IO_VECTOR_CONST(":method"), CNO_IO_VECTOR_REFER(msg->method) },
+            { CNO_IO_VECTOR_CONST(":path"),   CNO_IO_VECTOR_REFER(msg->path)   },
         };
 
         if (cno_hpack_encode(&conn->encoder, &frame.payload, head, 2)) {
             return CNO_PROPAGATE;
         }
     } else {
+        // TODO if stream is idle, this can only be a push promise,
+        //      in which case client-type headers should be sent.
+        if (streamobj->state != CNO_STREAM_IDLE          && streamobj->state != CNO_STREAM_OPEN
+         && streamobj->state != CNO_STREAM_CLOSED_REMOTE && streamobj->state != CNO_STREAM_RESERVED_LOCAL) {
+            return CNO_ERROR_INVALID_STREAM("stream %lu not idle, open, or reserved", stream);
+        }
+
         char code[10] = { 0 };
         snprintf(code, 10, "%d", msg->code);
 
-        cno_header_t head[1] = {
-            { { ":status", 7 }, { code, strlen(code) } },
-        };
+        cno_header_t head = { CNO_IO_VECTOR_CONST(":status"), { code, strlen(code) } };
 
-        if (cno_hpack_encode(&conn->encoder, &frame.payload, head, 1)) {
+        if (cno_hpack_encode(&conn->encoder, &frame.payload, &head, 1)) {
             return CNO_PROPAGATE;
         }
     }
@@ -1277,36 +1229,22 @@ int cno_write_message(cno_connection_t *conn, size_t stream, cno_message_t *msg,
 
 int cno_write_data(cno_connection_t *conn, size_t stream, const char *data, size_t length, int final)
 {
-    cno_stream_t *streamobj = NULL;
-
-    switch (cno_write_get_mode(conn, stream, &streamobj)) {
-        case -1: return CNO_PROPAGATE;
-        case  1: {
-            if (!length) {
-                // Nothing to do.
-            } /* else if (chunked) {
-                size_t enc;
-                char  encd[sizeof(size_t) + 2];
-                char *it = encd + sizeof(size_t) + 2;
-                *--it = '\n';
-                *--it = '\r';
-
-                for (enc = length; enc; enc >>= 4) {
-                    *--it = (enc & 0xF) < 10
-                          ? (enc & 0xF) + '0'
-                          : (enc & 0xF) + 'A' - 10;
-                }
-
-                if (CNO_FIRE(conn, on_write, it, sizeof(size_t) + 2 - (it - encd))
-                 || CNO_FIRE(conn, on_write, data, length)
-                 || CNO_FIRE(conn, on_write, "\r\n", 2)) return CNO_PROPAGATE;
-            } */ else {
-                if (CNO_FIRE(conn, on_write, data, length)) {
-                    return CNO_PROPAGATE;
-                }
-            }
-            return CNO_OK;
+    if (!cno_connection_is_http2(conn)) {
+        if (stream != 1) {
+            return CNO_ERROR_INVALID_STREAM("can only write to stream 1 in HTTP 1 mode, not %lu", stream);
         }
+
+        return length && CNO_FIRE(conn, on_write, data, length) ? CNO_PROPAGATE : CNO_OK;
+    }
+
+    cno_stream_t *streamobj = cno_stream_find(conn, stream);
+
+    if (streamobj == NULL) {
+        return CNO_ERROR_INVALID_STREAM("stream %lu does not exist", stream);
+    }
+
+    if (streamobj->state != CNO_STREAM_OPEN && streamobj->state != CNO_STREAM_CLOSED_REMOTE) {
+        return CNO_ERROR_INVALID_STREAM("can't carry data over stream %lu", stream);
     }
 
     cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, stream };

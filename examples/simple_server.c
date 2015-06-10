@@ -18,23 +18,17 @@ int respond_with_hello_world(cno_connection_t *conn, int *fd, size_t stream, int
 
     if (disconnect) return CNO_OK;
 
-    cno_message_t message;
-    CNO_ZERO(&message);
-    message.major = 1;
-    message.minor = 1;
-    message.code = 200;
-    message.headers_len = 3;
-
     cno_header_t headers[3] = {
         { { "server", 6 }, { "hello-world/1.0", 15 } },
         { { "content-length", 14 }, { "14", 2 } },
         { { "cache-control", 13 }, { "no-cache", 8 } },
     };
 
+    cno_message_t message = { 200 };
     message.headers = headers;
+    message.headers_len = 3;
 
-    if (
-        cno_write_message(conn, stream, &message, 0)
+    if (cno_write_message(conn, stream, &message, 0)
      || cno_write_data(conn, stream, "Hello, World!\n", 14, 1)
     ) return CNO_PROPAGATE;
 
