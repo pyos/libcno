@@ -39,7 +39,6 @@ enum CNO_CONNECTION_KIND {
 
 
 enum CNO_CONNECTION_STATE {
-    CNO_CONNECTION_CLOSED,
     CNO_CONNECTION_INIT,
     CNO_CONNECTION_PREFACE,
     CNO_CONNECTION_READY,
@@ -216,9 +215,6 @@ CNO_DEF_CALLBACK(cno_connection_t, on_pong, const char [8]);
 CNO_DEF_CALLBACK(cno_connection_t, on_flow_control_update, size_t);
 
 
-static const struct cno_st_io_vector_t CNO_PREFACE = { "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24 };
-
-
 static inline const char *cno_frame_get_name(const struct cno_st_frame_t *frame)
 {
     switch (frame->type) {
@@ -300,7 +296,6 @@ cno_connection_t * cno_connection_new           (enum CNO_CONNECTION_KIND kind);
 void               cno_connection_destroy       (cno_connection_t *conn);
 int                cno_connection_made          (cno_connection_t *conn);
 int                cno_connection_data_received (cno_connection_t *conn, const char *data, size_t length);
-int                cno_connection_fire          (cno_connection_t *conn);
 int                cno_connection_lost          (cno_connection_t *conn);
 int                cno_connection_stop          (cno_connection_t *conn);
 int                cno_connection_is_http2      (cno_connection_t *conn);

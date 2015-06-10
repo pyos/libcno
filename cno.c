@@ -22,6 +22,9 @@
 #define CNO_WRITE_FORMAT(ptr, ...) do { (ptr) += sprintf(ptr, ##__VA_ARGS__); } while (0)
 
 
+static const struct cno_st_io_vector_t CNO_PREFACE = CNO_IO_VECTOR_CONST("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+
+
 size_t cno_stream_next_id(cno_connection_t *conn)
 {
     size_t last = conn->last_stream[CNO_PEER_LOCAL];
@@ -611,52 +614,6 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 }
 
 
-cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
-{
-    cno_connection_t *conn = malloc(sizeof(cno_connection_t));
-
-    if (conn == NULL) {
-        (void) CNO_ERROR_NO_MEMORY;
-        return NULL;
-    }
-
-    CNO_ZERO(conn);
-    conn->kind  = kind;
-    conn->state = kind == CNO_HTTP2_CLIENT ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
-    memcpy(conn->settings,     &cno_settings_initial, sizeof(cno_settings_initial));
-    memcpy(conn->settings + 1, &cno_settings_initial, sizeof(cno_settings_initial));
-    conn->window_recv = cno_settings_initial.initial_window_size;
-    conn->window_send = cno_settings_initial.initial_window_size;
-    cno_hpack_init(&conn->decoder, cno_settings_initial.header_table_size);
-    cno_hpack_init(&conn->encoder, cno_settings_initial.header_table_size);
-    cno_list_init(conn);
-    return conn;
-}
-
-
-void cno_connection_destroy(cno_connection_t *conn)
-{
-    cno_io_vector_reset(&conn->buffer);
-    cno_io_vector_clear((cno_io_vector_t *) &conn->buffer);
-    cno_hpack_clear(&conn->encoder);
-    cno_hpack_clear(&conn->decoder);
-
-    while (conn->streams.first != (cno_stream_t *) conn) {
-        cno_stream_destroy(conn, conn->streams.first);
-    }
-
-    free(conn);
-}
-
-
-int cno_connection_is_http2(cno_connection_t *conn)
-{
-    return conn->state != CNO_CONNECTION_HTTP1_INIT &&
-           conn->state != CNO_CONNECTION_HTTP1_READY &&
-           conn->state != CNO_CONNECTION_HTTP1_READING;
-}
-
-
 static int cno_settings_diff(cno_connection_t *conn, const cno_settings_t *old, const cno_settings_t *updated)
 {
     size_t i = 0;
@@ -711,6 +668,52 @@ int cno_settings_apply(cno_connection_t *conn, const cno_settings_t *new_setting
 }
 
 
+cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
+{
+    cno_connection_t *conn = malloc(sizeof(cno_connection_t));
+
+    if (conn == NULL) {
+        (void) CNO_ERROR_NO_MEMORY;
+        return NULL;
+    }
+
+    CNO_ZERO(conn);
+    conn->kind  = kind;
+    conn->state = kind == CNO_HTTP2_CLIENT ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
+    memcpy(conn->settings,     &cno_settings_initial, sizeof(cno_settings_initial));
+    memcpy(conn->settings + 1, &cno_settings_initial, sizeof(cno_settings_initial));
+    conn->window_recv = cno_settings_initial.initial_window_size;
+    conn->window_send = cno_settings_initial.initial_window_size;
+    cno_hpack_init(&conn->decoder, cno_settings_initial.header_table_size);
+    cno_hpack_init(&conn->encoder, cno_settings_initial.header_table_size);
+    cno_list_init(conn);
+    return conn;
+}
+
+
+void cno_connection_destroy(cno_connection_t *conn)
+{
+    cno_io_vector_reset(&conn->buffer);
+    cno_io_vector_clear((cno_io_vector_t *) &conn->buffer);
+    cno_hpack_clear(&conn->encoder);
+    cno_hpack_clear(&conn->decoder);
+
+    while (conn->streams.first != (cno_stream_t *) conn) {
+        cno_stream_destroy(conn, conn->streams.first);
+    }
+
+    free(conn);
+}
+
+
+int cno_connection_is_http2(cno_connection_t *conn)
+{
+    return conn->state != CNO_CONNECTION_HTTP1_INIT &&
+           conn->state != CNO_CONNECTION_HTTP1_READY &&
+           conn->state != CNO_CONNECTION_HTTP1_READING;
+}
+
+
 int cno_connection_upgrade(cno_connection_t *conn)
 {
     if (conn->client && CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size)) {
@@ -722,53 +725,6 @@ int cno_connection_upgrade(cno_connection_t *conn)
 
 
 int cno_connection_made(cno_connection_t *conn)
-{
-    return cno_connection_fire(conn);
-}
-
-
-int cno_connection_data_received(cno_connection_t *conn, const char *data, size_t length)
-{
-    if (conn->closed) {
-        return CNO_ERROR_INVALID_STATE("already closed");
-    }
-
-    if (cno_io_vector_extend_tmp(&conn->buffer, data, length)) {
-        return CNO_PROPAGATE;
-    }
-
-    return cno_connection_fire(conn);
-}
-
-
-int cno_connection_stop(cno_connection_t *conn)
-{
-    if (cno_connection_is_http2(conn)) {
-        return cno_frame_write_goaway(conn, CNO_STATE_NO_ERROR);
-    }
-
-    return CNO_OK;
-}
-
-
-int cno_connection_lost(cno_connection_t *conn)
-{
-    if (conn->closed) {
-        return CNO_OK;
-    }
-
-    conn->closed = 1;
-
-    if (cno_connection_fire(conn)) {
-        conn->closed = 0;
-        return CNO_PROPAGATE;
-    }
-
-    return CNO_OK;
-}
-
-
-int cno_connection_fire(cno_connection_t *conn)
 {
     int __retcode = CNO_OK;
     #define STOP(code) do              { __retcode = code;   goto done; } while (0)
@@ -1068,7 +1024,6 @@ int cno_connection_fire(cno_connection_t *conn)
         }
     }
 
-    conn->state = CNO_CONNECTION_CLOSED;
     CNO_ZERO(&conn->buffer);
     return CNO_OK;
 
@@ -1079,6 +1034,45 @@ done:
     }
 
     return __retcode;
+}
+
+
+int cno_connection_data_received(cno_connection_t *conn, const char *data, size_t length)
+{
+    if (conn->closed) {
+        return CNO_ERROR_INVALID_STATE("already closed");
+    }
+
+    if (cno_io_vector_extend_tmp(&conn->buffer, data, length)) {
+        return CNO_PROPAGATE;
+    }
+
+    return cno_connection_made(conn);
+}
+
+
+int cno_connection_stop(cno_connection_t *conn)
+{
+    if (cno_connection_is_http2(conn)) {
+        return cno_frame_write_goaway(conn, CNO_STATE_NO_ERROR);
+    }
+
+    return CNO_OK;
+}
+
+
+int cno_connection_lost(cno_connection_t *conn)
+{
+    if (!conn->closed) {
+        conn->closed = 1;
+
+        if (cno_connection_made(conn)) {
+            conn->closed = 0;
+            return CNO_PROPAGATE;
+        }
+    }
+
+    return CNO_OK;
 }
 
 
@@ -1099,6 +1093,10 @@ static inline int cno_finalize_http2(cno_connection_t *conn, cno_stream_t *strea
 
 int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t *msg, int final)
 {
+    if (conn->closed) {
+        return CNO_ERROR_INVALID_STATE("connection closed");
+    }
+
     if (!cno_connection_is_http2(conn)) {
         if (stream != 1) {
             return CNO_ERROR_INVALID_STREAM("can only write to stream 1 in HTTP 1 mode, not %lu", stream);
@@ -1221,6 +1219,10 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
 
 int cno_write_data(cno_connection_t *conn, size_t stream, const char *data, size_t length, int final)
 {
+    if (conn->closed) {
+        return CNO_ERROR_INVALID_STATE("connection closed");
+    }
+
     if (!cno_connection_is_http2(conn)) {
         if (stream != 1) {
             return CNO_ERROR_INVALID_STREAM("can only write to stream 1 in HTTP 1 mode, not %lu", stream);
