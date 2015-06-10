@@ -638,7 +638,6 @@ void cno_connection_destroy(cno_connection_t *conn)
 {
     cno_io_vector_reset(&conn->buffer);
     cno_io_vector_clear((cno_io_vector_t *) &conn->buffer);
-    cno_io_vector_clear((cno_io_vector_t *) &conn->frame.payload);
     cno_hpack_clear(&conn->encoder);
     cno_hpack_clear(&conn->decoder);
 
@@ -1015,46 +1014,40 @@ int cno_connection_fire(cno_connection_t *conn)
 
         case CNO_CONNECTION_READY_NO_SETTINGS:
         case CNO_CONNECTION_READY: {
-            WAIT(conn->buffer.size >= 9);
+            WAIT(conn->buffer.size >= 3);
 
             size_t m;
             unsigned char *base = (unsigned char *) conn->buffer.data;
-            CNO_ZERO(&conn->frame);
-            CNO_READ_3BYTE(m, base); conn->frame.payload.size = m;
+            CNO_READ_3BYTE(m, base);
+
+            if (m > conn->settings[CNO_CFG_LOCAL].max_frame_size) {
+                STOP(CNO_ERROR_GOAWAY(conn, CNO_STATE_FRAME_SIZE_ERROR, "recv'd a frame that is too big"));
+            }
+
+            WAIT(conn->buffer.size >= 9 + m);
+
+            conn->frame.stream = NULL;
+            conn->frame.payload.size = m;
             CNO_READ_1BYTE(m, base); conn->frame.type         = m;
             CNO_READ_1BYTE(m, base); conn->frame.flags        = m;
             CNO_READ_4BYTE(m, base); conn->frame.stream_id    = m;
-
-            if (conn->frame.payload.size > conn->settings[CNO_CFG_LOCAL].max_frame_size) {
-                return CNO_ERROR_GOAWAY(conn, CNO_STATE_FRAME_SIZE_ERROR, "recv'd a frame that is too big");
-            }
+            conn->frame.payload.data = (char *) base;
 
             if (conn->state == CNO_CONNECTION_READY_NO_SETTINGS && conn->frame.type != CNO_FRAME_SETTINGS) {
                 STOP(CNO_ERROR_TRANSPORT("invalid HTTP 2 preface: got %s, not SETTINGS", cno_frame_get_name(&conn->frame)));
             }
 
-            cno_io_vector_shift(&conn->buffer, 9);
-            conn->state = CNO_CONNECTION_READING;
-            break;
-        }
-
-        case CNO_CONNECTION_READING: {
-            WAIT(conn->buffer.size >= conn->frame.payload.size);
-
-            conn->frame.payload.data = cno_io_vector_slice(&conn->buffer, conn->frame.payload.size);
             conn->state = CNO_CONNECTION_READY;
+            cno_io_vector_shift(&conn->buffer, 9 + conn->frame.payload.size);
 
             if (CNO_FIRE(conn, on_frame, &conn->frame)) {
-                cno_io_vector_clear(&conn->frame.payload);
                 STOP(CNO_PROPAGATE);
             }
 
             if (cno_frame_handle(conn, &conn->frame)) {
-                cno_io_vector_clear(&conn->frame.payload);
                 STOP(CNO_PROPAGATE);
             }
 
-            cno_io_vector_clear(&conn->frame.payload);
             break;
         }
 
@@ -1068,7 +1061,6 @@ int cno_connection_fire(cno_connection_t *conn)
     // is incomplete (and useless).
     cno_io_vector_reset(&conn->buffer);
     cno_io_vector_clear((cno_io_vector_t *) &conn->buffer);
-    cno_io_vector_clear((cno_io_vector_t *) &conn->frame.payload);
 
     while (conn->streams.first != (cno_stream_t *) conn) {
         if (cno_stream_destroy_clean(conn, conn->streams.first)) {
