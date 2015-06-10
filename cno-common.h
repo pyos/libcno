@@ -23,6 +23,10 @@
 #define CNO_LIST_ROOT(T) T *last; T *first
 
 
+#define CNO_IO_VECTOR_CONST(str) { str, sizeof(str) - 1 }
+#define CNO_IO_VECTOR_REFER(vec) { (vec).data, (vec).size }
+
+
 enum CNO_ERRNO {
     CNO_ERRNO_UNKNOWN,
     CNO_ERRNO_ASSERTION,
