@@ -114,13 +114,11 @@ static void cno_hpack_evict(cno_hpack_t *state)
 
 static int cno_hpack_index(cno_hpack_t *state, cno_header_t *source)
 {
-    cno_header_table_t *entry = malloc(sizeof(cno_header_table_t));
+    cno_header_table_t *entry = calloc(1, sizeof(cno_header_table_t));
 
     if (entry == NULL) {
         return CNO_PROPAGATE;
     }
-
-    CNO_ZERO(entry);
 
     if (cno_io_vector_extend(&entry->data.name, source->name.data, source->name.size)) {
         return CNO_PROPAGATE;

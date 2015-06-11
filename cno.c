@@ -69,14 +69,13 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id, int loca
         return NULL;
     }
 
-    cno_stream_t *stream = malloc(sizeof(cno_stream_t));
+    cno_stream_t *stream = calloc(1, sizeof(cno_stream_t));
 
     if (!stream) {
         (void) CNO_ERROR_NO_MEMORY;
         return NULL;
     }
 
-    CNO_ZERO(stream);
     conn->last_stream[i] = id;
     conn->stream_count[i]++;
     stream->id = id;
@@ -682,14 +681,13 @@ int cno_settings_apply(cno_connection_t *conn, const cno_settings_t *new_setting
 
 cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
 {
-    cno_connection_t *conn = malloc(sizeof(cno_connection_t));
+    cno_connection_t *conn = calloc(1, sizeof(cno_connection_t));
 
     if (conn == NULL) {
         (void) CNO_ERROR_NO_MEMORY;
         return NULL;
     }
 
-    CNO_ZERO(conn);
     conn->kind  = kind;
     conn->state = kind == CNO_HTTP2_CLIENT ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
     memcpy(conn->settings,     &CNO_SETTINGS_INITIAL, sizeof(cno_settings_t));
@@ -763,7 +761,6 @@ int cno_connection_made(cno_connection_t *conn)
 
             // Should be exactly one stream right now.
             cno_stream_t *stream = conn->streams.first;
-            CNO_ZERO(&stream->msg);
             stream->http1_remaining = 0;
             WAIT(conn->buffer.size);
 
