@@ -1,6 +1,7 @@
 #ifndef _CNO_COMMON_H_
 #define _CNO_COMMON_H_
 #include <stddef.h>
+#include <string.h>
 
 #define CNO_ZERO(ob) memset(ob, 0, sizeof(*ob))
 #define CNO_STRUCT_EXPORT(name) typedef struct cno_st_ ## name ## _t cno_ ## name ## _t
@@ -67,6 +68,7 @@ void cno_list_init         (void *node);
 void cno_list_insert_after (void *node, void *next);
 void cno_list_remove       (void *node);
 
+#define CNO_IO_VECTOR_STRING(str) { str, strlen(str) }
 #define CNO_IO_VECTOR_CONST(str) { str, sizeof(str) - 1 }
 #define CNO_IO_VECTOR_REFER(vec) { (vec).data, (vec).size }
 #define CNO_IO_VECTOR_EMPTY      { NULL, 0 }
