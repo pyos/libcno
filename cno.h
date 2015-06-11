@@ -159,11 +159,6 @@ struct cno_st_settings_t {
 };
 
 
-static const struct cno_st_settings_t cno_settings_initial = {
-    { { 4096, 1, -1, 65536, 16384, -1 } }
-};
-
-
 struct cno_st_connection_t {
     struct { CNO_LIST_ROOT(struct cno_st_stream_t); } streams;
     union {
@@ -215,28 +210,8 @@ CNO_DEF_CALLBACK(cno_connection_t, on_pong, const char [8]);
 CNO_DEF_CALLBACK(cno_connection_t, on_flow_control_update, size_t);
 
 
-static inline const char *cno_frame_get_name(const struct cno_st_frame_t *frame)
-{
-    switch (frame->type) {
-        case CNO_FRAME_DATA:          return "DATA";
-        case CNO_FRAME_HEADERS:       return "HEADERS";
-        case CNO_FRAME_PRIORITY:      return "PRIORITY";
-        case CNO_FRAME_RST_STREAM:    return "RST_STREAM";
-        case CNO_FRAME_SETTINGS:      return "SETTINGS";
-        case CNO_FRAME_PUSH_PROMISE:  return "PUSH_PROMISE";
-        case CNO_FRAME_PING:          return "PING";
-        case CNO_FRAME_GOAWAY:        return "GOAWAY";
-        case CNO_FRAME_WINDOW_UPDATE: return "WINDOW_UPDATE";
-        case CNO_FRAME_CONTINUATION:  return "CONTINUATION";
-        default: return "UNKNOWN";
-    }
-};
-
-
-static inline int cno_frame_is_flow_controlled(const struct cno_st_frame_t *frame)
-{
-    return frame->type == CNO_FRAME_DATA;
-}
+extern const char  CNO_FRAME_FLOW_CONTROLLED[256];
+extern const char *CNO_FRAME_NAME[256];
 
 
 static inline const char *cno_message_literal(const struct cno_st_message_t *msg)

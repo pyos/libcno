@@ -23,6 +23,14 @@
 
 
 static const struct cno_st_io_vector_t CNO_PREFACE = CNO_IO_VECTOR_CONST("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+static const struct cno_st_settings_t  CNO_SETTINGS_INITIAL = { { { 4096, 1, -1, 65536, 16384, -1 } } };
+
+
+const char  CNO_FRAME_FLOW_CONTROLLED[256] = { 1, 0 };
+const char *CNO_FRAME_NAME[256] = {
+    "DATA", "HEADERS", "PRIORITY", "RST_STREAM", "SETTINGS", "PUSH_PROMISE",
+    "PING", "GOAWAY", "WINDOW_UPDATE", "CONTINUATION", NULL
+};
 
 
 size_t cno_stream_next_id(cno_connection_t *conn)
@@ -151,7 +159,7 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
         frame->stream = cno_stream_find(conn, stream);
     }
 
-    if (cno_frame_is_flow_controlled(frame)) {
+    if (CNO_FRAME_FLOW_CONTROLLED[frame->type]) {
         if (length > conn->window_send) {
             return CNO_ERROR_WOULD_BLOCK("frame exceeds connection flow window (%lu > %lu)",
                 length, conn->window_send);
@@ -272,7 +280,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
     cno_stream_t *stream = frame->stream = cno_stream_find(conn, frame->stream_id);
     int stream_may_be_reset = frame->stream_id && frame->stream_id <= conn->last_stream[CNO_PEER_REMOTE];
 
-    if (cno_frame_is_flow_controlled(frame) && sz) {
+    if (CNO_FRAME_FLOW_CONTROLLED[frame->type] && sz) {
         if (conn->window_recv < sz) {
             // Accept the frame anyway.
             conn->window_recv = sz;
@@ -684,12 +692,12 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     CNO_ZERO(conn);
     conn->kind  = kind;
     conn->state = kind == CNO_HTTP2_CLIENT ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
-    memcpy(conn->settings,     &cno_settings_initial, sizeof(cno_settings_initial));
-    memcpy(conn->settings + 1, &cno_settings_initial, sizeof(cno_settings_initial));
-    conn->window_recv = cno_settings_initial.initial_window_size;
-    conn->window_send = cno_settings_initial.initial_window_size;
-    cno_hpack_init(&conn->decoder, cno_settings_initial.header_table_size);
-    cno_hpack_init(&conn->encoder, cno_settings_initial.header_table_size);
+    memcpy(conn->settings,     &CNO_SETTINGS_INITIAL, sizeof(cno_settings_t));
+    memcpy(conn->settings + 1, &CNO_SETTINGS_INITIAL, sizeof(cno_settings_t));
+    conn->window_recv = CNO_SETTINGS_INITIAL.initial_window_size;
+    conn->window_send = CNO_SETTINGS_INITIAL.initial_window_size;
+    cno_hpack_init(&conn->decoder, CNO_SETTINGS_INITIAL.header_table_size);
+    cno_hpack_init(&conn->encoder, CNO_SETTINGS_INITIAL.header_table_size);
     cno_list_init(conn);
     return conn;
 }
@@ -724,7 +732,7 @@ int cno_connection_upgrade(cno_connection_t *conn)
         return CNO_PROPAGATE;
     }
 
-    return cno_settings_diff(conn, &cno_settings_initial, conn->settings + CNO_PEER_LOCAL);
+    return cno_settings_diff(conn, &CNO_SETTINGS_INITIAL, conn->settings + CNO_PEER_LOCAL);
 }
 
 
@@ -992,7 +1000,7 @@ int cno_connection_made(cno_connection_t *conn)
             conn->frame.payload.data = (char *) base;
 
             if (conn->state == CNO_CONNECTION_READY_NO_SETTINGS && conn->frame.type != CNO_FRAME_SETTINGS) {
-                STOP(CNO_ERROR_TRANSPORT("invalid HTTP 2 preface: got %s, not SETTINGS", cno_frame_get_name(&conn->frame)));
+                STOP(CNO_ERROR_TRANSPORT("invalid HTTP 2 preface: no initial SETTINGS"));
             }
 
             conn->state = CNO_CONNECTION_READY;
