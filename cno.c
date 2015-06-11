@@ -51,9 +51,13 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id, int loca
         (void) CNO_ERROR_INVALID_STREAM("invalid stream ID (%lu <= %lu)", id, conn->last_stream[i]);
         return NULL;
     }
-    // The peer enforces a limit on how many streams we create and vice versa.
+
     if (conn->stream_count[i] >= conn->settings[!i].max_concurrent_streams) {
-        (void) CNO_ERROR_TRANSPORT("reached the limit on streams");
+        if (i == CNO_PEER_LOCAL) {
+            (void) CNO_ERROR_WOULD_BLOCK("initiated too many concurrent streams; wait for on_stream_end");
+        } else {
+            (void) CNO_ERROR_TRANSPORT("received too many concurrent streams");
+        }
         return NULL;
     }
 
@@ -819,9 +823,7 @@ int cno_connection_made(cno_connection_t *conn)
                         { CNO_IO_VECTOR_CONST("upgrade"),    CNO_IO_VECTOR_CONST("h2c")     },
                     };
 
-                    cno_message_t upgrade_msg = { 101 };
-                    upgrade_msg.headers     = upgrade_headers;
-                    upgrade_msg.headers_len = 2;
+                    cno_message_t upgrade_msg = { 101, CNO_IO_VECTOR_EMPTY, CNO_IO_VECTOR_EMPTY, upgrade_headers, 2 };
 
                     if (cno_write_message(conn, stream->id, &upgrade_msg, 1)) {
                         STOP(CNO_PROPAGATE);
