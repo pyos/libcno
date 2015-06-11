@@ -76,6 +76,15 @@ int bytes_to_hex(cno_io_vector_t *source, cno_io_vector_t *target)
 }
 
 
+void clear_headers(cno_header_t *h, cno_header_t *end)
+{
+    for (; h != end; ++h) {
+        cno_io_vector_clear(&h->name);
+        cno_io_vector_clear(&h->value);
+    }
+}
+
+
 void print_header(cno_header_t *h)
 {
     printf("    "); fwrite(h->name.data,  h->name.size,  1, stdout);
@@ -135,32 +144,28 @@ int main(int argc, char *argv[])
             goto error;
         }
 
-        cno_io_vector_clear(&source);
-
-        if (cno_hpack_encode(&encoder, &source, result, limit)) {
-            for (k = 0; k < limit; ++k) {
-                cno_io_vector_clear(&result[k].name);
-                cno_io_vector_clear(&result[k].value);
-            }
-
-            goto error;
-        }
-
         printf("decode(#%lu) = {\n", i + 1);
 
         for (k = 0; k < limit; ++k) {
             print_header(result + k);
-            cno_io_vector_clear(&result[k].name);
-            cno_io_vector_clear(&result[k].value);
         }
+
+        printf("}\n\n");
+        print_table(&decoder);
+
+        cno_io_vector_clear(&source);
+
+        if (cno_hpack_encode(&encoder, &source, result, limit)) {
+            clear_headers(result, result + limit);
+            goto error;
+        }
+
+        clear_headers(result, result + limit);
 
         if (bytes_to_hex(&source, &hexdata)) {
             cno_io_vector_clear(&source);
             goto error;
         }
-
-        printf("}\n\n");
-        print_table(&decoder);
 
         printf("encode(#%lu) = ", i + 1); fwrite(hexdata.data, hexdata.size,  1, stdout);
         printf("\n\n");
