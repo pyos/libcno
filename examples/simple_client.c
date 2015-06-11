@@ -15,7 +15,7 @@
 #include "simple_common.h"
 
 
-int on_message_end(cno_connection_t *conn, int *fd, size_t stream, int disconnect)
+int disconnect(cno_connection_t *conn, int *fd, size_t stream, int disconnect)
 {
     log_recv_message_end(conn, fd, stream, disconnect);
 
@@ -55,22 +55,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if ((server_host = gethostbyname2(url->host, AF_INET6)) != NULL) {
-        struct sockaddr_in6 server6;
-        memset(&server6, 0, sizeof(server6));
-        server6.sin6_family = AF_INET6;
-        server6.sin6_port   = htons(port);
-
-        for (i = 0; !found && server_host->h_addr_list[i]; ++i) {
-            memcpy(&server6.sin6_addr.s6_addr, server_host->h_addr_list[i], server_host->h_length);
-
-            if (connect(fd, (struct sockaddr *) &server6, sizeof(server6)) >= 0) {
-                found = 1;
-            }
-        }
-    }
-
-    if ((server_host = gethostbyname2(url->host, AF_INET)) != NULL) {
+    if ((server_host = gethostbyname(url->host)) != NULL) {
         struct sockaddr_in server;
         memset(&server, 0, sizeof(server));
         server.sin_family = AF_INET;
@@ -96,37 +81,34 @@ int main(int argc, char *argv[])
         goto error;
     }
 
+    cno_settings_t settings;
+    cno_settings_copy(client, &settings);
+    settings.enable_push = 0;
+    settings.max_concurrent_streams = 1024;
+    cno_settings_apply(client, &settings);
+
     client->cb_data          = &fd;
     client->on_write         = &write_to_fd;
     client->on_frame         = &log_recv_frame;
     client->on_frame_send    = &log_sent_frame;
     client->on_message_start = &log_recv_message;
     client->on_message_data  = &log_recv_message_data;
-    client->on_message_end   = &on_message_end;
-
-    cno_message_t message;
-    CNO_ZERO(&message);
-    message.path.data = path;
-    message.path.size = strlen(path);
-    message.method.data = "GET";
-    message.method.size = 3;
+    client->on_message_end   = &disconnect;
 
     cno_header_t headers[] = {
-        { { ":scheme", 7 }, { "http", 4 } },
-        { { ":authority", 10 }, { "localhost", 9 } },
+        { CNO_IO_VECTOR_CONST(":scheme"),    CNO_IO_VECTOR_CONST("http") },
+        { CNO_IO_VECTOR_CONST(":authority"), CNO_IO_VECTOR_STRING(url->host) },
     };
 
-    message.headers_len = sizeof(headers) / sizeof(cno_header_t);
-    message.headers = headers;
+    cno_message_t message = { 0, CNO_IO_VECTOR_CONST("GET"), CNO_IO_VECTOR_STRING(path), headers, 2 };
 
-    if (
-        cno_connection_made(client)
+    if (cno_connection_made(client)
      || cno_write_message(client, 1, &message, 1)) goto error;
 
-    char buf[2048];
+    char buf[8196];
     ssize_t ln;
 
-    while ((ln = recv(fd, buf, 2048, 0)) > 0) {
+    while ((ln = recv(fd, buf, 8196, 0)) > 0) {
         if (cno_connection_data_received(client, buf, ln)) {
             goto error;
         }

@@ -1,8 +1,3 @@
-/*
- *  A simple client-server pair that is connected without actually using sockets.
- *  The client makes some requests, the server responds with a "Hello, World!",
- *  the client logs that.
- */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -12,35 +7,26 @@
 #include "simple_common.h"
 
 
-int write_cb(cno_connection_t *conn, cno_connection_t *other, const char *data, size_t length)
+static int pass(cno_connection_t *conn, cno_connection_t *other, const char *data, size_t length)
 {
     return cno_connection_data_received(other, data, length);
 }
 
 
-int respond(cno_connection_t *conn, cno_connection_t *other, size_t stream, int disconnect)
+static int respond(cno_connection_t *conn, void *_, size_t stream, int disconnect)
 {
     if (disconnect) return CNO_OK;
 
-    cno_message_t message;
-    CNO_ZERO(&message);
-    message.code = 200;
-    message.headers_len = 3;
-
     cno_header_t headers[3] = {
-        { { "server", 6 }, { "echo-chamber/1.0", 16 } },
-        { { "content-length", 14 }, { "14", 2 } },
-        { { "cache-control", 13 }, { "no-cache", 8 } },
+        // io vector = { char *, size_t }
+        { CNO_IO_VECTOR_CONST("server"),         CNO_IO_VECTOR_CONST("echo-chamber/1.0") },
+        { CNO_IO_VECTOR_CONST("content-length"), CNO_IO_VECTOR_CONST("14") },
+        { CNO_IO_VECTOR_CONST("cache-control"),  CNO_IO_VECTOR_CONST("no-cache") },
     };
 
-    message.headers = headers;
+    cno_message_t message = { 200, CNO_IO_VECTOR_EMPTY, CNO_IO_VECTOR_EMPTY, headers, 3 };
 
-    if (
-        cno_write_message(conn, stream, &message, 0)
-     || cno_write_data(conn, stream, "Hello, World!\n", 14, 1)
-    ) return CNO_PROPAGATE;
-
-    return CNO_OK;
+    return cno_write(conn, stream, &message, "Hello, World!\n", 14);
 }
 
 
@@ -54,7 +40,7 @@ int main(int argc, char *argv[])
     }
 
     client->cb_data          = server;
-    client->on_write         = &write_cb;
+    client->on_write         = &pass;
     client->on_message_start = &log_recv_message;
     client->on_message_data  = &log_recv_message_data;
     client->on_message_end   = &log_recv_message_end;
@@ -62,28 +48,19 @@ int main(int argc, char *argv[])
     client->on_frame_send    = &log_sent_frame;
 
     server->cb_data          = client;
-    server->on_write         = &write_cb;
+    server->on_write         = &pass;
     server->on_message_end   = &respond;
 
-    cno_message_t message;
-    CNO_ZERO(&message);
-    message.path.data = "/";
-    message.path.size = 1;
-    message.method.data = "GET";
-    message.method.size = 3;
-    message.headers_len = 1;
-
     cno_header_t headers[1] = {
-        { { "host", 4 }, { "localhost", 9 } },
+        { CNO_IO_VECTOR_CONST(":authority"), CNO_IO_VECTOR_CONST("localhost") },
     };
 
-    message.headers = headers;
+    cno_message_t message = { 0, CNO_IO_VECTOR_CONST("GET"), CNO_IO_VECTOR_CONST("/"), headers, 1};
 
-    if (
-        cno_connection_made(client)
+    if (cno_connection_made(client)
      || cno_connection_made(server)
-     || cno_write_message(client, 1, &message, 0)
-     || cno_write_data(client, 1, "Hello, World!\n", 14, 1)
+     || cno_write(client, cno_stream_next_id(client), &message, "Hello, World!\n", 14)
+     || cno_connection_stop(client)
      || cno_connection_lost(client)
      || cno_connection_lost(server)
     ) goto error;

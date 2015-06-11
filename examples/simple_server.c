@@ -12,39 +12,42 @@
 #include "simple_common.h"
 
 
-int respond_with_hello_world(cno_connection_t *conn, int *fd, size_t stream, int disconnect)
+static const int ONE = 1;  // Heh. See `setsockopt` below.
+
+
+static int respond_with_hello_world(cno_connection_t *conn, int *fd, size_t stream, int disconnect)
 {
     log_recv_message_end(conn, fd, stream, disconnect);
 
     if (disconnect) return CNO_OK;
 
     cno_header_t headers[3] = {
-        { { "server", 6 }, { "hello-world/1.0", 15 } },
-        { { "content-length", 14 }, { "14", 2 } },
-        { { "cache-control", 13 }, { "no-cache", 8 } },
+        // io vector = { char *, size_t }
+        { CNO_IO_VECTOR_CONST("server"),         CNO_IO_VECTOR_CONST("hello-world/1.0") },
+        { CNO_IO_VECTOR_CONST("content-length"), CNO_IO_VECTOR_CONST("14") },
+        { CNO_IO_VECTOR_CONST("cache-control"),  CNO_IO_VECTOR_CONST("no-cache") },
     };
 
-    cno_message_t message = { 200 };
-    message.headers = headers;
-    message.headers_len = 3;
+    cno_message_t message = { 200, CNO_IO_VECTOR_EMPTY, CNO_IO_VECTOR_EMPTY, headers, 3 };
 
     if (cno_write_message(conn, stream, &message, 0)
-     || cno_write_data(conn, stream, "Hello, World!\n", 14, 1)
-    ) return CNO_PROPAGATE;
+     || cno_write_data(conn, stream, "Hello, World!\n", 14, 1)) {
+        // CNO_ERRNO_WOULD_BLOCK in cno_write_data can be handled by waiting for
+        // a flow control update and retrying, but we don't have an event loop so we'll abort.
+        return CNO_PROPAGATE;
+    }
 
     log_message(*fd, &message, 0);
     return CNO_OK;
 }
 
 
-void *handle(void *sockptr)
+static void *handle(fd) ssize_t fd;
 {
-    int fd  = (int) (size_t) sockptr;
-    int one = 1;
     ssize_t read;
-    char message[2048];
+    char message[8192];
 
-    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(int)) < 0) {
+    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &ONE, sizeof(ONE)) < 0) {
         fprintf(stderr, "error: could not set TCP_NODELAY");
         return NULL;
     }
@@ -73,15 +76,10 @@ void *handle(void *sockptr)
         goto error;
     }
 
-    while ((read = recv(fd, message, 2048, 0)) > 0) {
+    while ((read = recv(fd, message, 8192, 0)) > 0) {
         if (cno_connection_data_received(conn, message, read)) {
             goto error;
         }
-    }
-
-    if (read < 0) {
-        (void) CNO_ERROR_TRANSPORT("recv() failed");
-        goto error;
     }
 
     if (cno_connection_lost(conn)) {
@@ -95,7 +93,7 @@ void *handle(void *sockptr)
 error:
     cno_connection_lost(conn);
 
-    fprintf(stderr, "%d: %s: %s at line %d in %s\n", fd,
+    fprintf(stderr, "%lu: %s: %s at line %d in %s\n", fd,
         cno_error_name(), cno_error_text(),
         cno_error_line(), cno_error_file());
 
@@ -113,8 +111,8 @@ int main(int argc, char *argv[])
     }
 
     int port = atoi(argv[1]);
-    int fd   = socket(AF_INET, SOCK_STREAM, 0);
-    int conn;
+    ssize_t fd   = socket(AF_INET, SOCK_STREAM, 0);
+    ssize_t conn;
 
     if (fd == -1) {
         fprintf(stderr, "error: could not create server socket\n");
@@ -138,7 +136,7 @@ int main(int argc, char *argv[])
     while (( conn = accept(fd, (struct sockaddr *) &accepted, &structsz) ) > 0) {
         pthread_t thread;
 
-        if (pthread_create(&thread, NULL, handle, (void *) (size_t) conn) < 0 || pthread_detach(thread) < 0) {
+        if (pthread_create(&thread, NULL, handle, (void *) conn) < 0 || pthread_detach(thread) < 0) {
             fprintf(stderr, "error: failed to create thread\n");
             return 1;
         }
