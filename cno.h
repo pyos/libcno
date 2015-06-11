@@ -28,6 +28,7 @@
 enum CNO_PEER_KIND {
     CNO_PEER_REMOTE = 0,
     CNO_PEER_LOCAL  = 1,
+    CNO_PEER_UNDEF  = 2,  // http 1 mode
 };
 
 
