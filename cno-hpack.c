@@ -478,32 +478,29 @@ static int cno_hpack_encode_string(cno_io_vector_t *target, cno_io_vector_t *sou
         unsigned char *stop = src + source->size;
 
         uint64_t bits = 0;
-        uint8_t  bits_left = 64;
+        uint8_t  used = 0;
 
         while (src != stop) {
             const cno_huffman_item_t it = CNO_HUFFMAN_TABLE[*src++];
 
-            bits |= ((uint64_t) it.code) << (bits_left - it.bits);
-            bits_left -= it.bits;
+            bits  = (bits << it.bits) | it.code;
+            used += it.bits;
 
-            while (bits_left <= 56) {
-                *ptr++ = bits >> 56;
-                bits <<= 8;
-                bits_left += 8;
+            while (used >= 8) {
+                *ptr = bits >> (used -= 8);
 
-                if (ptr == end) {
+                if (++ptr == end) {
                     goto huffman_inefficient;
                 }
             }
         }
 
-        if (bits_left != 64) {
-            bits |= ((uint64_t) 1 << bits_left) - 1;
-            *ptr++ = bits >> 56;
+        if (used) {
+            *ptr++ = (bits << (8 - used)) | (0xff >> used);
         }
 
         if (ptr == end) {
-            goto huffman_inefficient;
+            goto huffman_inefficient;  // at least save the decoder some time
         }
 
         if (cno_hpack_encode_uint(target, 7, ptr - data, 0x80) ||

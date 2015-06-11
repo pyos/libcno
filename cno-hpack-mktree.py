@@ -1,51 +1,11 @@
-import sys
-import random
 import itertools
-
 
 LEAF_EOS   = 1
 LEAF_CHAR  = 2
 LEAF_ERROR = 4
-# Upper limit on the contents of the data type used to store tree ids + 1.
-TREE_LIMIT = 1 << 16  # unsigned short
+TREE_LIMIT = 1 << 16  # USHRT_MAX + 1 (because cno_huffman_leaf_t.tree is unsigned short)
 
-TEMPLATE_NODE = '{{{},{},{}}}'
-TEMPLATE = '''#include "cno-common.h"
-
-struct cno_st_huffman_item_t {{ unsigned int code; unsigned char bits; }};
-struct cno_st_huffman_leaf_t {{ unsigned char type; unsigned char data; unsigned short tree; }};
-
-static const unsigned char CNO_HUFFMAN_LEAF_EOS   = {LEAF_EOS};
-static const unsigned char CNO_HUFFMAN_LEAF_CHAR  = {LEAF_CHAR};
-static const unsigned char CNO_HUFFMAN_LEAF_ERROR = {LEAF_ERROR};
-
-CNO_STRUCT_EXPORT(huffman_item);
-CNO_STRUCT_EXPORT(huffman_leaf);
-
-// How to decode Huffman-encoded strings:
-//
-//   1. Start with tree id = 0, eos = 1.
-//   2. While possible:
-//
-//      2.1. Read 4 bits of input, set eos = 0.
-//      2.2. Look up CNO_HUFFMAN_TREES[tree id | input] to fetch a cno_huffman_leaf_t.
-//           If `type` is...
-//
-//           2.2.1. CNO_HUFFMAN_LEAF_EOS:   set eos = 1
-//           2.2.2. CNO_HUFFMAN_LEAF_CHAR:  append character in `data` to output.
-//           2.2.3. CNO_HUFFMAN_LEAF_ERROR: return CNO_ERROR_TRANSPORT("invalid Huffman code")
-//
-//      2.3. set tree id = `tree`.
-//
-//   3. if eos = 0, return CNO_ERROR_TRANSPORT("truncated Huffman code")
-//
-
-static const struct cno_st_huffman_item_t CNO_HUFFMAN_TABLE[] = {{ {TABLE} }};
-static const struct cno_st_huffman_leaf_t CNO_HUFFMAN_TREES[] = {{ {TREES} }};
-'''
-
-
-table = [
+TABLE = [  # char code -> (right-aligned huffman code, bit length)
     (     0x1ff8, 13), (   0x7fffd8, 23 ), (  0xfffffe2, 28 ), (  0xfffffe3, 28 ),
     (  0xfffffe4, 28), (  0xfffffe5, 28 ), (  0xfffffe6, 28 ), (  0xfffffe7, 28 ),
     (  0xfffffe8, 28), (   0xffffea, 24 ), ( 0x3ffffffc, 30 ), (  0xfffffe9, 28 ),
@@ -110,33 +70,28 @@ table = [
     (  0x7ffffe7, 27), (  0x7ffffe8, 27 ), (  0x7ffffe9, 27 ), (  0x7ffffea, 27 ),
     (  0x7ffffeb, 27), (  0xffffffe, 28 ), (  0x7ffffec, 27 ), (  0x7ffffed, 27 ),
     (  0x7ffffee, 27), (  0x7ffffef, 27 ), (  0x7fffff0, 27 ), (  0x3ffffee, 26 ),
-    ( 0x3fffffff, 30),
 ]
 
-# Left-align and sort by Huffman code so that characters with same bits 0..i
-# form a continuous range.
-xs = sorted((code << 32 >> sz, sz, i) for i, (code, sz) in enumerate(table))
 
-
-def make_tree(xs, start, end, i):
+def make_tree(xs, start, end, mask):
     '''
-        Construct a Huffman decoder tree.
+        Construct a Huffman decoder tree from a left-aligned table sorted by Huffman code.
         Leafs are ints, interior nodes are 2-tuples, invalid nodes are Nones.
     '''
-    if end == start or i > 31:
+    if end == start or not mask:
         return None
 
-    if end - start == 1 and xs[start][1] == i:
-        return xs[start][2]
-
-    mask = 1 << (31 - i)
-    for middle in range(start, end):
-        if xs[middle][0] & mask:
+    for middle, (code, stop, char) in enumerate(xs[start:end], start):
+        if stop == mask:  # assuming the code is valid, there is no ambiguity;
+            return char   # we've matched a character.
+        if code & mask:
             break
+    else:
+        middle = end  # expect 0 on all valid inputs
 
-    ltree = make_tree(xs, start, middle, i + 1)
-    rtree = make_tree(xs, middle, end, i + 1)
-    return ltree, rtree
+    a = make_tree(xs, start, middle, mask >> 1)
+    b = make_tree(xs, middle, end, mask >> 1)
+    return None if a is b is None else (a, b)
 
 
 def unwrap(tree):
@@ -149,20 +104,17 @@ def unwrap(tree):
 
 def step(root, tree, seq):
     '''
-        Simulate decoding of a sequence starting with `seq` with starting tree `tree`,
+        Simulate decoding of a sequence starting with `seq` with starting state `tree`,
         return a (char, tree) tuple where `char` is the character decoded (if any)
         and `tree` is the state in which the decoder would end up.
     '''
     char = None
     seq  = iter(seq)
 
-    while True:
-        if tree is None:
-            return None, None
-
+    while tree is not None:
         if isinstance(tree, int):
-            if char:
-                raise ValueError("granularity too low")
+            if char is not None:
+                raise ValueError("can't process that many bits: got 2 chars in 1 step")
             char, tree = tree, root
 
         try:
@@ -170,58 +122,57 @@ def step(root, tree, seq):
         except StopIteration:
             break
 
-    if char == 256:
-        return None, None
-
     return char, tree
 
 
-def gen_header(root, bits_per_step=4):
-    '''
-        Construct a lookup table that allows to read Huffman-coded data
-        `bits_per_step` bits at a time.
-    '''
-    trees   = list(unwrap(root))
-    inputs  = list(itertools.product((0, 1), repeat=bits_per_step))
-    require = {root}
-    targets = {}
+def dfa(root, bits_per_step=4):
+    '''Construct a DFA that reads Huffman-coded data `bits_per_step` bits at a time.'''
+    inputs = list(itertools.product((0, 1), repeat=bits_per_step))
+    switch = {tree: {inp: step(root, tree, inp) for inp in inputs} for tree in unwrap(root)}
+    accept = {root}
 
-    # Prune unreachable subtrees to improve memory consumption.
-    # This can reduce the table size in half.
+    tree = root
+    while isinstance(tree, tuple):
+        accept.add(tree)  # coded-string ::= huffman-sequence* '1'*
+        tree = tree[1]
+
+    # Sometimes, up to half of the trees are unreachable.
+    seen  = {root, None}
+    trees = [root]
     for tree in trees:
-        for seq in inputs:
-            targets[tree, seq] = char, subtree = step(root, tree, seq)
-            require.add(subtree)
+        for inp in inputs:
+            _, st = switch[tree][inp]
+            if st not in seen:
+                seen.add(st)
+                trees.append(st)
 
-    trees = list(filter(require.__contains__, trees))
+    assert len(trees) <= (TREE_LIMIT >> bits_per_step), "you're gonna need a bigger int"
 
-    assert len(trees) <= (TREE_LIMIT >> bits_per_step), 'not enough address space'
+    index = {tree: i << bits_per_step for i, tree in enumerate(trees)}
 
-    # Find out which states are valid end states. These are precisely those states
-    # from which the EOS character (0b1111...1) can be reached.
-    eofs = set()
-    subtree = root
-
-    while isinstance(subtree, tuple):
-        eofs.add(subtree)
-        subtree = subtree[1]
-
-    index = dict(zip(trees, itertools.count()))
-
-    for tree in trees:
-        for seq in inputs:
-            char, subtree = targets[tree, seq]
-            eof = LEAF_EOS if subtree in eofs else 0
-
-            if subtree is None:
-                yield TEMPLATE_NODE.format(LEAF_ERROR, 0, 0)
-            elif char is not None:
-                yield TEMPLATE_NODE.format(LEAF_CHAR | eof, char, index[subtree] << bits_per_step)
-            else:
-                yield TEMPLATE_NODE.format(eof, 0, index[subtree] << bits_per_step)
+    for init in trees:
+        for inp in inputs:
+            char, tree = switch[init][inp]
+            eof = LEAF_EOS * (tree in accept)
+            yield ((LEAF_ERROR,      0,    0)           if tree is None else
+                   (eof,             0,    index[tree]) if char is None else
+                   (eof | LEAF_CHAR, char, index[tree]))
 
 
-TREES = ','.join(gen_header(make_tree(xs, 0, len(xs), 0)))
-TABLE = ','.join('{{{},{}}}'.format(code, bits) for code, bits in table)
+LTAB = sorted((code << 32 >> sz, 1 << 31 >> sz, i) for i, (code, sz) in enumerate(TABLE))
+TREE = make_tree(LTAB, 0, len(TABLE), 1 << 31)
 
-print(TEMPLATE.format_map(globals()))
+C_TREES = ','.join(itertools.starmap('{{{},{},{}}}'.format, dfa(TREE)))
+C_TABLE = ','.join(itertools.starmap('{{{},{}}}'.format, TABLE))
+
+print('''
+static const unsigned char CNO_HUFFMAN_LEAF_EOS   = {LEAF_EOS};
+static const unsigned char CNO_HUFFMAN_LEAF_CHAR  = {LEAF_CHAR};
+static const unsigned char CNO_HUFFMAN_LEAF_ERROR = {LEAF_ERROR};
+
+typedef struct {{ unsigned int  code; unsigned char bits; }}                      cno_huffman_item_t;
+typedef struct {{ unsigned char type; unsigned char data; unsigned short tree; }} cno_huffman_leaf_t;
+
+static const cno_huffman_item_t CNO_HUFFMAN_TABLE[] = {{{C_TABLE}}};
+static const cno_huffman_leaf_t CNO_HUFFMAN_TREES[] = {{{C_TREES}}};
+'''.strip('\n').format_map(globals()))
