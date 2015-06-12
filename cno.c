@@ -85,7 +85,7 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id, int loca
     stream->window_send = conn->settings[i].initial_window_size;
     stream->cache.data = NULL;
     stream->cache.size = 0;
-    cno_list_insert_after(conn, stream);
+    cno_list_insert_after(&conn->streams, stream);
 
     if (CNO_FIRE(conn, on_stream_start, id)) {
         cno_list_remove(stream);
@@ -696,7 +696,7 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     conn->window_send = CNO_SETTINGS_INITIAL.initial_window_size;
     cno_hpack_init(&conn->decoder, CNO_SETTINGS_INITIAL.header_table_size);
     cno_hpack_init(&conn->encoder, CNO_SETTINGS_INITIAL.header_table_size);
-    cno_list_init(conn);
+    cno_list_init(&conn->streams);
     return conn;
 }
 
