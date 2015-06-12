@@ -3,8 +3,7 @@
 #include <string.h>
 
 #include "cno-hpack.h"
-#include "cno-hpack-static.h"
-#include "cno-hpack-huffman.h"
+#include "cno-hpack-data.h"
 
 
 void cno_hpack_init(cno_hpack_t *state, size_t limit)
