@@ -31,7 +31,7 @@ class Request (Bufferable):
             try:
                 self.connection.write_data(self.stream, data, True)
             except BlockingIOError:
-                yield from self.connection._wait_for_flow_control_update(self.stream)
+                yield from self.connection._wait_for_flow_increase(self.stream)
             else:
                 break
 
@@ -56,7 +56,7 @@ class AIOConnection (Connection):
         self.on_message_data        = self._msg_data
         self.on_message_end         = self._msg_end
         self.on_stream_end          = self._msg_abort
-        self.on_flow_control_update = self._reopen_flow
+        self.on_flow_increase = self._reopen_flow
 
     def connection_lost(self, exc):
         super().connection_lost(exc)
@@ -90,7 +90,7 @@ class AIOConnection (Connection):
         wr and wr.set_result(True)
 
     @asyncio.coroutine
-    def _wait_for_flow_control_update(self, stream):
+    def _wait_for_flow_increase(self, stream):
         wr = self._writers.get(stream, None)
         if not wr:
             wr = self._writers[stream] = asyncio.Future(loop=self._loop)
@@ -131,7 +131,7 @@ class AIOClient (AIOConnection):
             try:
                 self.write_data(stream, data)
             except BlockingIOError:
-                yield from self._wait_for_flow_control_update(stream)
+                yield from self._wait_for_flow_increase(stream)
             else:
                 break
 
