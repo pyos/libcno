@@ -3,9 +3,6 @@
 #include <stddef.h>
 #include <string.h>
 
-#define CNO_ZERO(ob) memset(ob, 0, sizeof(*ob))
-#define CNO_STRUCT_EXPORT(name) typedef struct cno_st_ ## name ## _t cno_ ## name ## _t
-
 
 #define CNO_OK         0
 #define CNO_PROPAGATE -1
@@ -52,6 +49,7 @@ struct cno_st_io_vector_tmp_t {
 };
 
 
+#define CNO_STRUCT_EXPORT(name) typedef struct cno_st_ ## name ## _t cno_ ## name ## _t
 CNO_STRUCT_EXPORT(io_vector_tmp);
 CNO_STRUCT_EXPORT(io_vector);
 CNO_STRUCT_EXPORT(list_link);

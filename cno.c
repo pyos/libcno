@@ -1031,7 +1031,6 @@ int cno_connection_made(cno_connection_t *conn)
         }
     }
 
-    CNO_ZERO(&conn->buffer);
     return CNO_OK;
 
 done:
