@@ -16,21 +16,6 @@ void cno_hpack_init(cno_hpack_t *state, size_t limit)
 }
 
 
-void cno_hpack_clear(cno_hpack_t *state)
-{
-    cno_header_table_t *clear = state->first;
-    cno_header_table_t *next;
-
-    while (clear != (cno_header_table_t *) state) {
-        next = clear->next;
-        cno_io_vector_clear(&clear->data.name);
-        cno_io_vector_clear(&clear->data.value);
-        free(clear);
-        clear = next;
-    }
-}
-
-
 static void cno_hpack_evict(cno_hpack_t *state)
 {
     while (state->size > state->limit) {
@@ -41,6 +26,15 @@ static void cno_hpack_evict(cno_hpack_t *state)
         cno_io_vector_clear(&evicting->data.value);
         free(evicting);
     }
+}
+
+
+void cno_hpack_clear(cno_hpack_t *state)
+{
+    size_t lim = state->limit;
+    state->limit = 0;
+    cno_hpack_evict(state);
+    state->limit = lim;
 }
 
 
@@ -94,50 +88,26 @@ static int cno_hpack_find_index(cno_hpack_t *state, size_t index, const cno_head
 }
 
 
-static int cno_hpack_compare_index(cno_hpack_t *state, const cno_header_t *src, size_t *out, int *match)
+static int cno_hpack_compare_index(cno_hpack_t *state, const cno_header_t *src, size_t *out)
 {
-    *out = 0;
-    *match = 0;
+    // Returns 0 if no match, 1 if a name-only match exists, 2 if a full match exists.
+    size_t i = 1, r = 0;
+    const cno_header_t       *hp = CNO_HPACK_STATIC_TABLE;
+    const cno_header_table_t *tp = state->first;
+    #define MATCH(a, b) (a).size == (b).size && !memcmp((a).data, (b).data, (b).size)
+    #define CHECK(a, b) do {                                         \
+        if (MATCH((a).name, (b).name)) {                             \
+            if (MATCH((a).value, (b).value)) { *out = i; return 2; } \
+            if (!r) r = i;                                           \
+        }                                                            \
+    } while (0)
 
-    size_t i = 1;
-    const cno_header_t *it  = CNO_HPACK_STATIC_TABLE;
-    const cno_header_t *end = CNO_HPACK_STATIC_TABLE + CNO_HPACK_STATIC_TABLE_SIZE;
-    #define __MATCH(a, b) (a).size == (b).size && strncmp((a).data, (b).data, (b).size) == 0
+    for (; i <= CNO_HPACK_STATIC_TABLE_SIZE; ++hp, ++i) CHECK(*src, *hp);
+    for (; tp != (const cno_header_table_t *) state; tp = tp->next, ++i) CHECK(*src, tp->data);
 
-    for (; it != end; ++it, ++i) {
-        if (__MATCH(it->name, src->name)) {
-            if (__MATCH(it->value, src->value)) {
-                *out = i;
-                *match = 2;
-                return CNO_OK;
-            }
-
-            *out = i;
-            *match = 1;
-        }
-    }
-
-    const cno_header_table_t *table = (const cno_header_table_t *) state;
-
-    while ((table = table->next) != (const cno_header_table_t *) state) {
-        if (__MATCH(table->data.name, src->name)) {
-            if (__MATCH(table->data.value, src->value)) {
-                *out = i;
-                *match = 2;
-                return CNO_OK;
-            }
-
-            if (!*match) {
-                *out = i;
-                *match = 1;
-            }
-        }
-
-        ++i;
-    }
-
-    #undef __MATCH
-    return CNO_OK;
+    #undef MATCH
+    #undef CHECK
+    return (*out = r) != 0;
 }
 
 
@@ -149,7 +119,7 @@ static int cno_hpack_decode_uint(cno_io_vector_tmp_t *source, int prefix, size_t
 
     unsigned char *src = (unsigned char *) source->data;
     unsigned char *end = source->size + src;
-    unsigned char mask = ~(0xFF << prefix);
+    unsigned char mask = 0xFF << prefix >> 8;
     unsigned char head = *src++ & mask;
     unsigned char size = 0;
 
@@ -175,11 +145,10 @@ static int cno_hpack_decode_uint(cno_io_vector_tmp_t *source, int prefix, size_t
             return CNO_ERROR_TRANSPORT("hpack: uint literal too large");
         }
 
-        *result <<= 7;
-        *result  |= *src & 0x7F;
+        *result = (*result << 7) | (*src & 0x7F);
     } while (*src++ & 0x80);
 
-    *result += (1 << prefix) - 1;
+    *result += mask;
     return cno_io_vector_shift(source, size + 1);
 }
 
@@ -266,18 +235,16 @@ static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source,
     target->name.size = target->value.size = 0;
 
     unsigned char head = (unsigned char) *source->data;
-    unsigned char indexed;
+    unsigned char indexed = 0;
     const cno_header_t *header = NULL;
     size_t index;
 
-    // Indexed header field.
-    if (head >> 7) {
-        if (cno_hpack_decode_uint(source, 7, &index) ||
-            cno_hpack_find_index(state, index, &header) ||
-            cno_io_vector_extend(&target->name,  header->name.data,  header->name.size))
-                return CNO_PROPAGATE;
-
-        if (cno_io_vector_extend(&target->value, header->value.data, header->value.size)) {
+    if (head >> 7) {  // Indexed header field.
+        if (cno_hpack_decode_uint(source, 7, &index)
+         || cno_hpack_find_index(state, index, &header)
+         || cno_io_vector_extend(&target->name,  header->name.data,  header->name.size)
+         || cno_io_vector_extend(&target->value, header->value.data, header->value.size))
+        {
             cno_io_vector_clear(&target->name);
             return CNO_PROPAGATE;
         }
@@ -285,25 +252,24 @@ static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source,
         return CNO_OK;
     }
 
-    if ((head >> 6) == 1) indexed = 1; else  // Literal with incremental indexing.
-    if ((head >> 4) == 0) indexed = 0; else  // Literal without indexing.
-    if ((head >> 4) == 1) indexed = 0; else  // Literal never indexed.
     if ((head >> 5) == 1) {  // Dynamic table size update.
-        size_t new_size = 0;
-
-        if (cno_hpack_decode_uint(source, 5, &new_size)) {
+        if (cno_hpack_decode_uint(source, 5, &index)) {
             return CNO_PROPAGATE;
         }
 
-        if (new_size > state->limit_upper) {
-            return CNO_ERROR_TRANSPORT("hpack: dynamic table size too big (%lu > %lu)",
-                new_size, state->limit_upper);
+        if (index > state->limit_upper) {
+            return CNO_ERROR_TRANSPORT("hpack: dynamic table size too big (%lu > %lu)", index, state->limit_upper);
         }
 
-        state->limit = new_size;
+        state->limit = index;
         cno_hpack_evict(state);
         return CNO_OK;
-    } else {
+    }
+
+    if ((head >> 6) == 1) indexed = 1; else  // Literal with incremental indexing.
+    if ((head >> 4) == 0) indexed = 0; else  // Literal without indexing.
+    if ((head >> 4) == 1) indexed = 0; else  // Literal never indexed.
+    {
         return CNO_ERROR_TRANSPORT("hpack: invalid header field representation");
     }
 
@@ -316,8 +282,8 @@ static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source,
             return CNO_PROPAGATE;
         }
     } else {
-        if (cno_hpack_find_index(state, index, &header) ||
-            cno_io_vector_extend(&target->name, header->name.data, header->name.size))
+        if (cno_hpack_find_index(state, index, &header)
+         || cno_io_vector_extend(&target->name, header->name.data, header->name.size))
                 return CNO_PROPAGATE;
     }
 
@@ -464,12 +430,8 @@ static int cno_hpack_encode_size_update(cno_hpack_t *state, cno_io_vector_t *tar
 
 static int cno_hpack_encode_one(cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *source, int indexed)
 {
-    int    match = 0;
     size_t index = 0;
-
-    if (cno_hpack_compare_index(state, source, &index, &match)) {
-        return CNO_PROPAGATE;
-    }
+    int    match = cno_hpack_compare_index(state, source, &index);
 
     if (!indexed) {
         if (cno_hpack_encode_uint(target, 4, index, 0x10)) {
