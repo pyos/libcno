@@ -40,7 +40,7 @@ size_t cno_stream_next_id(cno_connection_t *conn)
 }
 
 
-static int cno_stream_is_local(cno_connection_t *conn, size_t id)
+static inline int cno_stream_is_local(cno_connection_t *conn, size_t id)
 {
     return (int) (id % 2) == (conn->client);
 }
@@ -131,9 +131,9 @@ static int cno_stream_destroy_clean(cno_connection_t *conn, cno_stream_t *stream
 
 static cno_stream_t * cno_stream_find(cno_connection_t *conn, size_t id)
 {
-    cno_stream_t *current = (cno_stream_t *) conn;
+    cno_stream_t *current = conn->streams.first;
 
-    if (id) while ((current = current->next) != (cno_stream_t *) conn) {
+    if (id) for (; current != cno_list_end(&conn->streams); current = current->next) {
         if (current->id == id) {
             return current;
         }
@@ -708,7 +708,7 @@ void cno_connection_destroy(cno_connection_t *conn)
     cno_hpack_clear(&conn->encoder);
     cno_hpack_clear(&conn->decoder);
 
-    while (conn->streams.first != (cno_stream_t *) conn) {
+    while (conn->streams.first != cno_list_end(&conn->streams)) {
         cno_stream_destroy(conn, conn->streams.first);
     }
 
@@ -1025,7 +1025,7 @@ int cno_connection_made(cno_connection_t *conn)
     cno_io_vector_reset(&conn->buffer);
     cno_io_vector_clear((cno_io_vector_t *) &conn->buffer);
 
-    while (conn->streams.first != (cno_stream_t *) conn) {
+    while (conn->streams.first != cno_list_end(&conn->streams)) {
         if (cno_stream_destroy_clean(conn, conn->streams.first)) {
             return CNO_PROPAGATE;
         }

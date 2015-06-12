@@ -78,7 +78,7 @@ static int cno_hpack_find_index(cno_hpack_t *state, size_t index, const cno_head
     for (index -= CNO_HPACK_STATIC_TABLE_SIZE; index; --index) {
         hdr = hdr->next;
 
-        if (hdr == (cno_header_table_t *) state) {
+        if (hdr == cno_list_end(state)) {
             return CNO_ERROR_TRANSPORT("hpack: dynamic table index out of bounds");
         }
     }
@@ -103,7 +103,7 @@ static int cno_hpack_compare_index(cno_hpack_t *state, const cno_header_t *src, 
     } while (0)
 
     for (; i <= CNO_HPACK_STATIC_TABLE_SIZE; ++hp, ++i) CHECK(*src, *hp);
-    for (; tp != (const cno_header_table_t *) state; tp = tp->next, ++i) CHECK(*src, tp->data);
+    for (; tp != cno_list_end(state); tp = tp->next, ++i) CHECK(*src, tp->data);
 
     #undef MATCH
     #undef CHECK
