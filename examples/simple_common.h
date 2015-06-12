@@ -30,43 +30,43 @@ void log_message(int fd, cno_message_t *msg, int recv)
 }
 
 
-int log_recv_frame(cno_connection_t *conn, int *fd, cno_frame_t *frame)
+int log_recv_frame(cno_connection_t *conn, void *fd, cno_frame_t *frame)
 {
-    log_frame(*fd, frame, 1);
+    log_frame(*(int *) fd, frame, 1);
     return CNO_OK;
 }
 
 
-int log_sent_frame(cno_connection_t *conn, int *fd, cno_frame_t *frame)
+int log_sent_frame(cno_connection_t *conn, void *fd, cno_frame_t *frame)
 {
-    log_frame(*fd, frame, 0);
+    log_frame(*(int *) fd, frame, 0);
     return CNO_OK;
 }
 
 
-int write_to_fd(cno_connection_t *conn, int *fd, const char *data, size_t length)
+int write_to_fd(cno_connection_t *conn, void *fd, const char *data, size_t length)
 {
     size_t wrote = 0;
 
     do {
-        wrote += write(*fd, data + wrote, length - wrote);
+        wrote += write(*(int *) fd, data + wrote, length - wrote);
     } while (wrote < length);
 
     return CNO_OK;
 }
 
 
-int log_recv_message(cno_connection_t *conn, int *fd, size_t stream, cno_message_t *msg)
+int log_recv_message(cno_connection_t *conn, void *fd, size_t stream, cno_message_t *msg)
 {
-    log_message(*fd, msg, 1);
+    log_message(*(int *) fd, msg, 1);
     return CNO_OK;
 }
 
 
-int log_recv_message_data(cno_connection_t *conn, int *fd, size_t stream, const char *data, size_t length)
+int log_recv_message_data(cno_connection_t *conn, void *fd, size_t stream, const char *data, size_t length)
 {
     if (length) {
-        fprintf(stdout, "%d: recv data: ", *fd);
+        fprintf(stdout, "%d: recv data: ", *(int *) fd);
         fwrite(data, length, 1, stdout);
 
         if (data[length - 1] != '\n') {
@@ -77,9 +77,9 @@ int log_recv_message_data(cno_connection_t *conn, int *fd, size_t stream, const 
 }
 
 
-int log_recv_message_end(cno_connection_t *conn, int *fd, size_t stream, int disconnect)
+int log_recv_message_end(cno_connection_t *conn, void *fd, size_t stream, int disconnect)
 {
-    fprintf(stdout, "%d: recv end of message; stream %lu %s\n", *fd, stream, disconnect ? "closed" : "half-closed");
+    fprintf(stdout, "%d: recv end of message; stream %lu %s\n", *(int *) fd, stream, disconnect ? "closed" : "half-closed");
     return CNO_OK;
 }
 

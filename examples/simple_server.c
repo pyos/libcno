@@ -15,7 +15,7 @@
 static const int ONE = 1;  // Heh. See `setsockopt` below.
 
 
-static int respond_with_hello_world(cno_connection_t *conn, int *fd, size_t stream, int disconnect)
+static int respond_with_hello_world(cno_connection_t *conn, void *fd, size_t stream, int disconnect)
 {
     log_recv_message_end(conn, fd, stream, disconnect);
 
@@ -37,7 +37,7 @@ static int respond_with_hello_world(cno_connection_t *conn, int *fd, size_t stre
         return CNO_PROPAGATE;
     }
 
-    log_message(*fd, &message, 0);
+    log_message(*(int *) fd, &message, 0);
     return CNO_OK;
 }
 

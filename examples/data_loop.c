@@ -7,7 +7,7 @@
 #include "simple_common.h"
 
 
-static int pass(cno_connection_t *conn, cno_connection_t *other, const char *data, size_t length)
+static int pass(cno_connection_t *conn, void *other, const char *data, size_t length)
 {
     return cno_connection_data_received(other, data, length);
 }
@@ -26,7 +26,8 @@ static int respond(cno_connection_t *conn, void *_, size_t stream, int disconnec
 
     cno_message_t message = { 200, CNO_IO_VECTOR_EMPTY, CNO_IO_VECTOR_EMPTY, headers, 3 };
 
-    return cno_write(conn, stream, &message, "Hello, World!\n", 14);
+    return cno_write_message(conn, stream, &message, 0)
+        || cno_write_data(conn, stream, "Hello, World!\n", 14, 1);
 }
 
 
@@ -59,7 +60,7 @@ int main(int argc, char *argv[])
 
     if (cno_connection_made(client)
      || cno_connection_made(server)
-     || cno_write(client, cno_stream_next_id(client), &message, "Hello, World!\n", 14)
+     || cno_write_message(client, cno_stream_next_id(client), &message, 1)
      || cno_connection_stop(client)
      || cno_connection_lost(client)
      || cno_connection_lost(server)

@@ -15,15 +15,15 @@
 #include "simple_common.h"
 
 
-int disconnect(cno_connection_t *conn, int *fd, size_t stream, int disconnect)
+int disconnect(cno_connection_t *conn, void *fd, size_t stream, int disconnect)
 {
-    log_recv_message_end(conn, fd, stream, disconnect);
+    log_recv_message_end(conn, (int *) fd, stream, disconnect);
 
     if (cno_connection_stop(conn)) {
         return CNO_PROPAGATE;
     }
 
-    close(*fd);
+    close(*(int *) fd);
     return CNO_OK;
 }
 
