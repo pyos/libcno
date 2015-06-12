@@ -95,14 +95,14 @@ void print_header(cno_header_t *h)
 
 void print_table(cno_hpack_t *state)
 {
-    printf("dynamic table = [size: %lu, limit: %lu] {\n", state->size, state->limit);
+    printf("dynamic table =\n");
     cno_header_table_t *table = state->first;
 
     while (table != (cno_header_table_t *) state) {
         print_header(&table->data);
         table = table->next;
     }
-    printf("}\n\n");
+    printf(" -- [size: %lu, limit: %lu]\n\n", state->size, state->limit);
 }
 
 
@@ -144,13 +144,13 @@ int main(int argc, char *argv[])
             goto error;
         }
 
-        printf("decode(#%lu) = {\n", i + 1);
+        printf("decode(#%lu) =\n", i + 1);
 
         for (k = 0; k < limit; ++k) {
             print_header(result + k);
         }
 
-        printf("}\n\n");
+        printf(" -- with ");
         print_table(&decoder);
 
         cno_io_vector_clear(&source);
@@ -162,13 +162,16 @@ int main(int argc, char *argv[])
 
         clear_headers(result, result + limit);
 
+        printf("input (#%lu) = ", i + 1); fwrite(hexdata.data, hexdata.size, 1, stdout);
+        printf("\n");
+
         if (bytes_to_hex(&source, &hexdata)) {
             cno_io_vector_clear(&source);
             goto error;
         }
 
-        printf("encode(#%lu) = ", i + 1); fwrite(hexdata.data, hexdata.size,  1, stdout);
-        printf("\n\n");
+        printf("encode(#%lu) = ", i + 1); fwrite(hexdata.data, hexdata.size, 1, stdout);
+        printf(" with ");
         cno_io_vector_clear(&source);
         cno_io_vector_clear(&hexdata);
         print_table(&encoder);
