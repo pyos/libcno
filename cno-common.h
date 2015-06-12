@@ -16,6 +16,9 @@
 #define CNO_ERROR_INVALID_STREAM(m, ...)  CNO_ERROR_SET(CNO_ERRNO_INVALID_STREAM,  m,  ##__VA_ARGS__)
 #define CNO_ERROR_WOULD_BLOCK(m, ...)     CNO_ERROR_SET(CNO_ERRNO_WOULD_BLOCK,     m,  ##__VA_ARGS__)
 
+#define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob, ob->cb_data, ## __VA_ARGS__))
+#define CNO_STRUCT_EXPORT(name) typedef struct cno_st_ ## name ## _t cno_ ## name ## _t
+
 
 enum CNO_ERRNO {
     CNO_ERRNO_UNKNOWN,
@@ -30,9 +33,8 @@ enum CNO_ERRNO {
 
 
 struct cno_st_list_link_t {
-    #define CNO_LIST_LINK(T) T *prev; T *next
-    #define CNO_LIST_ROOT(T) T *last; T *first
-    CNO_LIST_LINK(struct cno_st_list_link_t);
+    struct cno_st_list_link_t *prev;
+    struct cno_st_list_link_t *next;
 };
 
 
@@ -49,7 +51,6 @@ struct cno_st_io_vector_tmp_t {
 };
 
 
-#define CNO_STRUCT_EXPORT(name) typedef struct cno_st_ ## name ## _t cno_ ## name ## _t
 CNO_STRUCT_EXPORT(io_vector_tmp);
 CNO_STRUCT_EXPORT(io_vector);
 CNO_STRUCT_EXPORT(list_link);
@@ -62,9 +63,14 @@ const char * cno_error_file (void);
 const char * cno_error_text (void);
 const char * cno_error_name (void);
 
-void cno_list_init         (void *node);
-void cno_list_insert_after (void *node, void *next);
-void cno_list_remove       (void *node);
+#define CNO_LIST_LINK(T) struct { cno_list_link_t __list_link_ref[0]; T *prev; T *next;  }
+#define CNO_LIST_ROOT(T) struct { cno_list_link_t __list_link_ref[0]; T *last; T *first; }
+#define cno_list_init(x)            __cno_list_init((x)->__list_link_ref)
+#define cno_list_insert_after(x, y) __cno_list_insert_after((x)->__list_link_ref, (y)->__list_link_ref)
+#define cno_list_remove(x)          __cno_list_remove((x)->__list_link_ref)
+void __cno_list_init         (cno_list_link_t *node);
+void __cno_list_insert_after (cno_list_link_t *node, cno_list_link_t *next);
+void __cno_list_remove       (cno_list_link_t *node);
 
 #define CNO_IO_VECTOR_STRING(str) { str, strlen(str) }
 #define CNO_IO_VECTOR_CONST(str) { str, sizeof(str) - 1 }

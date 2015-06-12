@@ -47,30 +47,25 @@ const char * cno_error_name (void)
 }
 
 
-void cno_list_init(void *node)
+void __cno_list_init(cno_list_link_t *node)
 {
-    struct cno_st_list_link_t *node_ = (struct cno_st_list_link_t *) node;
-    node_->next = node_;
-    node_->prev = node_;
+    node->next = node;
+    node->prev = node;
 }
 
 
-void cno_list_insert_after(void *node, void *next)
+void __cno_list_insert_after(cno_list_link_t *node, cno_list_link_t *next)
 {
-    struct cno_st_list_link_t *node_ = (struct cno_st_list_link_t *) node;
-    struct cno_st_list_link_t *next_ = (struct cno_st_list_link_t *) next;
-
-    next_->next = node_->next;
-    next_->prev = node_;
-    node_->next = next_->next->prev = next_;
+    next->next = node->next;
+    next->prev = node;
+    node->next = next->next->prev = next;
 }
 
 
-void cno_list_remove(void *node)
+void __cno_list_remove(cno_list_link_t *node)
 {
-    struct cno_st_list_link_t *node_ = (struct cno_st_list_link_t *) node;
-    node_->next->prev = node_->prev;
-    node_->prev->next = node_->next;
+    node->next->prev = node->prev;
+    node->prev->next = node->next;
 }
 
 

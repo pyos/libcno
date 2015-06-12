@@ -21,10 +21,6 @@
 #endif
 
 
-#define CNO_DEF_CALLBACK(ob, cb, ...) typedef int (* cno_cb_ ## cb ## _t)(ob *, void *, ## __VA_ARGS__)
-#define CNO_FIRE(ob, cb, ...) (ob->cb && ((cno_cb_ ## cb ## _t) ob->cb)(ob, ob->cb_data, ## __VA_ARGS__))
-
-
 enum CNO_PEER_KIND {
     CNO_PEER_REMOTE = 0,
     CNO_PEER_LOCAL  = 1,
@@ -161,7 +157,7 @@ struct cno_st_settings_t {
 
 
 struct cno_st_connection_t {
-    struct { CNO_LIST_ROOT(struct cno_st_stream_t); } streams;
+    CNO_LIST_ROOT(struct cno_st_stream_t) streams;
     union {
         enum CNO_CONNECTION_KIND kind;
         enum CNO_PEER_KIND client;  // == CNO_PEER_LOCAL iff we are the client
@@ -177,17 +173,17 @@ struct cno_st_connection_t {
     struct cno_st_frame_t frame;
     struct cno_st_hpack_t decoder;
     struct cno_st_hpack_t encoder;
-    void * cb_data;
-    void * on_write;
-    void * on_stream_start;
-    void * on_stream_end;
-    void * on_message_start;
-    void * on_message_data;
-    void * on_message_end;
-    void * on_frame;
-    void * on_frame_send;
-    void * on_pong;
-    void * on_flow_control_update;
+    void *cb_data;
+    int (*on_write         )(struct cno_st_connection_t *, void *, const char * /* data */, size_t /* length */);
+    int (*on_stream_start  )(struct cno_st_connection_t *, void *, size_t /* id */);
+    int (*on_stream_end    )(struct cno_st_connection_t *, void *, size_t /* id */);
+    int (*on_flow_increase )(struct cno_st_connection_t *, void *, size_t /* stream */);
+    int (*on_message_start )(struct cno_st_connection_t *, void *, size_t /* stream */, struct cno_st_message_t * /* msg */);
+    int (*on_message_data  )(struct cno_st_connection_t *, void *, size_t /* stream */, const char * /* data */, size_t /* length */);
+    int (*on_message_end   )(struct cno_st_connection_t *, void *, size_t /* stream */, int /* disconnect */);
+    int (*on_frame         )(struct cno_st_connection_t *, void *, struct cno_st_frame_t * /* frame */);
+    int (*on_frame_send    )(struct cno_st_connection_t *, void *, struct cno_st_frame_t * /* frame */);
+    int (*on_pong          )(struct cno_st_connection_t *, void *, const char [8] /* payload */);
 };
 
 
@@ -197,18 +193,6 @@ CNO_STRUCT_EXPORT(frame);
 CNO_STRUCT_EXPORT(stream);
 CNO_STRUCT_EXPORT(header);
 CNO_STRUCT_EXPORT(message);
-
-
-CNO_DEF_CALLBACK(cno_connection_t, on_write, const char *, size_t);
-CNO_DEF_CALLBACK(cno_connection_t, on_stream_start,  size_t);
-CNO_DEF_CALLBACK(cno_connection_t, on_stream_end,    size_t);
-CNO_DEF_CALLBACK(cno_connection_t, on_message_start, size_t, cno_message_t *);
-CNO_DEF_CALLBACK(cno_connection_t, on_message_data,  size_t, const char *, size_t);
-CNO_DEF_CALLBACK(cno_connection_t, on_message_end,   size_t, int disconnect);
-CNO_DEF_CALLBACK(cno_connection_t, on_frame, cno_frame_t *);
-CNO_DEF_CALLBACK(cno_connection_t, on_frame_send, cno_frame_t *);
-CNO_DEF_CALLBACK(cno_connection_t, on_pong, const char [8]);
-CNO_DEF_CALLBACK(cno_connection_t, on_flow_control_update, size_t);
 
 
 extern const char  CNO_FRAME_FLOW_CONTROLLED[256];
