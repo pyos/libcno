@@ -63,8 +63,8 @@ const char * cno_error_file (void);
 const char * cno_error_text (void);
 const char * cno_error_name (void);
 
-#define CNO_LIST_LINK(T) struct { cno_list_link_t __list_link_ref[0]; T *prev; T *next;  }
-#define CNO_LIST_ROOT(T) struct { cno_list_link_t __list_link_ref[0]; T *last; T *first; }
+#define CNO_LIST_LINK(T) union { struct { T *prev; T *next;  }; cno_list_link_t __list_link_ref[1]; }
+#define CNO_LIST_ROOT(T) union { struct { T *last; T *first; }; cno_list_link_t __list_link_ref[1]; }
 #define cno_list_end(x) (void *) (x)->__list_link_ref
 #define cno_list_init(x)            __cno_list_init((x)->__list_link_ref)
 #define cno_list_insert_after(x, y) __cno_list_insert_after((x)->__list_link_ref, (y)->__list_link_ref)
