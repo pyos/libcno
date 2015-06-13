@@ -1,5 +1,6 @@
 #include <ctype.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -7,15 +8,15 @@
 #include "picohttpparser/picohttpparser.h"
 
 
-#define CNO_READ_1BYTE(tg, ptr) tg = *ptr++
-#define CNO_READ_2BYTE(tg, ptr) do { tg = ptr[0] <<  8 | ptr[1]; ptr += 2; } while (0)
-#define CNO_READ_3BYTE(tg, ptr) do { tg = ptr[0] << 16 | ptr[1] <<  8 | ptr[2]; ptr += 3; } while (0)
-#define CNO_READ_4BYTE(tg, ptr) do { tg = ptr[0] << 24 | ptr[1] << 16 | ptr[2] << 8 | ptr[3]; ptr += 4; } while (0)
+static inline uint32_t read1(unsigned char *p) { return p[0]; }
+static inline uint32_t read2(unsigned char *p) { return p[0] <<  8 | p[1]; }
+static inline uint32_t read4(unsigned char *p) { return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
+static inline uint32_t read3(unsigned char *p) { return read4(p) >> 8; }
 
-#define CNO_WRITE_1BYTE(ptr, src) *ptr++ = src
-#define CNO_WRITE_2BYTE(ptr, src) do { ptr[0] = src >>  8; ptr[1] = src; ptr += 2; } while (0)
-#define CNO_WRITE_3BYTE(ptr, src) do { ptr[0] = src >> 16; ptr[1] = src >>  8; ptr[2] = src; ptr += 3; } while (0)
-#define CNO_WRITE_4BYTE(ptr, src) do { ptr[0] = src >> 24; ptr[1] = src >> 16; ptr[2] = src >> 8; ptr[3] = src; ptr += 4; } while (0)
+static inline void write1(unsigned char *p, uint32_t x) { p[0] = x; }
+static inline void write2(unsigned char *p, uint32_t x) { p[0] = x >>  8; p[1] = x; }
+static inline void write3(unsigned char *p, uint32_t x) { p[0] = x >> 16; p[1] = x >>  8; p[2] = x; }
+static inline void write4(unsigned char *p, uint32_t x) { p[0] = x >> 24; p[1] = x >> 16; p[2] = x >> 8; p[3] = x; }
 
 #define CNO_WRITE_VECTOR(ptr, vec) do { memcpy((ptr), (vec).data, (vec).size); (ptr) += (vec).size; } while (0)
 #define CNO_WRITE_CONSTC(ptr, str) do { memcpy((ptr), (str), sizeof(str) - 1); (ptr) += sizeof(str) - 1; } while (0);
@@ -36,7 +37,7 @@ const char *CNO_FRAME_NAME[256] = {
 size_t cno_stream_next_id(cno_connection_t *conn)
 {
     size_t last = conn->last_stream[CNO_PEER_LOCAL];
-    return last == 0 ? 1 + !conn->client : cno_connection_is_http2(conn) ? last + 2 : last;
+    return cno_connection_is_http2(conn) && (last || !conn->client) ? last + 2 : 1;
 }
 
 
@@ -90,7 +91,6 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id, int loca
     if (CNO_FIRE(conn, on_stream_start, id)) {
         cno_list_remove(stream);
         free(stream);
-        (void) CNO_PROPAGATE;
         return NULL;
     }
 
@@ -148,8 +148,6 @@ static cno_stream_t * cno_stream_find(cno_connection_t *conn, size_t id)
 
 static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
 {
-    char  header[9];
-    char *headptr = header;
     size_t length = frame->payload.size;
     size_t stream = frame->stream_id;
     size_t limit  = conn->settings[CNO_PEER_REMOTE].max_frame_size;
@@ -210,16 +208,17 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
         return CNO_OK;
     }
 
-    CNO_WRITE_3BYTE(headptr, length);
-    CNO_WRITE_1BYTE(headptr, frame->type);
-    CNO_WRITE_1BYTE(headptr, frame->flags);
-    CNO_WRITE_4BYTE(headptr, stream);
+    unsigned char header[9];
+    write3(header,     length);
+    write1(header + 3, frame->type);
+    write1(header + 4, frame->flags);
+    write4(header + 5, stream);
 
     if (CNO_FIRE(conn, on_frame_send, frame)) {
         return CNO_PROPAGATE;
     }
 
-    if (CNO_FIRE(conn, on_write, header, 9)) {
+    if (CNO_FIRE(conn, on_write, (char *) header, sizeof(header))) {
         return CNO_PROPAGATE;
     }
 
@@ -233,14 +232,13 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
 
 static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
 {
-    char descr[8];
-    char *ptr = descr;
+    unsigned char descr[8];
     size_t last_stream = code == CNO_STATE_NO_ERROR && !conn->client ? (1UL << 31) - !conn->client : conn->last_stream[CNO_PEER_REMOTE];
 
-    CNO_WRITE_4BYTE(ptr, last_stream);
-    CNO_WRITE_4BYTE(ptr, code);
+    write4(descr,     last_stream);
+    write4(descr + 4, code);
     cno_frame_t error = { CNO_FRAME_GOAWAY };
-    error.payload.data = descr;
+    error.payload.data = (char *) descr;
     error.payload.size = sizeof(descr);
 
     return cno_frame_write(conn, &error);
@@ -261,12 +259,11 @@ static int cno_frame_write_rst_stream(cno_connection_t *conn, size_t stream, siz
         }
     }
 
-    char descr[4];
-    char *ptr = descr;
-    CNO_WRITE_4BYTE(ptr, code);
+    unsigned char descr[4];
+    write4(descr, code);
     cno_frame_t error = { CNO_FRAME_RST_STREAM };
-    error.payload.data = descr;
-    error.payload.size = 4;
+    error.payload.data = (char *) descr;
+    error.payload.size = sizeof(descr);
     return cno_frame_write(conn, &error);
 }
 
@@ -296,8 +293,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
         }
 
         unsigned char payload[4];
-        unsigned char *ptr = payload;
-        CNO_WRITE_4BYTE(ptr, sz);
+        write4(payload, sz);
         cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE };
         update.payload.data = (char *) payload;
         update.payload.size = ptr - payload;
@@ -427,9 +423,9 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
                 return CNO_ERROR_GOAWAY(conn, CNO_STATE_FRAME_SIZE_ERROR, "bad SETTINGS (length = %lu)", sz);
             }
 
-            while (ptr != end) {
-                size_t setting = 0; CNO_READ_2BYTE(setting, ptr);
-                size_t value   = 0; CNO_READ_4BYTE(value,   ptr);
+            for (; ptr != end; ptr += 6) {
+                size_t setting = read2(ptr);
+                size_t value   = read4(ptr + 4);
 
                 if (setting && setting < CNO_SETTINGS_UNDEFINED) {
                     conn->settings[CNO_PEER_REMOTE].array[setting - 1] = value;
@@ -453,8 +449,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
                 return CNO_ERROR_GOAWAY(conn, CNO_STATE_FRAME_SIZE_ERROR, "bad WINDOW_UPDATE (length = %lu)", sz);
             }
 
-            size_t increment = 0;
-            CNO_READ_4BYTE(increment, ptr);
+            size_t increment = read4(ptr);
 
             #ifdef CNO_HTTP2_STRICT
                 if (increment == 0) {
@@ -636,8 +631,9 @@ static int cno_settings_diff(cno_connection_t *conn, const cno_settings_t *old, 
 
     for (; ++i < CNO_SETTINGS_UNDEFINED; ++current, ++replace) {
         if (*current != *replace) {
-            CNO_WRITE_2BYTE(ptr, i);
-            CNO_WRITE_4BYTE(ptr, *replace);
+            write2(ptr, i);
+            write4(ptr + 2, *replace);
+            ptr += 6;
         }
     }
 
@@ -979,9 +975,8 @@ int cno_connection_made(cno_connection_t *conn)
         case CNO_CONNECTION_READY: {
             WAIT(conn->buffer.size >= 3);
 
-            size_t m;
             unsigned char *base = (unsigned char *) conn->buffer.data;
-            CNO_READ_3BYTE(m, base);
+            size_t m = read3(base);
 
             if (m > conn->settings[CNO_PEER_LOCAL].max_frame_size) {
                 STOP(CNO_ERROR_GOAWAY(conn, CNO_STATE_FRAME_SIZE_ERROR, "recv'd a frame that is too big"));
@@ -991,10 +986,10 @@ int cno_connection_made(cno_connection_t *conn)
 
             conn->frame.stream = NULL;
             conn->frame.payload.size = m;
-            CNO_READ_1BYTE(m, base); conn->frame.type         = m;
-            CNO_READ_1BYTE(m, base); conn->frame.flags        = m;
-            CNO_READ_4BYTE(m, base); conn->frame.stream_id    = m;
-            conn->frame.payload.data = (char *) base;
+            conn->frame.type         = read1(base + 3);
+            conn->frame.flags        = read1(base + 4);
+            conn->frame.stream_id    = read4(base + 5);
+            conn->frame.payload.data = (char *) base + 9;
 
             if (conn->state == CNO_CONNECTION_READY_NO_SETTINGS && conn->frame.type != CNO_FRAME_SETTINGS) {
                 STOP(CNO_ERROR_TRANSPORT("invalid HTTP 2 preface: no initial SETTINGS"));
