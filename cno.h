@@ -132,7 +132,7 @@ struct cno_st_message_t {
 
 
 struct cno_st_stream_t {
-    CNO_MAP_VALUE;
+    CNO_SET_VALUE;
     size_t id;
     size_t window_recv;
     size_t window_send;
@@ -175,7 +175,7 @@ struct cno_st_connection_t {
     struct cno_st_frame_t frame;
     struct cno_st_hpack_t decoder;
     struct cno_st_hpack_t encoder;
-    CNO_MAP(256) streams;
+    CNO_SET(256) streams;
     void *cb_data;
     int (*on_write         )(struct cno_st_connection_t *, void *, const char * /* data */, size_t /* length */);
     int (*on_stream_start  )(struct cno_st_connection_t *, void *, size_t /* id */);
