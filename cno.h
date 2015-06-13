@@ -8,15 +8,19 @@
 
 
 #ifndef CNO_MAX_HTTP1_HEADER_SIZE
-// Max. length of a header, i.e. length of the name + length of the value
-// + 4 bytes (the ": " separator and the CRLF.) If a header longer than this is passed
-// to `cno_write_message`, it will return an assertion error.
+/* Max. length of a header, i.e. length of the name + length of the value + 4 bytes
+ * (the ": " separator and the CRLF.) If a header longer than this is passed
+ * to `cno_write_message`, it will return an assertion error.
+ */
 #define CNO_MAX_HTTP1_HEADER_SIZE 4096
 #endif
 
 
 #ifndef CNO_MAX_HEADERS
-// Max. number of entries in the header table of inbound messages.
+/* Max. number of entries in the header table of inbound messages. Applies to both HTTP 1
+ * and HTTP 2. Since there's no way to know in advance how many headers a message has,
+ * this option limits the stack space consumed. Does not affect outbound messages.
+ */
 #define CNO_MAX_HEADERS 128
 #endif
 
@@ -133,15 +137,15 @@ struct cno_st_stream_t {
     size_t window_recv;
     size_t window_send;
     size_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
-    enum CNO_FRAME_TYPE last_frame;
+    enum CNO_FRAME_TYPE last_frame;  // can be set to HEADERS/PUSH_PROMISE, used for CONTINUATION
     enum CNO_STREAM_STATE state;
     struct cno_st_message_t msg;
-    struct cno_st_io_vector_t cache;
+    struct cno_st_io_vector_t cache;  // frames that can have CONTINUATIONs are buffered here
 };
 
 
 struct cno_st_settings_t {
-    union {
+    union {  // TODO find a better way to implement this to avoid alignment bullshit
         struct {
             size_t header_table_size;
             size_t enable_push;
