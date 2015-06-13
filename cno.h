@@ -128,7 +128,7 @@ struct cno_st_message_t {
 
 
 struct cno_st_stream_t {
-    CNO_LIST_LINK(struct cno_st_stream_t);
+    CNO_MAP_VALUE;
     size_t id;
     size_t window_recv;
     size_t window_send;
@@ -156,7 +156,6 @@ struct cno_st_settings_t {
 
 
 struct cno_st_connection_t {
-    CNO_LIST_ROOT(struct cno_st_stream_t) streams[256];
     union {
         enum CNO_CONNECTION_KIND kind;
         enum CNO_PEER_KIND client;  // == CNO_PEER_LOCAL iff we are the client
@@ -172,6 +171,7 @@ struct cno_st_connection_t {
     struct cno_st_frame_t frame;
     struct cno_st_hpack_t decoder;
     struct cno_st_hpack_t encoder;
+    CNO_MAP(256) streams;
     void *cb_data;
     int (*on_write         )(struct cno_st_connection_t *, void *, const char * /* data */, size_t /* length */);
     int (*on_stream_start  )(struct cno_st_connection_t *, void *, size_t /* id */);

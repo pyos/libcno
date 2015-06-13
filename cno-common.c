@@ -47,89 +47,7 @@ const char * cno_error_name (void)
 }
 
 
-void __cno_list_init(cno_list_link_t *node)
-{
-    node->next = node;
-    node->prev = node;
-}
-
-
-void __cno_list_insert_after(cno_list_link_t *node, cno_list_link_t *next)
-{
-    next->next = node->next;
-    next->prev = node;
-    node->next = next->next->prev = next;
-}
-
-
-void __cno_list_remove(cno_list_link_t *node)
-{
-    node->next->prev = node->prev;
-    node->prev->next = node->next;
-}
-
-void __cno_map_init(size_t buckets, void *map)
-{
-    cno_list_link_t *node = map;
-    while (buckets--) __cno_list_init(node++);
-}
-
-static inline size_t __cno_map_hash(size_t key)
-{
-    return key;
-}
-
-void __cno_map_insert(size_t buckets, void *map, size_t key, void *ob)
-{
-    cno_list_link_t *root = map;
-    cno_list_link_t *item = ob;
-    item->__map_id = key;
-    __cno_list_insert_after(root + (__cno_map_hash(key) & (buckets - 1)), ob);
-}
-
-void *__cno_map_find(size_t buckets, void *map, size_t key)
-{
-    cno_list_link_t *root = map;
-    cno_list_link_t *list = root + (__cno_map_hash(key) & (buckets - 1));
-    cno_list_link_t *it   = list->next;
-
-    for (; it != list; it = it->next) {
-        if (key == it->__map_id) {
-            return it;
-        }
-    }
-
-    return NULL;
-}
-
-void __cno_map_iterate(size_t buckets, void *map, void (*fn)(void *, void *), void *arg)
-{
-    cno_list_link_t *root = map;
-
-    while (buckets--) {
-        cno_list_link_t *it = root->next;
-
-        for (; it != root; it = it->next) {
-            fn(arg, it);
-        }
-
-        root++;
-    }
-}
-
-void __cno_map_remove(void *_, cno_list_link_t *link)
-{
-    __cno_list_remove(link);
-}
-
-
-void __cno_map_clear(size_t buckets, void *map)
-{
-    __cno_map_iterate(buckets, map, __cno_map_remove, NULL);
-}
-
-
-void cno_io_vector_clear (struct cno_st_io_vector_t *vec)
+void cno_io_vector_clear(struct cno_st_io_vector_t *vec)
 {
     free(vec->data);
     vec->data = NULL;
@@ -137,7 +55,7 @@ void cno_io_vector_clear (struct cno_st_io_vector_t *vec)
 }
 
 
-void cno_io_vector_reset (struct cno_st_io_vector_tmp_t *vec)
+void cno_io_vector_reset(struct cno_st_io_vector_tmp_t *vec)
 {
     vec->data   -= vec->offset;
     vec->size   += vec->offset;
@@ -145,7 +63,7 @@ void cno_io_vector_reset (struct cno_st_io_vector_tmp_t *vec)
 }
 
 
-char * cno_io_vector_slice (struct cno_st_io_vector_tmp_t *vec, size_t size)
+char * cno_io_vector_slice(struct cno_st_io_vector_tmp_t *vec, size_t size)
 {
     char *mem = malloc(size);
 
@@ -160,7 +78,7 @@ char * cno_io_vector_slice (struct cno_st_io_vector_tmp_t *vec, size_t size)
 }
 
 
-int cno_io_vector_shift (struct cno_st_io_vector_tmp_t *vec, size_t offset)
+int cno_io_vector_shift(struct cno_st_io_vector_tmp_t *vec, size_t offset)
 {
     vec->data   += offset;
     vec->size   -= offset;
@@ -169,7 +87,7 @@ int cno_io_vector_shift (struct cno_st_io_vector_tmp_t *vec, size_t offset)
 }
 
 
-int cno_io_vector_strip (struct cno_st_io_vector_tmp_t *vec)
+int cno_io_vector_strip(struct cno_st_io_vector_tmp_t *vec)
 {
     char *ptr = malloc(vec->size);
 
@@ -185,7 +103,7 @@ int cno_io_vector_strip (struct cno_st_io_vector_tmp_t *vec)
 }
 
 
-int cno_io_vector_extend (struct cno_st_io_vector_t *vec, const char *data, size_t length)
+int cno_io_vector_extend(struct cno_st_io_vector_t *vec, const char *data, size_t length)
 {
     size_t offset = vec->size;
     char * region = realloc(vec->data, offset + length);
@@ -201,7 +119,7 @@ int cno_io_vector_extend (struct cno_st_io_vector_t *vec, const char *data, size
 }
 
 
-int cno_io_vector_extend_tmp (struct cno_st_io_vector_tmp_t *vec, const char *data, size_t length)
+int cno_io_vector_extend_tmp(struct cno_st_io_vector_tmp_t *vec, const char *data, size_t length)
 {
     size_t offset = vec->offset;
     cno_io_vector_reset(vec);

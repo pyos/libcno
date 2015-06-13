@@ -50,7 +50,7 @@ static void cno_stream_destroy(cno_connection_t *conn, cno_stream_t *stream)
 {
     conn->stream_count[cno_stream_is_local(conn, stream->id)]--;
     cno_io_vector_clear(&stream->cache);
-    cno_map_remove(conn->streams, stream);
+    cno_map_remove(&conn->streams, stream);
     free(stream);
 }
 
@@ -103,7 +103,7 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id, int loca
     stream->id = id;
     stream->window_recv = conn->settings[local].initial_window_size;
     stream->window_send = conn->settings[local].initial_window_size;
-    cno_map_insert(conn->streams, id, stream);
+    cno_map_insert(&conn->streams, id, stream);
     conn->last_stream[local] = id;
     conn->stream_count[local]++;
 
@@ -118,7 +118,7 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id, int loca
 
 static cno_stream_t * cno_stream_find(cno_connection_t *conn, size_t id)
 {
-    return cno_map_find(conn->streams, id);
+    return cno_map_find(&conn->streams, id);
 }
 
 
@@ -200,7 +200,7 @@ static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
     unsigned char descr[8];
     write4(descr,     conn->last_stream[CNO_PEER_REMOTE]);
     write4(descr + 4, code);
-    cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, CNO_IO_VECTOR_CONST(descr) };
+    cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, CNO_IO_VECTOR_CONST((char *) descr) };
     return cno_frame_write(conn, &error);
 }
 
@@ -652,7 +652,7 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     conn->window_send = CNO_SETTINGS_INITIAL.initial_window_size;
     cno_hpack_init(&conn->decoder, CNO_SETTINGS_INITIAL.header_table_size);
     cno_hpack_init(&conn->encoder, CNO_SETTINGS_INITIAL.header_table_size);
-    cno_map_init(conn->streams);
+    cno_map_init(&conn->streams);
     return conn;
 }
 
@@ -663,8 +663,7 @@ void cno_connection_destroy(cno_connection_t *conn)
     cno_io_vector_clear((cno_io_vector_t *) &conn->buffer);
     cno_hpack_clear(&conn->encoder);
     cno_hpack_clear(&conn->decoder);
-    cno_map_iterate(conn->streams, cno_stream_destroy, conn);
-    cno_map_clear(conn->streams);
+    cno_map_iterate(&conn->streams, cno_stream_t, stream, cno_stream_destroy(conn, stream));
     free(conn);
 }
 
@@ -976,8 +975,12 @@ int cno_connection_made(cno_connection_t *conn)
     cno_io_vector_reset(&conn->buffer);
     cno_io_vector_clear((cno_io_vector_t *) &conn->buffer);
 
-    cno_map_iterate(conn->streams, cno_stream_destroy_clean, conn);
-    cno_map_clear(conn->streams);
+    cno_map_iterate(&conn->streams, cno_stream_t, stream, {
+        if (cno_stream_destroy_clean(conn, stream)) {
+            return CNO_PROPAGATE;
+        }
+    });
+
     return CNO_OK;
 
 done:

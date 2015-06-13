@@ -4,20 +4,24 @@
 #include <string.h>
 
 
-#define CNO_OK         0
-#define CNO_PROPAGATE -1
-#define CNO_ERROR_SET(code, msg, ...) cno_error_set(code, __FILE__, __LINE__, msg, ##__VA_ARGS__)
-#define CNO_ERROR_UNKNOWN(m, ...)         CNO_ERROR_SET(CNO_ERRNO_UNKNOWN,         m,  ##__VA_ARGS__)
-#define CNO_ERROR_ASSERTION(m, ...)       CNO_ERROR_SET(CNO_ERRNO_ASSERTION,       m,  ##__VA_ARGS__)
-#define CNO_ERROR_NO_MEMORY               CNO_ERROR_SET(CNO_ERRNO_NO_MEMORY,       "")
-#define CNO_ERROR_NOT_IMPLEMENTED(m, ...) CNO_ERROR_SET(CNO_ERRNO_NOT_IMPLEMENTED, m,  ##__VA_ARGS__)
-#define CNO_ERROR_TRANSPORT(m, ...)       CNO_ERROR_SET(CNO_ERRNO_TRANSPORT,       m,  ##__VA_ARGS__)
-#define CNO_ERROR_INVALID_STATE(m, ...)   CNO_ERROR_SET(CNO_ERRNO_INVALID_STATE,   m,  ##__VA_ARGS__)
-#define CNO_ERROR_INVALID_STREAM(m, ...)  CNO_ERROR_SET(CNO_ERRNO_INVALID_STREAM,  m,  ##__VA_ARGS__)
-#define CNO_ERROR_WOULD_BLOCK(m, ...)     CNO_ERROR_SET(CNO_ERRNO_WOULD_BLOCK,     m,  ##__VA_ARGS__)
+#define CNO_ERROR_SET(code, ...) cno_error_set(code, __FILE__, __LINE__, ##__VA_ARGS__)
+#define CNO_ERROR_UNKNOWN(...)         CNO_ERROR_SET(CNO_ERRNO_UNKNOWN,         ##__VA_ARGS__)
+#define CNO_ERROR_ASSERTION(...)       CNO_ERROR_SET(CNO_ERRNO_ASSERTION,       ##__VA_ARGS__)
+#define CNO_ERROR_NO_MEMORY            CNO_ERROR_SET(CNO_ERRNO_NO_MEMORY,       "")
+#define CNO_ERROR_NOT_IMPLEMENTED(...) CNO_ERROR_SET(CNO_ERRNO_NOT_IMPLEMENTED, ##__VA_ARGS__)
+#define CNO_ERROR_TRANSPORT(...)       CNO_ERROR_SET(CNO_ERRNO_TRANSPORT,       ##__VA_ARGS__)
+#define CNO_ERROR_INVALID_STATE(...)   CNO_ERROR_SET(CNO_ERRNO_INVALID_STATE,   ##__VA_ARGS__)
+#define CNO_ERROR_INVALID_STREAM(...)  CNO_ERROR_SET(CNO_ERRNO_INVALID_STREAM,  ##__VA_ARGS__)
+#define CNO_ERROR_WOULD_BLOCK(...)     CNO_ERROR_SET(CNO_ERRNO_WOULD_BLOCK,     ##__VA_ARGS__)
 
 #define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob, ob->cb_data, ## __VA_ARGS__))
 #define CNO_STRUCT_EXPORT(name) typedef struct cno_st_ ## name ## _t cno_ ## name ## _t
+
+
+enum CNO_RETCODE {
+    CNO_OK        =  0,
+    CNO_PROPAGATE = -1,
+};
 
 
 enum CNO_ERRNO {
@@ -32,11 +36,12 @@ enum CNO_ERRNO {
 };
 
 
-struct cno_st_list_link_t {
-    struct cno_st_list_link_t *prev;
-    struct cno_st_list_link_t *next;
-    size_t __map_id;
-};
+int          cno_error_set  (int code, const char *file, int line, const char *fmt, ...);
+int          cno_error      (void);
+int          cno_error_line (void);
+const char * cno_error_file (void);
+const char * cno_error_text (void);
+const char * cno_error_name (void);
 
 
 struct cno_st_io_vector_t {
@@ -52,46 +57,13 @@ struct cno_st_io_vector_tmp_t {
 };
 
 
-CNO_STRUCT_EXPORT(io_vector_tmp);
 CNO_STRUCT_EXPORT(io_vector);
-CNO_STRUCT_EXPORT(list_link);
-
-
-int          cno_error_set  (int code, const char *file, int line, const char *fmt, ...);
-int          cno_error      (void);
-int          cno_error_line (void);
-const char * cno_error_file (void);
-const char * cno_error_text (void);
-const char * cno_error_name (void);
-
-#define CNO_LIST_LINK(T) union { struct { T *prev; T *next;  size_t __map_id; }; cno_list_link_t __list_link_ref[1]; }
-#define CNO_LIST_ROOT(T) union { struct { T *last; T *first; size_t __map_id; }; cno_list_link_t __list_link_ref[1]; }
-#define cno_list_end(x) (void *) (x)->__list_link_ref
-#define cno_list_init(x)            __cno_list_init((x)->__list_link_ref)
-#define cno_list_insert_after(x, y) __cno_list_insert_after((x)->__list_link_ref, (y)->__list_link_ref)
-#define cno_list_remove(x)          __cno_list_remove((x)->__list_link_ref)
-void __cno_list_init         (cno_list_link_t *node);
-void __cno_list_insert_after (cno_list_link_t *node, cno_list_link_t *next);
-void __cno_list_remove       (cno_list_link_t *node);
-
-
-#define cno_map_init(m)            __cno_map_init(sizeof(m) / sizeof(*m), m)
-#define cno_map_insert(m, ...)     __cno_map_insert(sizeof(m) / sizeof(*m), m, __VA_ARGS__)
-#define cno_map_find(m, ...)       __cno_map_find(sizeof(m) / sizeof(*m), m, __VA_ARGS__)
-#define cno_map_iterate(m, f, ...) __cno_map_iterate(sizeof(m) / sizeof(*m), m, (void (*)(void *, void *)) f, __VA_ARGS__)
-#define cno_map_clear(m)           __cno_map_clear(sizeof(m) / sizeof(*m), m)
-#define cno_map_remove(m, x)       cno_list_remove(x)
-void  __cno_map_init    (size_t buckets, void *map);
-void  __cno_map_insert  (size_t buckets, void *map, size_t key, void *ob);
-void *__cno_map_find    (size_t buckets, void *map, size_t key);
-void  __cno_map_iterate (size_t buckets, void *map, void (*fn)(void *, void *), void *arg);
-void  __cno_map_clear   (size_t buckets, void *map);
-
+CNO_STRUCT_EXPORT(io_vector_tmp);
 
 #define CNO_IO_VECTOR_STRING(str) { str, strlen(str) }
-#define CNO_IO_VECTOR_CONST(str) { (char *) str, sizeof(str) - 1 }
-#define CNO_IO_VECTOR_REFER(vec) { (vec).data, (vec).size }
-#define CNO_IO_VECTOR_EMPTY      { NULL, 0 }
+#define CNO_IO_VECTOR_CONST(str)  { str, sizeof(str) - 1 }
+#define CNO_IO_VECTOR_REFER(vec)  { (vec).data, (vec).size }
+#define CNO_IO_VECTOR_EMPTY       { NULL, 0 }
 void   cno_io_vector_clear      (struct cno_st_io_vector_t *vec);
 void   cno_io_vector_reset      (struct cno_st_io_vector_tmp_t *vec);
 char * cno_io_vector_slice      (struct cno_st_io_vector_tmp_t *vec, size_t size);
@@ -101,4 +73,6 @@ int    cno_io_vector_extend     (struct cno_st_io_vector_t *vec, const char *dat
 int    cno_io_vector_extend_tmp (struct cno_st_io_vector_tmp_t *vec, const char *data, size_t length);
 
 
+#include "cno-common-list.h"
+#include "cno-common-map.h"
 #endif
