@@ -175,7 +175,7 @@ struct cno_st_connection_t {
     struct cno_st_frame_t frame;
     struct cno_st_hpack_t decoder;
     struct cno_st_hpack_t encoder;
-    CNO_SET(256) streams;
+    CNO_SET(64) streams;
     void *cb_data;
     int (*on_write         )(struct cno_st_connection_t *, void *, const char * /* data */, size_t /* length */);
     int (*on_stream_start  )(struct cno_st_connection_t *, void *, size_t /* id */);
