@@ -66,7 +66,7 @@ const char * cno_error_name (void);
  *
  * The basic transmission unit is an "io vector", which is a string tagged with its length.
  * A "temporary io vector" can additionally move the pointer over the string to mask
- * a part of the buffer.
+ * a part of the buffer that has already been handled.
  *
  */
 struct cno_st_io_vector_t {
@@ -85,6 +85,7 @@ struct cno_st_io_vector_tmp_t {
 CNO_STRUCT_EXPORT(io_vector);
 CNO_STRUCT_EXPORT(io_vector_tmp);
 
+
 #define CNO_IO_VECTOR_STRING(str) { str, strlen(str) }
 #define CNO_IO_VECTOR_CONST(str)  { str, sizeof(str) - 1 }
 #define CNO_IO_VECTOR_REFER(vec)  { (vec).data, (vec).size }
@@ -93,7 +94,6 @@ void   cno_io_vector_clear      (struct cno_st_io_vector_t *vec);
 int    cno_io_vector_extend     (struct cno_st_io_vector_t *vec, const char *data, size_t length);
 
 void   cno_io_vector_reset      (struct cno_st_io_vector_tmp_t *vec);
-char * cno_io_vector_slice      (struct cno_st_io_vector_tmp_t *vec, size_t size);
 int    cno_io_vector_shift      (struct cno_st_io_vector_tmp_t *vec, size_t offset);
 int    cno_io_vector_strip      (struct cno_st_io_vector_tmp_t *vec);
 int    cno_io_vector_extend_tmp (struct cno_st_io_vector_tmp_t *vec, const char *data, size_t length);

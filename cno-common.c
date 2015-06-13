@@ -63,21 +63,6 @@ void cno_io_vector_reset(struct cno_st_io_vector_tmp_t *vec)
 }
 
 
-char * cno_io_vector_slice(struct cno_st_io_vector_tmp_t *vec, size_t size)
-{
-    char *mem = malloc(size);
-
-    if (mem) {
-        memcpy(mem, vec->data, size);
-    } else {
-        (void) CNO_ERROR_NO_MEMORY;
-    }
-
-    cno_io_vector_shift(vec, size);
-    return mem;
-}
-
-
 int cno_io_vector_shift(struct cno_st_io_vector_tmp_t *vec, size_t offset)
 {
     vec->data   += offset;

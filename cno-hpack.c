@@ -214,14 +214,18 @@ static int cno_hpack_decode_string(cno_io_vector_tmp_t *source, cno_io_vector_t 
 
         out->data = (char *) buf;
         out->size = ptr - buf;
-
-        cno_io_vector_shift(source, length);
-        return CNO_OK;
+        return cno_io_vector_shift(source, length);
     }
 
-    out->data = cno_io_vector_slice(source, length);
+    out->data = malloc(length);
+
+    if (out->data == NULL) {
+        return CNO_ERROR_NO_MEMORY;
+    }
+
+    memcpy(out->data, source->data, length);
     out->size = length;
-    return out->data ? CNO_OK : CNO_PROPAGATE;
+    return cno_io_vector_shift(source, length);
 }
 
 
