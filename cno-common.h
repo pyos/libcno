@@ -74,7 +74,7 @@ void __cno_list_insert_after (cno_list_link_t *node, cno_list_link_t *next);
 void __cno_list_remove       (cno_list_link_t *node);
 
 #define CNO_IO_VECTOR_STRING(str) { str, strlen(str) }
-#define CNO_IO_VECTOR_CONST(str) { str, sizeof(str) - 1 }
+#define CNO_IO_VECTOR_CONST(str) { (char *) str, sizeof(str) - 1 }
 #define CNO_IO_VECTOR_REFER(vec) { (vec).data, (vec).size }
 #define CNO_IO_VECTOR_EMPTY      { NULL, 0 }
 void   cno_io_vector_clear      (struct cno_st_io_vector_t *vec);
