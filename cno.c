@@ -23,8 +23,8 @@ static inline void write4(unsigned char *p, uint32_t x) { p[0] = x >> 24; p[1] =
 #define CNO_WRITE_FORMAT(ptr, ...) do { (ptr) += sprintf(ptr, ##__VA_ARGS__); } while (0)
 
 static const struct cno_st_io_vector_t CNO_PREFACE = CNO_IO_VECTOR_CONST("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-static const struct cno_st_settings_t  CNO_SETTINGS_STANDARD = {{{ 4096, 1, -1,  65536, 16384, -1 }}};
-static const struct cno_st_settings_t  CNO_SETTINGS_INITIAL  = {{{ 4096, 0, 100, 65536, 65536, -1 }}};
+static const struct cno_st_settings_t  CNO_SETTINGS_STANDARD = {{{ 4096, 1, -1,   65536, 16384, -1 }}};
+static const struct cno_st_settings_t  CNO_SETTINGS_INITIAL  = {{{ 4096, 0, 1024, 65536, 65536, -1 }}};
 
 const char  CNO_FRAME_FLOW_CONTROLLED [256] = { 1 };  // only DATA is
 const char *CNO_FRAME_NAME            [256] = {
