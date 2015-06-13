@@ -13,13 +13,13 @@ struct cno_st_map_bucket_t { CNO_LIST_LINK(struct cno_st_map_bucket_t); size_t k
 #define cno_map_clear(m)           cno_map_iterate(m, struct cno_st_map_bucket_t, __x, cno_list_remove(__x))
 
 
-#define cno_map_iterate(m, T, var, block) do {                            \
-    T *var;                                                               \
-    size_t s = cno_map_size(m);                                           \
-    struct cno_st_map_bucket_t *__map = (m)->__map_root_handle;           \
-    struct cno_st_map_bucket_t *__it  = __map->next;                      \
-    for (; s--; __it = (++__map)->next)                                   \
-    for (; __it != __map; __it = __it->next) { var = (T *) __it; block; } \
+#define cno_map_iterate(m, T, var, block) do {                                        \
+    T *var;                                                                           \
+    size_t s = cno_map_size(m);                                                       \
+    struct cno_st_map_bucket_t *__n, *__m, *__i;                                      \
+    for (__m = (m)->__map_root_handle; s--; ++__m)                                    \
+    for (__i = __m->next, __n = __i->next; __i != __m; __i = __n, __n = __i->next)    \
+    { var = (T *) __i; block; }                                                       \
 } while (0)
 
 
