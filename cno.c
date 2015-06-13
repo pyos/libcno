@@ -200,7 +200,7 @@ static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
     unsigned char descr[8];
     write4(descr,     conn->last_stream[CNO_PEER_REMOTE]);
     write4(descr + 4, code);
-    cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, CNO_IO_VECTOR_CONST((char *) descr) };
+    cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, { (char *) descr, 8 } };
     return cno_frame_write(conn, &error);
 }
 
@@ -256,7 +256,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
         write4(payload, sz);
         cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE };
         update.payload.data = (char *) payload;
-        update.payload.size = ptr - payload;
+        update.payload.size = 4;
 
         if (cno_frame_write(conn, &update)) {
             return CNO_PROPAGATE;
@@ -385,7 +385,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
             for (; ptr != end; ptr += 6) {
                 size_t setting = read2(ptr);
-                size_t value   = read4(ptr + 4);
+                size_t value   = read4(ptr + 2);
 
                 if (setting && setting < CNO_SETTINGS_UNDEFINED) {
                     conn->settings[CNO_PEER_REMOTE].array[setting - 1] = value;
