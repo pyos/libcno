@@ -50,7 +50,7 @@ static void cno_stream_destroy(cno_connection_t *conn, cno_stream_t *stream)
 {
     conn->stream_count[cno_stream_is_local(conn, stream->id)]--;
     cno_io_vector_clear(&stream->cache);
-    cno_list_remove(stream);
+    cno_map_remove(conn->streams, stream);
     free(stream);
 }
 
@@ -103,7 +103,7 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id, int loca
     stream->id = id;
     stream->window_recv = conn->settings[local].initial_window_size;
     stream->window_send = conn->settings[local].initial_window_size;
-    cno_list_insert_after(&conn->streams, stream);
+    cno_map_insert(conn->streams, id, stream);
     conn->last_stream[local] = id;
     conn->stream_count[local]++;
 
@@ -118,15 +118,7 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id, int loca
 
 static cno_stream_t * cno_stream_find(cno_connection_t *conn, size_t id)
 {
-    cno_stream_t *current = conn->streams.first;
-
-    if (id) for (; current != cno_list_end(&conn->streams); current = current->next) {
-        if (current->id == id) {
-            return current;
-        }
-    }
-
-    return NULL;  // may be expected, so no error code
+    return cno_map_find(conn->streams, id);
 }
 
 
@@ -660,7 +652,7 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     conn->window_send = CNO_SETTINGS_INITIAL.initial_window_size;
     cno_hpack_init(&conn->decoder, CNO_SETTINGS_INITIAL.header_table_size);
     cno_hpack_init(&conn->encoder, CNO_SETTINGS_INITIAL.header_table_size);
-    cno_list_init(&conn->streams);
+    cno_map_init(conn->streams);
     return conn;
 }
 
@@ -671,11 +663,8 @@ void cno_connection_destroy(cno_connection_t *conn)
     cno_io_vector_clear((cno_io_vector_t *) &conn->buffer);
     cno_hpack_clear(&conn->encoder);
     cno_hpack_clear(&conn->decoder);
-
-    while (conn->streams.first != cno_list_end(&conn->streams)) {
-        cno_stream_destroy(conn, conn->streams.first);
-    }
-
+    cno_map_iterate(conn->streams, cno_stream_destroy, conn);
+    cno_map_clear(conn->streams);
     free(conn);
 }
 
@@ -724,7 +713,7 @@ int cno_connection_made(cno_connection_t *conn)
             }
 
             // Should be exactly one stream right now.
-            cno_stream_t *stream = conn->streams.first;
+            cno_stream_t *stream = cno_stream_find(conn, 1);
             stream->http1_remaining = 0;
             WAIT(conn->buffer.size);
 
@@ -849,7 +838,7 @@ int cno_connection_made(cno_connection_t *conn)
 
         case CNO_CONNECTION_HTTP1_READING:
         case CNO_CONNECTION_HTTP1_READING_UPGRADE: {
-            cno_stream_t *stream = conn->streams.first;
+            cno_stream_t *stream = cno_stream_find(conn, 1);
 
             WAIT(conn->buffer.size || !stream->http1_remaining);
 
@@ -902,10 +891,10 @@ int cno_connection_made(cno_connection_t *conn)
 
             if (conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE) {
                 conn->state = CNO_CONNECTION_PREFACE;
-                conn->streams.first->state = CNO_STREAM_CLOSED_REMOTE;
+                stream->state = CNO_STREAM_CLOSED_REMOTE;
             } else {
                 conn->state = CNO_CONNECTION_HTTP1_READY;
-                conn->streams.first->state = CNO_STREAM_IDLE;
+                stream->state = CNO_STREAM_IDLE;
             }
 
             if (CNO_FIRE(conn, on_message_end, stream->id, 0)) {
@@ -987,12 +976,8 @@ int cno_connection_made(cno_connection_t *conn)
     cno_io_vector_reset(&conn->buffer);
     cno_io_vector_clear((cno_io_vector_t *) &conn->buffer);
 
-    while (conn->streams.first != cno_list_end(&conn->streams)) {
-        if (cno_stream_destroy_clean(conn, conn->streams.first)) {
-            return CNO_PROPAGATE;
-        }
-    }
-
+    cno_map_iterate(conn->streams, cno_stream_destroy_clean, conn);
+    cno_map_clear(conn->streams);
     return CNO_OK;
 
 done:

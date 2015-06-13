@@ -156,7 +156,7 @@ struct cno_st_settings_t {
 
 
 struct cno_st_connection_t {
-    CNO_LIST_ROOT(struct cno_st_stream_t) streams;
+    CNO_LIST_ROOT(struct cno_st_stream_t) streams[256];
     union {
         enum CNO_CONNECTION_KIND kind;
         enum CNO_PEER_KIND client;  // == CNO_PEER_LOCAL iff we are the client

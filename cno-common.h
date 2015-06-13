@@ -35,6 +35,7 @@ enum CNO_ERRNO {
 struct cno_st_list_link_t {
     struct cno_st_list_link_t *prev;
     struct cno_st_list_link_t *next;
+    size_t __map_id;
 };
 
 
@@ -63,8 +64,8 @@ const char * cno_error_file (void);
 const char * cno_error_text (void);
 const char * cno_error_name (void);
 
-#define CNO_LIST_LINK(T) union { struct { T *prev; T *next;  }; cno_list_link_t __list_link_ref[1]; }
-#define CNO_LIST_ROOT(T) union { struct { T *last; T *first; }; cno_list_link_t __list_link_ref[1]; }
+#define CNO_LIST_LINK(T) union { struct { T *prev; T *next;  size_t __map_id; }; cno_list_link_t __list_link_ref[1]; }
+#define CNO_LIST_ROOT(T) union { struct { T *last; T *first; size_t __map_id; }; cno_list_link_t __list_link_ref[1]; }
 #define cno_list_end(x) (void *) (x)->__list_link_ref
 #define cno_list_init(x)            __cno_list_init((x)->__list_link_ref)
 #define cno_list_insert_after(x, y) __cno_list_insert_after((x)->__list_link_ref, (y)->__list_link_ref)
@@ -72,6 +73,20 @@ const char * cno_error_name (void);
 void __cno_list_init         (cno_list_link_t *node);
 void __cno_list_insert_after (cno_list_link_t *node, cno_list_link_t *next);
 void __cno_list_remove       (cno_list_link_t *node);
+
+
+#define cno_map_init(m)            __cno_map_init(sizeof(m) / sizeof(*m), m)
+#define cno_map_insert(m, ...)     __cno_map_insert(sizeof(m) / sizeof(*m), m, __VA_ARGS__)
+#define cno_map_find(m, ...)       __cno_map_find(sizeof(m) / sizeof(*m), m, __VA_ARGS__)
+#define cno_map_iterate(m, f, ...) __cno_map_iterate(sizeof(m) / sizeof(*m), m, (void (*)(void *, void *)) f, __VA_ARGS__)
+#define cno_map_clear(m)           __cno_map_clear(sizeof(m) / sizeof(*m), m)
+#define cno_map_remove(m, x)       cno_list_remove(x)
+void  __cno_map_init    (size_t buckets, void *map);
+void  __cno_map_insert  (size_t buckets, void *map, size_t key, void *ob);
+void *__cno_map_find    (size_t buckets, void *map, size_t key);
+void  __cno_map_iterate (size_t buckets, void *map, void (*fn)(void *, void *), void *arg);
+void  __cno_map_clear   (size_t buckets, void *map);
+
 
 #define CNO_IO_VECTOR_STRING(str) { str, strlen(str) }
 #define CNO_IO_VECTOR_CONST(str) { (char *) str, sizeof(str) - 1 }
