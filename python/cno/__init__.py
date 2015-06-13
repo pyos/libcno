@@ -52,17 +52,11 @@ class AIOConnection (Connection):
         self._tasks    = {}
         self._readers  = {}
         self._writers  = {}
-        self.on_message_start       = self._msg_start
-        self.on_message_data        = self._msg_data
-        self.on_message_end         = self._msg_end
-        self.on_stream_end          = self._msg_abort
+        self.on_message_start = self._msg_start
+        self.on_message_data  = self._msg_data
+        self.on_message_end   = self._msg_end
+        self.on_stream_end    = self._msg_abort
         self.on_flow_increase = self._reopen_flow
-
-    def connection_lost(self, exc):
-        super().connection_lost(exc)
-        for task in self._tasks.values():
-            if not task.done():
-                task.cancel()
 
     def _msg_data(self, stream, data):
         rd = self._readers.get(stream, None)

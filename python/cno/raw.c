@@ -121,12 +121,12 @@ static int pycno_on_message_end(cno_connection_t *conn, PyCNO *self, size_t stre
 
 static int pycno_on_frame(cno_connection_t *conn, PyCNO *self, cno_frame_t *frame)
            PYCNO_SIMPLE_CALLBACK(self->on_frame, "nnny#", frame->type, frame->flags,
-               frame->stream_id, frame->payload.data, frame->payload.size);
+               frame->stream, frame->payload.data, frame->payload.size);
 
 
 static int pycno_on_frame_send(cno_connection_t *conn, PyCNO *self, cno_frame_t *frame)
            PYCNO_SIMPLE_CALLBACK(self->on_frame_send, "nnny#", frame->type, frame->flags,
-               frame->stream_id, frame->payload.data, frame->payload.size);
+               frame->stream, frame->payload.data, frame->payload.size);
 
 
 static int pycno_on_pong(cno_connection_t *conn, PyCNO *self, const char data[8])
@@ -157,6 +157,48 @@ static PyCNO * pycno_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     self->on_pong          = NULL;
     self->on_flow_increase = NULL;
     return self;
+}
+
+
+static int pycno_traverse(PyCNO *self, visitproc visit, void *arg)
+{
+    Py_VISIT(self->on_write);
+    Py_VISIT(self->on_stream_start);
+    Py_VISIT(self->on_stream_end);
+    Py_VISIT(self->on_message_start);
+    Py_VISIT(self->on_message_data);
+    Py_VISIT(self->on_message_end);
+    Py_VISIT(self->on_frame);
+    Py_VISIT(self->on_frame_send);
+    Py_VISIT(self->on_pong);
+    Py_VISIT(self->on_flow_increase);
+    return 0;
+}
+
+
+static int pycno_clear(PyCNO *self)
+{
+    Py_XDECREF(self->on_write);
+    Py_XDECREF(self->on_stream_start);
+    Py_XDECREF(self->on_stream_end);
+    Py_XDECREF(self->on_message_start);
+    Py_XDECREF(self->on_message_data);
+    Py_XDECREF(self->on_message_end);
+    Py_XDECREF(self->on_frame);
+    Py_XDECREF(self->on_frame_send);
+    Py_XDECREF(self->on_pong);
+    Py_XDECREF(self->on_flow_increase);
+    self->on_write         = NULL;
+    self->on_stream_start  = NULL;
+    self->on_stream_end    = NULL;
+    self->on_message_start = NULL;
+    self->on_message_data  = NULL;
+    self->on_message_end   = NULL;
+    self->on_frame         = NULL;
+    self->on_frame_send    = NULL;
+    self->on_pong          = NULL;
+    self->on_flow_increase = NULL;
+    return 0;
 }
 
 
@@ -434,7 +476,9 @@ static PyTypeObject PyCNOType = {
     .tp_dealloc   = (destructor) pycno_dealloc,
     .tp_methods   = PyCNOMethods,
     .tp_members   = PyCNOMembers,
-    .tp_getset    = PyCNOGetSetters
+    .tp_getset    = PyCNOGetSetters,
+    .tp_traverse  = (traverseproc) pycno_traverse,
+    .tp_clear     = (inquiry) pycno_clear,
 };
 
 
