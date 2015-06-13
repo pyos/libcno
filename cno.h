@@ -113,8 +113,7 @@ enum CNO_CONNECTION_SETTINGS {
 struct cno_st_frame_t {
     enum CNO_FRAME_TYPE  type;
     enum CNO_FRAME_FLAGS flags;
-    size_t stream_id;
-    struct cno_st_stream_t *stream;
+    size_t stream;
     struct cno_st_io_vector_t payload;
 };
 
