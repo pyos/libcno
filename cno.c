@@ -200,7 +200,7 @@ static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
     unsigned char descr[8];
     write4(descr,     conn->last_stream[CNO_PEER_REMOTE]);
     write4(descr + 4, code);
-    cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, { (char *) descr, 8 } };
+    cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, CNO_IO_VECTOR_ARRAY(descr) };
     return cno_frame_write(conn, &error);
 }
 
@@ -221,9 +221,7 @@ static int cno_frame_write_rst_stream(cno_connection_t *conn, size_t stream, siz
 
     unsigned char descr[4];
     write4(descr, code);
-    cno_frame_t error = { CNO_FRAME_RST_STREAM };
-    error.payload.data = (char *) descr;
-    error.payload.size = sizeof(descr);
+    cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, 0, CNO_IO_VECTOR_ARRAY(descr) };
     return cno_frame_write(conn, &error);
 }
 
@@ -254,9 +252,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
         unsigned char payload[4];
         write4(payload, sz);
-        cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE };
-        update.payload.data = (char *) payload;
-        update.payload.size = 4;
+        cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, CNO_IO_VECTOR_ARRAY(payload) };
 
         if (cno_frame_write(conn, &update)) {
             return CNO_PROPAGATE;
@@ -321,9 +317,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
                 return CNO_FIRE(conn, on_pong, frame->payload.data);
             }
 
-            cno_frame_t response = { CNO_FRAME_PING, CNO_FLAG_ACK };
-            response.payload.data = frame->payload.data;
-            response.payload.size = frame->payload.size;
+            cno_frame_t response = { CNO_FRAME_PING, CNO_FLAG_ACK, 0, CNO_IO_VECTOR_REFER(frame->payload) };
             return cno_frame_write(conn, &response);
         }
 
@@ -396,12 +390,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
             cno_hpack_setlimit(&conn->encoder, conn->encoder.limit_upper);
 
             cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK };
-
-            if (cno_frame_write(conn, &ack)) {
-                return CNO_PROPAGATE;
-            }
-
-            return CNO_OK;
+            return cno_frame_write(conn, &ack);
         }
 
         case CNO_FRAME_WINDOW_UPDATE: {
