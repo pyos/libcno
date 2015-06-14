@@ -3,6 +3,10 @@
 //! file: ../../cno-common.c
 //! file: ../../picohttpparser/picohttpparser.c
 //! include_dir: ../..
+#ifndef PyModuleDef_NAME
+#define PyModuleDef_NAME "raw"
+#define PyMODINIT_FUNC_NAME PyInit_raw
+#endif
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <string.h>
