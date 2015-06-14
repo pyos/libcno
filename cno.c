@@ -702,7 +702,7 @@ int cno_connection_made(cno_connection_t *conn)
 
             // Should be exactly one stream right now.
             cno_stream_t *stream = cno_stream_find(conn, 1);
-            stream->http1_remaining = 0;
+            conn->http1_remaining = 0;
             WAIT(conn->buffer.size);
 
             // The HTTP 2 client preface starts with pseudo-broken HTTP/1.x.
@@ -744,7 +744,7 @@ int cno_connection_made(cno_connection_t *conn)
             }
 
             if (minor != 1) {
-                STOP(CNO_ERROR_TRANSPORT("HTTP/1.%d not supported", minor));
+                STOP(CNO_ERROR_TRANSPORT("bad HTTP/1.x request: HTTP/1.%d not supported", minor));
             }
 
             for (end = it + header_num; it != end; ++it) {
@@ -786,11 +786,11 @@ int cno_connection_made(cno_connection_t *conn)
                 } else
 
                 if (strncmp(name, "content-length", size) == 0) {
-                    if (stream->http1_remaining) {
+                    if (conn->http1_remaining) {
                         STOP(CNO_ERROR_TRANSPORT("bad HTTP/1.x request: multiple content-lengths"));
                     }
 
-                    stream->http1_remaining = (size_t) atoi(value);
+                    conn->http1_remaining = (size_t) atoi(value);
                 } else
 
                 if (strncmp(name, "transfer-encoding", size) == 0) {
@@ -798,11 +798,11 @@ int cno_connection_made(cno_connection_t *conn)
                         STOP(CNO_ERROR_TRANSPORT("bad HTTP/1.x request: unknown transfer-encoding"));
                     }
 
-                    if (stream->http1_remaining) {
+                    if (conn->http1_remaining) {
                         STOP(CNO_ERROR_TRANSPORT("bad HTTP/1.x request: chunked encoding w/ fixed length"));
                     }
 
-                    stream->http1_remaining = (size_t) -1;
+                    conn->http1_remaining = (size_t) -1;
                 }
             }
 
@@ -828,9 +828,9 @@ int cno_connection_made(cno_connection_t *conn)
         case CNO_CONNECTION_HTTP1_READING_UPGRADE: {
             cno_stream_t *stream = cno_stream_find(conn, 1);
 
-            WAIT(conn->buffer.size || !stream->http1_remaining);
+            WAIT(conn->buffer.size || !conn->http1_remaining);
 
-            if (stream->http1_remaining == (size_t) -1) {
+            if (conn->http1_remaining == (size_t) -1) {
                 char *it  = conn->buffer.data;
                 char *end = conn->buffer.size + it;
                 char *eol = it; while (eol != end && *eol++ != '\n');
@@ -853,15 +853,15 @@ int cno_connection_made(cno_connection_t *conn)
                     }
                 } else {
                     // That was the last chunk.
-                    stream->http1_remaining = 0;
+                    conn->http1_remaining = 0;
                 }
 
                 cno_io_vector_shift(&conn->buffer, data_len + head_len);
                 break;
             }
 
-            if (stream->http1_remaining) {
-                size_t data_len = stream->http1_remaining;
+            if (conn->http1_remaining) {
+                size_t data_len = conn->http1_remaining;
                 char * data_buf = conn->buffer.data;
 
                 if (data_len > conn->buffer.size) {
@@ -872,7 +872,7 @@ int cno_connection_made(cno_connection_t *conn)
                     STOP(CNO_PROPAGATE);
                 }
 
-                stream->http1_remaining -= data_len;
+                conn->http1_remaining -= data_len;
                 cno_io_vector_shift(&conn->buffer, data_len);
                 break;
             }

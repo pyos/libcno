@@ -136,7 +136,6 @@ struct cno_st_stream_t {
     size_t id;
     size_t window_recv;
     size_t window_send;
-    size_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
     enum CNO_FRAME_TYPE last_frame;  // can be set to HEADERS/PUSH_PROMISE, used for CONTINUATION
     enum CNO_STREAM_STATE state;
     struct cno_st_message_t msg;
@@ -170,6 +169,7 @@ struct cno_st_connection_t {
     size_t window_send;
     size_t last_stream[2];  // dereferencable with CNO_PEER_REMOTE/CNO_PEER_LOCAL
     size_t stream_count[2];
+    size_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
     struct cno_st_settings_t settings[2];
     struct cno_st_io_vector_tmp_t buffer;
     struct cno_st_frame_t frame;
