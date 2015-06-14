@@ -118,18 +118,17 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id, int loca
 
 static cno_stream_t * cno_stream_find(cno_connection_t *conn, size_t id)
 {
-    return cno_set_find(&conn->streams, id);
+    return id ? cno_set_find(&conn->streams, id) : NULL;
 }
 
 
 #define CNO_ERROR_GOAWAY(conn, type, ...) (cno_frame_write_goaway(conn, type) ? CNO_PROPAGATE : CNO_ERROR_TRANSPORT(__VA_ARGS__))
 
 
-static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
+static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame, cno_stream_t *stream)
 {
     size_t length = frame->payload.size;
     size_t limit  = conn->settings[CNO_PEER_REMOTE].max_frame_size;
-    cno_stream_t *stream = cno_stream_find(conn, frame->stream);
 
     if (CNO_FRAME_FLOW_CONTROLLED[frame->type]) {
         if (length > conn->window_send) {
@@ -172,7 +171,7 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
                 frame->payload.size = length;
             }
 
-            if (cno_frame_write(conn, frame)) {
+            if (cno_frame_write(conn, frame, stream)) {
                 frame->payload.data = restore_data;
                 frame->payload.size = restore_size;
                 frame->flags |= erased_flags;
@@ -209,7 +208,7 @@ static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
     write4(descr,     conn->last_stream[CNO_PEER_REMOTE]);
     write4(descr + 4, code);
     cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, CNO_IO_VECTOR_ARRAY(descr) };
-    return cno_frame_write(conn, &error);
+    return cno_frame_write(conn, &error, NULL);
 }
 
 
@@ -229,8 +228,8 @@ static int cno_frame_write_rst_stream(cno_connection_t *conn, size_t stream, siz
 
     unsigned char descr[4];
     write4(descr, code);
-    cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, 0, CNO_IO_VECTOR_ARRAY(descr) };
-    return cno_frame_write(conn, &error);
+    cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, stream, CNO_IO_VECTOR_ARRAY(descr) };
+    return cno_frame_write(conn, &error, obj);
 }
 
 
@@ -262,14 +261,14 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
         write4(payload, sz);
         cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, CNO_IO_VECTOR_ARRAY(payload) };
 
-        if (cno_frame_write(conn, &update)) {
+        if (cno_frame_write(conn, &update, NULL)) {
             return CNO_PROPAGATE;
         }
 
         if (frame->stream) {
             update.stream = frame->stream;
 
-            if (cno_frame_write(conn, &update)) {
+            if (cno_frame_write(conn, &update, stream)) {
                 return CNO_PROPAGATE;
             }
         }
@@ -326,7 +325,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
             }
 
             cno_frame_t response = { CNO_FRAME_PING, CNO_FLAG_ACK, 0, CNO_IO_VECTOR_REFER(frame->payload) };
-            return cno_frame_write(conn, &response);
+            return cno_frame_write(conn, &response, NULL);
         }
 
         case CNO_FRAME_GOAWAY: {
@@ -398,7 +397,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
             cno_hpack_setlimit(&conn->encoder, conn->encoder.limit_upper);
 
             cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK };
-            return cno_frame_write(conn, &ack);
+            return cno_frame_write(conn, &ack, NULL);
         }
 
         case CNO_FRAME_WINDOW_UPDATE: {
@@ -590,7 +589,7 @@ static int cno_settings_diff(cno_connection_t *conn, const cno_settings_t *old, 
     cno_frame_t frame = { CNO_FRAME_SETTINGS };
     frame.payload.data = (char *) payload;
     frame.payload.size = ptr - payload;
-    return cno_frame_write(conn, &frame);
+    return cno_frame_write(conn, &frame, NULL);
 }
 
 
@@ -1199,7 +1198,7 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
         return CNO_PROPAGATE;
     }
 
-    if (cno_frame_write(conn, &frame)) {
+    if (cno_frame_write(conn, &frame, streamobj)) {
         cno_io_vector_clear(&frame.payload);
         return CNO_PROPAGATE;
     }
@@ -1244,7 +1243,7 @@ int cno_write_data(cno_connection_t *conn, size_t stream, const char *data, size
     frame.payload.data = (char *) data;
     frame.payload.size = length;
 
-    if (cno_frame_write(conn, &frame)) {
+    if (cno_frame_write(conn, &frame, streamobj)) {
         return CNO_PROPAGATE;
     }
 
