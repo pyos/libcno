@@ -194,7 +194,6 @@ CNO_STRUCT_EXPORT(connection);
 CNO_STRUCT_EXPORT(settings);
 CNO_STRUCT_EXPORT(frame);
 CNO_STRUCT_EXPORT(stream);
-CNO_STRUCT_EXPORT(header);
 CNO_STRUCT_EXPORT(message);
 
 
