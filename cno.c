@@ -150,7 +150,8 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
     }
 
     if (length > limit) {
-        if (frame->type != CNO_FRAME_DATA && frame->type != CNO_FRAME_HEADERS) {
+        if (frame->type != CNO_FRAME_DATA && frame->type != CNO_FRAME_HEADERS
+         && frame->type != CNO_FRAME_PUSH_PROMISE && frame->type != CNO_FRAME_CONTINUATION) {
             return CNO_ERROR_ASSERTION("frame too big (%lu > %lu)", length, limit);
         }
 
@@ -158,6 +159,7 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
             return CNO_ERROR_NOT_IMPLEMENTED("don't know how to split padded frames");
         }
 
+        int    restore_type = frame->type;
         char * restore_data = frame->payload.data;
         size_t restore_size = frame->payload.size;
         size_t erased_flags = frame->flags & (CNO_FLAG_END_STREAM | CNO_FLAG_END_HEADERS);
@@ -174,12 +176,18 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame)
                 frame->payload.data = restore_data;
                 frame->payload.size = restore_size;
                 frame->flags |= erased_flags;
+                frame->type = restore_type;
                 return CNO_PROPAGATE;
+            }
+
+            if (frame->type == CNO_FRAME_HEADERS || frame->type == CNO_FRAME_PUSH_PROMISE) {
+                frame->type = CNO_FRAME_CONTINUATION;
             }
         }
 
         frame->payload.data = restore_data;
         frame->payload.size = restore_size;
+        frame->type = restore_type;
         return CNO_OK;
     }
 
@@ -628,12 +636,12 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
 
     conn->kind  = kind;
     conn->state = kind == CNO_HTTP2_CLIENT ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
-    memcpy(conn->settings,     &CNO_SETTINGS_INITIAL, sizeof(cno_settings_t));
-    memcpy(conn->settings + 1, &CNO_SETTINGS_INITIAL, sizeof(cno_settings_t));
-    conn->window_recv = CNO_SETTINGS_INITIAL.initial_window_size;
-    conn->window_send = CNO_SETTINGS_INITIAL.initial_window_size;
-    cno_hpack_init(&conn->decoder, CNO_SETTINGS_INITIAL.header_table_size);
-    cno_hpack_init(&conn->encoder, CNO_SETTINGS_INITIAL.header_table_size);
+    memcpy(conn->settings,     &CNO_SETTINGS_STANDARD, sizeof(cno_settings_t));
+    memcpy(conn->settings + 1, &CNO_SETTINGS_INITIAL,  sizeof(cno_settings_t));
+    conn->window_recv = CNO_SETTINGS_INITIAL .initial_window_size;
+    conn->window_send = CNO_SETTINGS_STANDARD.initial_window_size;
+    cno_hpack_init(&conn->decoder, CNO_SETTINGS_INITIAL .header_table_size);
+    cno_hpack_init(&conn->encoder, CNO_SETTINGS_STANDARD.header_table_size);
     cno_set_init(&conn->streams);
     return conn;
 }
