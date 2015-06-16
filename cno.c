@@ -653,7 +653,7 @@ int cno_connection_is_http2(cno_connection_t *conn)
 }
 
 
-int cno_connection_upgrade(cno_connection_t *conn)
+static int cno_connection_upgrade(cno_connection_t *conn)
 {
     if (conn->client && CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size)) {
         return CNO_PROPAGATE;

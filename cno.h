@@ -208,7 +208,6 @@ int                cno_connection_data_received (cno_connection_t *conn, const c
 int                cno_connection_lost          (cno_connection_t *conn);
 int                cno_connection_stop          (cno_connection_t *conn);
 int                cno_connection_is_http2      (cno_connection_t *conn);
-int                cno_connection_upgrade       (cno_connection_t *conn);
 void               cno_settings_copy            (cno_connection_t *conn, cno_settings_t *target);
 int                cno_settings_apply           (cno_connection_t *conn, const cno_settings_t *new_settings);
 size_t             cno_stream_next_id           (cno_connection_t *conn);
