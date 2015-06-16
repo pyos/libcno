@@ -136,6 +136,7 @@ struct cno_st_stream_t {
     size_t id;
     size_t window_recv;
     size_t window_send;
+    size_t last_promise;
     enum CNO_FRAME_TYPE last_frame;  // can be set to HEADERS/PUSH_PROMISE, used for CONTINUATION
     enum CNO_STREAM_STATE state;
     struct cno_st_message_t msg;
@@ -182,6 +183,7 @@ struct cno_st_connection_t {
     int (*on_stream_end    )(struct cno_st_connection_t *, void *, size_t /* id */);
     int (*on_flow_increase )(struct cno_st_connection_t *, void *, size_t /* stream */);
     int (*on_message_start )(struct cno_st_connection_t *, void *, size_t /* stream */, struct cno_st_message_t * /* msg */);
+    int (*on_message_push  )(struct cno_st_connection_t *, void *, size_t /* stream */, struct cno_st_message_t * /* msg */, size_t /* parent */);
     int (*on_message_data  )(struct cno_st_connection_t *, void *, size_t /* stream */, const char * /* data */, size_t /* length */);
     int (*on_message_end   )(struct cno_st_connection_t *, void *, size_t /* stream */);
     int (*on_frame         )(struct cno_st_connection_t *, void *, struct cno_st_frame_t * /* frame */);

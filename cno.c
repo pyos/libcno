@@ -25,7 +25,7 @@ static inline char *write_string(char *ptr, const char *data)           { return
 
 static const cno_io_vector_t CNO_PREFACE = CNO_IO_VECTOR_CONST("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
 static const cno_settings_t  CNO_SETTINGS_STANDARD = {{{ 4096, 1, -1,   65536, 16384, -1 }}};
-static const cno_settings_t  CNO_SETTINGS_INITIAL  = {{{ 4096, 0, 1024, 65536, 65536, -1 }}};
+static const cno_settings_t  CNO_SETTINGS_INITIAL  = {{{ 4096, 1, 1024, 65536, 65536, -1 }}};
 
 
 const char  CNO_FRAME_FLOW_CONTROLLED [256] = { 1 };  // only DATA is
@@ -245,6 +245,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
     unsigned char *end = sz + ptr;
     cno_stream_t *stream = cno_stream_find(conn, frame->stream);
     int stream_may_be_reset = frame->stream && frame->stream <= conn->last_stream[CNO_PEER_REMOTE];
+    int continuation = frame->type == CNO_FRAME_CONTINUATION;
 
     if (CNO_FRAME_FLOW_CONTROLLED[frame->type] && sz) {
         unsigned char payload[4];
@@ -264,7 +265,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
         }
     }
 
-    if (frame->type == CNO_FRAME_CONTINUATION) {
+    if (continuation) {
         if (!stream) {
             return stream_may_be_reset ? CNO_OK
                  : CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "CONTINUATION on a non-existent stream");
@@ -272,7 +273,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
         frame->type = stream->last_frame;
 
-        if (frame->type != CNO_FRAME_HEADERS && frame->type != CNO_FRAME_CONTINUATION) {
+        if (frame->type != CNO_FRAME_HEADERS && frame->type != CNO_FRAME_PUSH_PROMISE) {
             return cno_frame_write_rst_stream(conn, frame->stream, CNO_STATE_PROTOCOL_ERROR);
         }
     }
@@ -422,10 +423,6 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
         case CNO_FRAME_HEADERS: {
             if (stream == NULL) {
-                if (stream_may_be_reset) {
-                    return CNO_OK;
-                }
-
                 stream = cno_stream_new(conn, frame->stream, CNO_PEER_REMOTE);
 
                 if (stream == NULL) {
@@ -433,7 +430,11 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
                 }
             }
 
-            if (stream->state == CNO_STREAM_IDLE) {
+            if (continuation) {
+                if (stream->state != CNO_STREAM_OPEN && stream->state != CNO_STREAM_CLOSED_LOCAL) {
+                    return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "bad CONTINUATION");
+                }
+            } else if (stream->state == CNO_STREAM_IDLE) {
                 stream->state = CNO_STREAM_OPEN;
             } else if (stream->state == CNO_STREAM_RESERVED_REMOTE) {
                 stream->state = CNO_STREAM_CLOSED_LOCAL;
@@ -452,7 +453,44 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
         }
 
         case CNO_FRAME_PUSH_PROMISE: {
-            return CNO_ERROR_GOAWAY(conn, CNO_STATE_INTERNAL_ERROR, "PUSH_PROMISE not implemented");
+            if (!conn->client) {
+                return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "clients can't push");
+            }
+
+            if (!conn->settings[CNO_PEER_LOCAL].enable_push) {
+                return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "push disabled");
+            }
+
+            if (continuation) {
+                if (!stream || !stream->last_promise) {
+                    return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "bad CONTINUATION to PUSH_PROMISE");
+                }
+            } else {
+                if (stream == NULL || (stream->state != CNO_STREAM_OPEN && stream->state != CNO_STREAM_CLOSED_LOCAL)) {
+                    return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "PUSH_PROMISE not on an open stream");
+                }
+
+                size_t promised = read4(ptr);
+                ptr += 4;
+                sz  -= 4;
+
+                cno_stream_t *prstream = cno_stream_new(conn, promised, CNO_PEER_REMOTE);
+
+                if (prstream == NULL) {
+                    return CNO_PROPAGATE;
+                }
+
+                prstream->state = CNO_STREAM_RESERVED_REMOTE;
+                stream->last_promise = promised;
+            }
+
+            stream->last_frame = CNO_FRAME_PUSH_PROMISE;
+
+            if (cno_io_vector_extend(&stream->cache, (char *) ptr, sz)) {
+                return CNO_PROPAGATE;
+            }
+
+            break;
         }
 
         case CNO_FRAME_DATA: {
@@ -460,11 +498,11 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
                 return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "DATA on stream 0");
             }
 
-            if (!stream || (stream->state != CNO_STREAM_OPEN && stream->state != CNO_STREAM_CLOSED_LOCAL)) {
-                if (stream_may_be_reset) {
-                    return CNO_OK;
-                }
+            if (!stream && stream_may_be_reset) {
+                return CNO_OK;
+            }
 
+            if (!stream || (stream->state != CNO_STREAM_OPEN && stream->state != CNO_STREAM_CLOSED_LOCAL)) {
                 return cno_frame_write_rst_stream(conn, frame->stream, CNO_STATE_STREAM_CLOSED);
             }
 
@@ -525,7 +563,14 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
             }
         }
 
-        int failed = CNO_FIRE(conn, on_message_start, frame->stream, &msg);
+        int failed;
+
+        if (frame->type == CNO_FRAME_HEADERS) {
+            failed = CNO_FIRE(conn, on_message_start, frame->stream, &msg);
+        } else {
+            failed = CNO_FIRE(conn, on_message_push, stream->last_promise, &msg, frame->stream);
+            stream->last_promise = 0;
+        }
 
         for (it = headers; it != headers + limit; ++it) {
             cno_io_vector_clear(&it->name);
