@@ -147,6 +147,7 @@ static inline void __cno_list_remove(struct cno_st_list_link_t *node)
 {
     node->next->prev = node->prev;
     node->prev->next = node->next;
+    __cno_list_init(node);
 }
 
 
