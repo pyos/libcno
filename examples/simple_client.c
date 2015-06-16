@@ -15,9 +15,9 @@
 #include "simple_common.h"
 
 
-int disconnect(cno_connection_t *conn, void *fd, size_t stream, int disconnect)
+int disconnect(cno_connection_t *conn, void *fd, size_t stream)
 {
-    log_recv_message_end(conn, (int *) fd, stream, disconnect);
+    log_recv_message_end(conn, (int *) fd, stream);
 
     if (cno_connection_stop(conn)) {
         return CNO_PROPAGATE;

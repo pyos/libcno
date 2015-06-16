@@ -15,11 +15,9 @@
 static const int ONE = 1;  // Heh. See `setsockopt` below.
 
 
-static int respond_with_hello_world(cno_connection_t *conn, void *fd, size_t stream, int disconnect)
+static int respond_with_hello_world(cno_connection_t *conn, void *fd, size_t stream)
 {
-    log_recv_message_end(conn, fd, stream, disconnect);
-
-    if (disconnect) return CNO_OK;
+    log_recv_message_end(conn, fd, stream);
 
     cno_header_t headers[3] = {
         // io vector = { char *, size_t }
@@ -93,7 +91,7 @@ static void *handle(fd) ssize_t fd;
 error:
     cno_connection_lost(conn);
 
-    fprintf(stderr, "%lu: %s: %s at line %d in %s\n", fd,
+    fprintf(stderr, "%ld: %s: %s at line %d in %s\n", fd,
         cno_error_name(), cno_error_text(),
         cno_error_line(), cno_error_file());
 

@@ -62,7 +62,7 @@ class AIOConnection (Connection):
         rd = self._readers.get(stream, None)
         rd and rd.put_nowait((data, False))
 
-    def _msg_end(self, stream, disconnected):
+    def _msg_end(self, stream, disconnected=False):
         rd = self._readers.pop(stream, None)
         rd and rd.put_nowait((b'', True))
         if disconnected:

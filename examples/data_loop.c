@@ -13,10 +13,8 @@ static int pass(cno_connection_t *conn, void *other, const char *data, size_t le
 }
 
 
-static int respond(cno_connection_t *conn, void *_, size_t stream, int disconnect)
+static int respond(cno_connection_t *conn, void *_, size_t stream)
 {
-    if (disconnect) return CNO_OK;
-
     cno_header_t headers[3] = {
         // io vector = { char *, size_t }
         { CNO_IO_VECTOR_CONST("server"),         CNO_IO_VECTOR_CONST("echo-chamber/1.0") },

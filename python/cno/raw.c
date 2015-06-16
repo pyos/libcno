@@ -119,8 +119,8 @@ static int pycno_on_message_data(cno_connection_t *conn, PyCNO *self, size_t str
            PYCNO_SIMPLE_CALLBACK(self->on_message_data, "ny#", stream, data, length);
 
 
-static int pycno_on_message_end(cno_connection_t *conn, PyCNO *self, size_t stream, int disconnect)
-           PYCNO_SIMPLE_CALLBACK(self->on_message_end, "nO", stream, disconnect ? Py_True : Py_False);
+static int pycno_on_message_end(cno_connection_t *conn, PyCNO *self, size_t stream)
+           PYCNO_SIMPLE_CALLBACK(self->on_message_end, "n", stream);
 
 
 static int pycno_on_frame(cno_connection_t *conn, PyCNO *self, cno_frame_t *frame)

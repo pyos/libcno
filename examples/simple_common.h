@@ -77,9 +77,9 @@ int log_recv_message_data(cno_connection_t *conn, void *fd, size_t stream, const
 }
 
 
-int log_recv_message_end(cno_connection_t *conn, void *fd, size_t stream, int disconnect)
+int log_recv_message_end(cno_connection_t *conn, void *fd, size_t stream)
 {
-    fprintf(stdout, "%d: recv end of message; stream %lu %s\n", *(int *) fd, stream, disconnect ? "closed" : "half-closed");
+    fprintf(stdout, "%d: recv end of message; stream %lu closed\n", *(int *) fd, stream);
     return CNO_OK;
 }
 

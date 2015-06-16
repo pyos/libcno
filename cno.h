@@ -183,7 +183,7 @@ struct cno_st_connection_t {
     int (*on_flow_increase )(struct cno_st_connection_t *, void *, size_t /* stream */);
     int (*on_message_start )(struct cno_st_connection_t *, void *, size_t /* stream */, struct cno_st_message_t * /* msg */);
     int (*on_message_data  )(struct cno_st_connection_t *, void *, size_t /* stream */, const char * /* data */, size_t /* length */);
-    int (*on_message_end   )(struct cno_st_connection_t *, void *, size_t /* stream */, int /* disconnect */);
+    int (*on_message_end   )(struct cno_st_connection_t *, void *, size_t /* stream */);
     int (*on_frame         )(struct cno_st_connection_t *, void *, struct cno_st_frame_t * /* frame */);
     int (*on_frame_send    )(struct cno_st_connection_t *, void *, struct cno_st_frame_t * /* frame */);
     int (*on_pong          )(struct cno_st_connection_t *, void *, const char [8] /* payload */);
