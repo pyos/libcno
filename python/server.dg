@@ -5,8 +5,7 @@ import '/cno'
 
 
 respond = async $ loop ~>
-  data = 'Hello, World! Method: {}, path: {}.\n'.format @method @path |>.encode 'utf-8'
-  await @respond 200 [('server', 'libcno/0.1'), ('content-length', str $ len data)] data
+  await @respond 200 [('server', 'libcno/0.1'), ('content-length', '14')] b'Hello, World!\n'
 
 
 loop = asyncio.get_event_loop!
