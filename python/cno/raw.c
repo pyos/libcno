@@ -26,6 +26,7 @@ typedef struct
     PyObject *on_stream_start;
     PyObject *on_stream_end;
     PyObject *on_message_start;
+    PyObject *on_message_push;
     PyObject *on_message_data;
     PyObject *on_message_end;
     PyObject *on_frame;
@@ -76,27 +77,39 @@ static int pycno_on_stream_end(cno_connection_t *conn, PyCNO *self, size_t strea
            PYCNO_SIMPLE_CALLBACK(self->on_stream_end, "n", stream);
 
 
+static PyObject *message_headers(cno_message_t *msg)
+{
+    PyObject *headers = PyList_New(msg->headers_len);
+    size_t i;
+
+    if (headers == NULL) {
+        return NULL;
+    }
+
+    for (i = 0; i < msg->headers_len; ++i) {
+        PyObject *header = Py_BuildValue("(s#s#)",
+            msg->headers[i].name.data,  msg->headers[i].name.size,
+            msg->headers[i].value.data, msg->headers[i].value.size);
+
+        if (header == NULL) {
+            Py_DECREF(headers);
+            return NULL;
+        }
+
+        PyList_SET_ITEM(headers, i, header);
+    }
+
+    return headers;
+}
+
+
 static int pycno_on_message_start(cno_connection_t *conn, PyCNO *self, size_t stream, cno_message_t *msg)
 {
     if (self->on_message_start) {
-        PyObject *headers = PyList_New(msg->headers_len);
-        size_t i;
+        PyObject *headers = message_headers(msg);
 
         if (headers == NULL) {
             return CNO_ERROR_PYTHON;
-        }
-
-        for (i = 0; i < msg->headers_len; ++i) {
-            PyObject *header = Py_BuildValue("(s#s#)",
-                msg->headers[i].name.data,  msg->headers[i].name.size,
-                msg->headers[i].value.data, msg->headers[i].value.size);
-
-            if (header == NULL) {
-                Py_DECREF(headers);
-                return CNO_ERROR_PYTHON;
-            }
-
-            PyList_SET_ITEM(headers, i, header);
         }
 
         PyObject *ret = self->conn->client
@@ -105,7 +118,30 @@ static int pycno_on_message_start(cno_connection_t *conn, PyCNO *self, size_t st
                   msg->method.data, msg->method.size, msg->path.data, msg->path.size, headers);
 
         if (ret == NULL) {
+            return CNO_ERROR_PYTHON;  // `N` should decref automatically
+        }
+
+        Py_DECREF(ret);
+    }
+
+    return CNO_OK;
+}
+
+
+static int pycno_on_message_push(cno_connection_t *conn, PyCNO *self, size_t stream, cno_message_t *msg, size_t parent)
+{
+    if (self->on_message_push) {
+        PyObject *headers = message_headers(msg);
+
+        if (headers == NULL) {
             return CNO_ERROR_PYTHON;
+        }
+
+        PyObject *ret = PyObject_CallFunction(self->on_message_push, "nns#s#N", stream, parent,
+            msg->method.data, msg->method.size, msg->path.data, msg->path.size, headers);
+
+        if (ret == NULL) {
+            return CNO_ERROR_PYTHON;  // `N` should decref automatically
         }
 
         Py_DECREF(ret);
@@ -154,6 +190,7 @@ static PyCNO * pycno_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     self->on_stream_start  = NULL;
     self->on_stream_end    = NULL;
     self->on_message_start = NULL;
+    self->on_message_push  = NULL;
     self->on_message_data  = NULL;
     self->on_message_end   = NULL;
     self->on_frame         = NULL;
@@ -170,6 +207,7 @@ static int pycno_traverse(PyCNO *self, visitproc visit, void *arg)
     Py_VISIT(self->on_stream_start);
     Py_VISIT(self->on_stream_end);
     Py_VISIT(self->on_message_start);
+    Py_VISIT(self->on_message_push);
     Py_VISIT(self->on_message_data);
     Py_VISIT(self->on_message_end);
     Py_VISIT(self->on_frame);
@@ -187,6 +225,7 @@ static int pycno_clear(PyCNO *self)
     Py_XDECREF(self->on_stream_end);
     Py_XDECREF(self->on_message_start);
     Py_XDECREF(self->on_message_data);
+    Py_XDECREF(self->on_message_push);
     Py_XDECREF(self->on_message_end);
     Py_XDECREF(self->on_frame);
     Py_XDECREF(self->on_frame_send);
@@ -196,6 +235,7 @@ static int pycno_clear(PyCNO *self)
     self->on_stream_start  = NULL;
     self->on_stream_end    = NULL;
     self->on_message_start = NULL;
+    self->on_message_push  = NULL;
     self->on_message_data  = NULL;
     self->on_message_end   = NULL;
     self->on_frame         = NULL;
@@ -227,6 +267,7 @@ static PyObject * pycno_init(PyCNO *self, PyObject *args, PyObject *kwargs)
     self->conn->on_stream_start  = &pycno_on_stream_start;
     self->conn->on_stream_end    = &pycno_on_stream_end;
     self->conn->on_message_start = &pycno_on_message_start;
+    self->conn->on_message_push  = &pycno_on_message_push;
     self->conn->on_message_data  = &pycno_on_message_data;
     self->conn->on_message_end   = &pycno_on_message_end;
     self->conn->on_frame         = &pycno_on_frame;
@@ -424,6 +465,7 @@ static void pycno_dealloc(PyCNO *self)
     Py_XDECREF(self->on_stream_start);
     Py_XDECREF(self->on_stream_end);
     Py_XDECREF(self->on_message_start);
+    Py_XDECREF(self->on_message_push);
     Py_XDECREF(self->on_message_data);
     Py_XDECREF(self->on_message_end);
     Py_XDECREF(self->on_frame);
@@ -459,6 +501,7 @@ static PyMemberDef PyCNOMembers[] = {
     { "on_stream_start",  T_OBJECT_EX, offsetof(PyCNO, on_stream_start),  0, NULL },
     { "on_stream_end",    T_OBJECT_EX, offsetof(PyCNO, on_stream_end),    0, NULL },
     { "on_message_start", T_OBJECT_EX, offsetof(PyCNO, on_message_start), 0, NULL },
+    { "on_message_push",  T_OBJECT_EX, offsetof(PyCNO, on_message_push),  0, NULL },
     { "on_message_data",  T_OBJECT_EX, offsetof(PyCNO, on_message_data),  0, NULL },
     { "on_message_end",   T_OBJECT_EX, offsetof(PyCNO, on_message_end),   0, NULL },
     { "on_frame",         T_OBJECT_EX, offsetof(PyCNO, on_frame),         0, NULL },

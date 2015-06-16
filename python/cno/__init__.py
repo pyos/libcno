@@ -12,6 +12,7 @@ class Bufferable:
         while not eof:
             part, eof = yield from self.fragments.get()
             data += part
+        self.fragments.put_nowait((b'', True))
         return data
 
 
@@ -25,6 +26,7 @@ class Request (Bufferable):
         self.headers    = headers
         self.fragments  = asyncio.Queue(loop=conn._loop)
 
+    @asyncio.coroutine
     def respond(self, code, headers, data):
         self.connection.write_message(self.stream, code, headers, not data)
         while data:
@@ -37,12 +39,25 @@ class Request (Bufferable):
 
 
 class Response (Bufferable):
-    def __init__(self, conn, stream, code, headers):
+    def __init__(self, conn, stream, code, headers, pushqueue):
         self.connection = conn
         self.stream     = stream
         self.code       = code
         self.headers    = headers
         self.fragments  = asyncio.Queue(loop=conn._loop)
+        self.pushqueue  = pushqueue
+
+    @property
+    @asyncio.coroutine
+    def pushed(self):
+        data = []
+        while self.pushqueue:
+            req, future = yield from self.pushqueue.get()
+            if future is None:
+                break
+            data.append((req, (yield from future)))
+        self.pushqueue.put_nowait((None, None))
+        return data
 
 
 class AIOConnection (Connection):
@@ -106,12 +121,26 @@ class AIOServer (AIOConnection):
 class AIOClient (AIOConnection):
     def __init__(self, http2=True, loop=None):
         super().__init__(http2=http2, loop=loop)
+        self.on_message_push = self._msg_push
+        self._pushqueues = {}
 
     def _msg_start(self, stream, code, headers):
-        item = Response(self, stream, code, headers)
+        item = Response(self, stream, code, headers, self._pushqueues.get(stream))
         task = self._tasks.pop(stream, None)
         task and task.set_result(item)
         self._readers[stream] = item.fragments
+
+    def _msg_abort(self, stream):
+        super()._msg_abort(stream)
+        pq = self._pushqueues.pop(stream, None)
+        pq and pq.put_nowait((None, None))
+
+    def _msg_push(self, stream, parent, method, path, headers):
+        item = Request(self, stream, method, path, headers)
+        item.fragments.put_nowait((b'', True))
+        task = self._tasks[stream] = asyncio.Future(loop=self._loop)
+        pq = self._pushqueues.get(parent, None)
+        pq and pq.put_nowait((item, task))
 
     @asyncio.coroutine
     def request(self, method, path, headers, data):
@@ -130,6 +159,7 @@ class AIOClient (AIOConnection):
                 break
 
         self._tasks[stream] = fut = asyncio.Future(loop=self._loop)
+        self._pushqueues[stream] = asyncio.Queue(loop=self._loop)
         try:
             return (yield from fut)
         finally:

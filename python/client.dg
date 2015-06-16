@@ -4,12 +4,20 @@ import '/asyncio'
 import '/cno'
 
 
-main = async $ loop host port ->
-  _, client = await loop.create_connection (-> cno.AIOClient True loop) host port
-  resp = await client.request 'GET' '/' [(':scheme', 'http'), (':authority', 'localhost')] b''
-  print resp.code
-  print resp.headers
-  print $ await resp.payload
+main = loop host port ->
+  _, client = yield from loop.create_connection (-> cno.AIOClient True loop) host port
+  resp = yield from client.request 'GET' '/' [(':scheme', 'http'), (':authority', 'localhost')] b''
+  print 'code    =' resp.code
+  print 'headers =' resp.headers
+  print 'payload =' $ yield from resp.payload
+  print 'pushed  ='
+  for (req, resp) in yield from resp.pushed =>
+    print '  path    =' req.path
+    print '  method  =' req.method
+    print '  reqhead =' req.headers
+    print '  code    =' resp.code
+    print '  headers =' resp.headers
+    print '  payload =' $ yield from resp.payload
 
 
 loop = asyncio.get_event_loop!
