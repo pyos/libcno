@@ -85,11 +85,9 @@ struct cno_st_io_vector_tmp_t {
 CNO_STRUCT_EXPORT(io_vector);
 CNO_STRUCT_EXPORT(io_vector_tmp);
 
-
 #define CNO_IO_VECTOR_STRING(str) { str, strlen(str) }
 #define CNO_IO_VECTOR_CONST(str)  { str, sizeof(str) - 1 }
 #define CNO_IO_VECTOR_ARRAY(arr)  { (char *) arr, sizeof(arr) }
-#define CNO_IO_VECTOR_REFER(vec)  { (vec).data, (vec).size }
 #define CNO_IO_VECTOR_EMPTY       { NULL, 0 }
 void   cno_io_vector_clear      (struct cno_st_io_vector_t *vec);
 int    cno_io_vector_extend     (struct cno_st_io_vector_t *vec, const char *data, size_t length);

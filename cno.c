@@ -18,13 +18,13 @@ static inline void write2(unsigned char *p, uint32_t x) { p[0] = x >>  8; p[1] =
 static inline void write3(unsigned char *p, uint32_t x) { p[0] = x >> 16; p[1] = x >>  8; p[2] = x; }
 static inline void write4(unsigned char *p, uint32_t x) { p[0] = x >> 24; p[1] = x >> 16; p[2] = x >> 8; p[3] = x; }
 
-#define CNO_WRITE_VECTOR(ptr, vec) do { memcpy((ptr), (vec).data, (vec).size); (ptr) += (vec).size; } while (0)
-#define CNO_WRITE_CONSTC(ptr, str) do { memcpy((ptr), (str), sizeof(str) - 1); (ptr) += sizeof(str) - 1; } while (0);
-#define CNO_WRITE_FORMAT(ptr, ...) do { (ptr) += sprintf(ptr, ##__VA_ARGS__); } while (0)
+static inline char *write_vector(char *ptr, const cno_io_vector_t *vec) { return (char *) memcpy(ptr, vec->data, vec->size) + vec->size; }
+static inline char *write_string(char *ptr, const char *data)           { return (char *) memcpy(ptr, data, strlen(data)) + strlen(data); }
+#define write_format(ptr, ...) (ptr + sprintf(ptr, ##__VA_ARGS__))
 
-static const struct cno_st_io_vector_t CNO_PREFACE = CNO_IO_VECTOR_CONST("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-static const struct cno_st_settings_t  CNO_SETTINGS_STANDARD = {{{ 4096, 1, -1,   65536, 16384, -1 }}};
-static const struct cno_st_settings_t  CNO_SETTINGS_INITIAL  = {{{ 4096, 0, 1024, 65536, 65536, -1 }}};
+static const cno_io_vector_t CNO_PREFACE = CNO_IO_VECTOR_CONST("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+static const cno_settings_t  CNO_SETTINGS_STANDARD = {{{ 4096, 1, -1,   65536, 16384, -1 }}};
+static const cno_settings_t  CNO_SETTINGS_INITIAL  = {{{ 4096, 0, 1024, 65536, 65536, -1 }}};
 
 const char  CNO_FRAME_FLOW_CONTROLLED [256] = { 1 };  // only DATA is
 const char *CNO_FRAME_NAME            [256] = {
@@ -324,7 +324,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
                 return CNO_FIRE(conn, on_pong, frame->payload.data);
             }
 
-            cno_frame_t response = { CNO_FRAME_PING, CNO_FLAG_ACK, 0, CNO_IO_VECTOR_REFER(frame->payload) };
+            cno_frame_t response = { CNO_FRAME_PING, CNO_FLAG_ACK, 0, frame->payload };
             return cno_frame_write(conn, &response, NULL);
         }
 
@@ -1109,12 +1109,12 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
                 return CNO_ERROR_ASSERTION("path + method too long");
             }
 
-            CNO_WRITE_VECTOR(ptr, msg->method);
-            CNO_WRITE_CONSTC(ptr, " ");
-            CNO_WRITE_VECTOR(ptr, msg->path);
-            CNO_WRITE_CONSTC(ptr, " HTTP/1.1\r\n");
+            ptr = write_vector(ptr, &msg->method);
+            ptr = write_string(ptr, " ");
+            ptr = write_vector(ptr, &msg->path);
+            ptr = write_string(ptr, " HTTP/1.1\r\n");
         } else {
-            CNO_WRITE_FORMAT(ptr, "HTTP/1.1 %d %s\r\n", msg->code, cno_message_literal(msg));
+            ptr = write_format(ptr, "HTTP/1.1 %d %s\r\n", msg->code, cno_message_literal(msg));
         }
 
         for (; it != end; ++it) {
@@ -1129,20 +1129,21 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
             }
 
             if (strncmp(it->name.data, ":authority", it->name.size) == 0) {
-                CNO_WRITE_CONSTC(ptr, "host: ")
+                ptr = write_string(ptr, "host: ");
             } else if (strncmp(it->name.data, ":status", it->name.size) == 0) {
                 return CNO_ERROR_ASSERTION("set `message.code` instead of sending :status");
             } else if (it->name.data[0] == ':') {
                 continue;
             } else {
-                CNO_WRITE_VECTOR(ptr, it->name);
-                CNO_WRITE_CONSTC(ptr, ": ");
+                ptr = write_vector(ptr, &it->name);
+                ptr = write_string(ptr, ": ");
             }
-            CNO_WRITE_VECTOR(ptr, it->value);
-            CNO_WRITE_CONSTC(ptr, "\r\n");
+
+            ptr = write_vector(ptr, &it->value);
+            ptr = write_string(ptr, "\r\n");
         }
 
-        CNO_WRITE_CONSTC(ptr, "\r\n");
+        ptr = write_string(ptr, "\r\n");
         return CNO_FIRE(conn, on_write, head, ptr - head);
     }
 
@@ -1168,8 +1169,8 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
         }
 
         cno_header_t head[2] = {
-            { CNO_IO_VECTOR_CONST(":method"), CNO_IO_VECTOR_REFER(msg->method) },
-            { CNO_IO_VECTOR_CONST(":path"),   CNO_IO_VECTOR_REFER(msg->path)   },
+            { CNO_IO_VECTOR_CONST(":method"), msg->method },
+            { CNO_IO_VECTOR_CONST(":path"),   msg->path   },
         };
 
         if (cno_hpack_encode(&conn->encoder, &frame.payload, head, 2)) {
