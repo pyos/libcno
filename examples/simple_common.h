@@ -3,7 +3,7 @@
 #include "cno.h"
 
 
-void log_frame(int fd, cno_frame_t *frame, int recv)
+void log_frame(int fd, const cno_frame_t *frame, int recv)
 {
     const char *e = recv ? "recv" : "sent";
     fprintf(stdout, "%d: %s frame %x (%s; length=%lu; flags=%x) on stream %lu\n", fd, e,
@@ -11,7 +11,7 @@ void log_frame(int fd, cno_frame_t *frame, int recv)
 }
 
 
-void log_message(int fd, cno_message_t *msg, int recv)
+void log_message(int fd, const cno_message_t *msg, int recv)
 {
     const char *e = recv ? "recv" : "sent";
     fprintf(stdout, "%d: %s message [code = %d, method = ", fd, e, msg->code);
@@ -30,14 +30,14 @@ void log_message(int fd, cno_message_t *msg, int recv)
 }
 
 
-int log_recv_frame(cno_connection_t *conn, void *fd, cno_frame_t *frame)
+int log_recv_frame(cno_connection_t *conn, void *fd, const cno_frame_t *frame)
 {
     log_frame(*(int *) fd, frame, 1);
     return CNO_OK;
 }
 
 
-int log_sent_frame(cno_connection_t *conn, void *fd, cno_frame_t *frame)
+int log_sent_frame(cno_connection_t *conn, void *fd, const cno_frame_t *frame)
 {
     log_frame(*(int *) fd, frame, 0);
     return CNO_OK;
@@ -56,7 +56,7 @@ int write_to_fd(cno_connection_t *conn, void *fd, const char *data, size_t lengt
 }
 
 
-int log_recv_message(cno_connection_t *conn, void *fd, size_t stream, cno_message_t *msg)
+int log_recv_message(cno_connection_t *conn, void *fd, size_t stream, const cno_message_t *msg)
 {
     log_message(*(int *) fd, msg, 1);
     return CNO_OK;
