@@ -255,6 +255,100 @@ static PyObject * pycno_connection_lost(PyCNO *self, PyObject *args)
 }
 
 
+static PyObject * pycno_write_reset(PyCNO *self, PyObject *args, PyObject *kwargs)
+{
+    Py_ssize_t stream;
+    char *kwds[] = { "stream", NULL };
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "n", kwds, &stream)) {
+        return NULL;
+    }
+
+    if (cno_write_reset(self->conn, (size_t) stream)) {
+        return pycno_handle_cno_error(self);
+    }
+
+    Py_RETURN_NONE;
+}
+
+
+static int encode_headers(PyObject *headers, cno_message_t *msg)
+{
+    Py_ssize_t len = PySequence_Size(headers);
+
+    if (len == -1) {
+        PyErr_Format(PyExc_TypeError, "headers must be a sequence, not %s", Py_TYPE(headers)->tp_name);
+        return -1;
+    }
+
+    PyObject *iter = PyObject_GetIter(headers);
+    PyObject *item;
+
+    if (iter == NULL) {
+        return -1;
+    }
+
+    msg->headers_len = (size_t) len;
+    msg->headers = PyMem_RawMalloc(sizeof(cno_header_t) * msg->headers_len);
+    cno_header_t *header = msg->headers;
+
+    if (msg->headers == NULL) {
+        Py_DECREF(iter);
+        PyErr_NoMemory();
+        return -1;
+    }
+
+    while ((item = PyIter_Next(iter))) {
+        if (!PyArg_ParseTuple(item, "s#s#", &header->name.data,  &header->name.size,
+                                            &header->value.data, &header->value.size)) {
+            Py_DECREF(item);
+            Py_DECREF(iter);
+            PyMem_RawFree(msg->headers);
+            PyErr_Format(PyExc_ValueError, "headers must be 2-tuples of strings");
+            return -1;
+        }
+
+        Py_DECREF(item);
+        ++header;
+    }
+
+    Py_DECREF(iter);
+
+    if (PyErr_Occurred()) {
+        PyMem_RawFree(msg->headers);
+        return -1;
+    }
+
+    return 0;
+}
+
+
+static PyObject * pycno_write_push(PyCNO *self, PyObject *args, PyObject *kwargs)
+{
+    cno_message_t msg = { 0 };
+    PyObject *headers;
+    Py_ssize_t stream;
+    char *kwds[] = { "stream", "method", "path", "headers", NULL };
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ns#s#O", kwds, &stream,
+            &msg.method.data, &msg.method.size, &msg.path.data, &msg.path.size, &headers)) {
+        return NULL;
+    }
+
+    if (encode_headers(headers, &msg)) {
+        return NULL;
+    }
+
+    if (cno_write_push(self->conn, (size_t) stream, &msg)) {
+        PyMem_RawFree(msg.headers);
+        return pycno_handle_cno_error(self);
+    }
+
+    PyMem_RawFree(msg.headers);
+    Py_RETURN_NONE;
+}
+
+
 static PyObject * pycno_write_message(PyCNO *self, PyObject *args, PyObject *kwargs)
 {
     cno_message_t msg = { 0 };
@@ -268,49 +362,12 @@ static PyObject * pycno_write_message(PyCNO *self, PyObject *args, PyObject *kwa
         return NULL;
     }
 
-    msg.headers_len = (size_t) PySequence_Size(headers);
-
-    if (msg.headers_len == (size_t) -1) {
-        return PyErr_Format(PyExc_TypeError, "headers must be a sequence, not %s", Py_TYPE(headers)->tp_name);
-    }
-
-    PyObject *iter = PyObject_GetIter(headers);
-    PyObject *item;
-
-    if (iter == NULL) {
-        return NULL;
-    }
-
-    msg.headers = PyMem_RawMalloc(sizeof(cno_header_t) * msg.headers_len);
-    cno_header_t *header = msg.headers;
-
-    if (msg.headers == NULL) {
-        Py_DECREF(iter);
-        return PyErr_NoMemory();
-    }
-
-    while ((item = PyIter_Next(iter))) {
-        if (!PyArg_ParseTuple(item, "s#s#",
-                &header->name.data,  &header->name.size,
-                &header->value.data, &header->value.size)) {
-            Py_DECREF(item);
-            Py_DECREF(iter);
-            PyMem_RawFree(msg.headers);
-            return PyErr_Format(PyExc_ValueError, "headers must be 2-tuples of strings");
-        }
-
-        Py_DECREF(item);
-        ++header;
-    }
-
-    Py_DECREF(iter);
-
-    if (PyErr_Occurred()) {
-        PyMem_RawFree(msg.headers);
+    if (encode_headers(headers, &msg)) {
         return NULL;
     }
 
     if (cno_write_message(self->conn, (size_t) stream, &msg, eof)) {
+        PyMem_RawFree(msg.headers);
         return pycno_handle_cno_error(self);
     }
 
@@ -373,6 +430,8 @@ static PyMethodDef PyCNOMethods[] = {
     { "data_received",    (PyCFunction) pycno_data_received,   METH_VARARGS, NULL },
     { "connection_made",  (PyCFunction) pycno_connection_made, METH_VARARGS, NULL },
     { "connection_lost",  (PyCFunction) pycno_connection_lost, METH_VARARGS, NULL },
+    { "write_reset",      (PyCFunction) pycno_write_reset,     METH_VARARGS | METH_KEYWORDS, NULL },
+    { "write_push",       (PyCFunction) pycno_write_push,      METH_VARARGS | METH_KEYWORDS, NULL },
     { "write_message",    (PyCFunction) pycno_write_message,   METH_VARARGS | METH_KEYWORDS, NULL },
     { "write_data",       (PyCFunction) pycno_write_data,      METH_VARARGS | METH_KEYWORDS, NULL },
 

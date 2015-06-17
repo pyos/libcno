@@ -40,6 +40,14 @@ class Request:
             data += part
         return data
 
+    async def cancel(self):
+        self.connection.write_reset(self.stream)
+        if self.response:
+            self.response.cancel()
+
+    async def push(self, method, path, headers):
+        self.connection.write_push(self.stream, method, path, headers)
+
     async def respond(self, code, headers, data):
         self.connection.write_message(self.stream, code, "", "", headers, not data)
         while data:
@@ -168,5 +176,7 @@ class AIOClient (AIOConnection):
         try:
             return (await fut)
         finally:
-            fut.cancel()
+            if not fut.done():
+                fut.cancel()
+                self.write_reset(stream)
             self._futures.pop(stream, None)
