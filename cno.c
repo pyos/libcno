@@ -446,6 +446,10 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
             stream->last_frame = CNO_FRAME_HEADERS;
 
             if (cno_io_vector_extend(&stream->cache, (char *) ptr, sz)) {
+                if (stream->state == CNO_STREAM_IDLE) {
+                    cno_stream_destroy_clean(conn, stream);
+                }
+
                 return CNO_PROPAGATE;
             }
 
@@ -1107,6 +1111,66 @@ static inline const char *cno_message_literal(const struct cno_st_message_t *msg
 }
 
 
+int cno_write_reset(cno_connection_t *conn, size_t stream)
+{
+    return cno_frame_write_rst_stream(conn, stream, CNO_STATE_NO_ERROR);
+}
+
+
+int cno_write_push(cno_connection_t *conn, size_t stream, const cno_message_t *msg)
+{
+    if (conn->client) {
+        return CNO_ERROR_ASSERTION("clients can't push");
+    }
+
+    if (!cno_connection_is_http2(conn) || !conn->settings[CNO_PEER_REMOTE].enable_push) {
+        return CNO_OK;  // non-critical error
+    }
+
+    if (cno_stream_is_local(conn, stream)) {
+        return CNO_OK;  // don't push in response to our own push
+    }
+
+    cno_stream_t *streamobj = cno_stream_find(conn, stream);
+
+    if (streamobj == NULL || (streamobj->state != CNO_STREAM_OPEN && streamobj->state != CNO_STREAM_CLOSED_REMOTE)) {
+        return CNO_ERROR_INVALID_STREAM("stream %lu is not a response stream", stream);
+    }
+
+    size_t child = cno_stream_next_id(conn);
+    cno_stream_t *childobj = cno_stream_new(conn, child, CNO_PEER_LOCAL);
+
+    if (childobj == NULL) {
+        return NULL;
+    }
+
+    childobj->state = CNO_STREAM_RESERVED_LOCAL;
+
+    unsigned char childid[4];
+    write4(childid, child);
+
+    cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, stream, CNO_IO_VECTOR_EMPTY };
+    cno_header_t head[2] = {
+        { CNO_IO_VECTOR_CONST(":method"), msg->method },
+        { CNO_IO_VECTOR_CONST(":path"),   msg->path   },
+    };
+
+    if (cno_io_vector_extend(&frame.payload, (char *) childid, 4)
+     || cno_hpack_encode(&conn->encoder, &frame.payload, head, 2)
+     || cno_hpack_encode(&conn->encoder, &frame.payload, msg->headers, msg->headers_len)
+     || cno_frame_write(conn, &frame, streamobj))
+    {
+        cno_stream_destroy_clean(conn, childobj);
+        cno_io_vector_clear(&frame.payload);
+        return CNO_PROPAGATE;
+    }
+
+    cno_io_vector_clear(&frame.payload);
+    return CNO_FIRE(conn, on_message_start, child, msg)
+        || CNO_FIRE(conn, on_message_end,   child);
+}
+
+
 int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t *msg, int final)
 {
     if (conn->closed) {
@@ -1208,16 +1272,21 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
         cno_header_t head = { CNO_IO_VECTOR_CONST(":status"), { code, strlen(code) } };
 
         if (cno_hpack_encode(&conn->encoder, &frame.payload, &head, 1)) {
+            if (streamobj->state == CNO_STREAM_IDLE) {
+                cno_stream_destroy_clean(conn, streamobj);
+            }
+
             return CNO_PROPAGATE;
         }
     }
 
-    if (cno_hpack_encode(&conn->encoder, &frame.payload, msg->headers, msg->headers_len)) {
-        cno_io_vector_clear(&frame.payload);
-        return CNO_PROPAGATE;
-    }
+    if (cno_hpack_encode(&conn->encoder, &frame.payload, msg->headers, msg->headers_len)
+     || cno_frame_write(conn, &frame, streamobj))
+    {
+        if (streamobj->state == CNO_STREAM_IDLE) {
+            cno_stream_destroy_clean(conn, streamobj);
+        }
 
-    if (cno_frame_write(conn, &frame, streamobj)) {
         cno_io_vector_clear(&frame.payload);
         return CNO_PROPAGATE;
     }
