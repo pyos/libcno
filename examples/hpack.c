@@ -1,3 +1,24 @@
+/* An HPACK example & test app. Decompresses and then recompresses a bunch of
+ * headers passed through the command line in hex-encoded form (e.g. `0123456789ABCDEF`).
+ *
+ * Building with GCC (for example):
+ *
+ *     gcc -std=c11 -I.. ../cno{-common,-hpack}.c hpack.c -o hpack
+ *
+ * Usage:
+ *
+ *     ./hpack 220 828684418cf1e3c2e5f23a6ba0ab90f4ff
+ *             ^   ^                                  ^-- you can pass more header frames after that
+ *             |   \-- request headers w/ Huffman coding, taken from RFC7541 section C.4.1.
+ *             \-- maximum dynamic table size (normally read from HTTP 2 SETTINGS frames)
+ *
+ * (May be weird to dump a copy of the input to stdout *after* decoding it, but it does
+ *  allow you to see the difference between how the headers were encoded and how
+ *  the library would do it. Generally, if the encoding is optimal [i.e. uses Huffman
+ *  codes and indices where appropriate] the output should be the same as input.
+ *  The dynamic tables should then match, too.)
+ *
+ */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -5,7 +26,7 @@
 #include "cno-hpack.h"
 
 
-inline int from_hex(char x)
+static inline int from_hex(char x)
 {
     if ('0' <= x && x <= '9') return x - '0';
     if ('A' <= x && x <= 'F') return x - 'A' + 10;
@@ -14,7 +35,7 @@ inline int from_hex(char x)
 }
 
 
-inline char to_hex(int i)
+static inline char to_hex(int i)
 {
     return i < 10 ? i + '0' : i - 10 + 'a';
 }

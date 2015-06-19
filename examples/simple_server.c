@@ -1,3 +1,19 @@
+/* A basic POSIX multithreaded plaintext server.
+ *
+ * Building with GCC (for example):
+ *
+ *     gcc -std=c11 -pthread -I.. ../cno{,-common,-hpack}.c ../picohttpparser/picohttpparser.c simple_server.c -o server
+ *
+ * Usage:
+ *
+ *     ./server 8000
+ *
+ * (Serves both HTTP/1.x and h2c, aka plain-text HTTP 2. Clients can upgrade to HTTP 2
+ *  either through prior knowledge or an HTTP/1.x `Upgrade: h2c` request. Try pointing
+ *  the client [simple_client.c] to http://127.0.0.1:8000/. Also, if you have nghttp2
+ *  or nghttp2-enabled curl, try using these, too.)
+ *
+ */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>

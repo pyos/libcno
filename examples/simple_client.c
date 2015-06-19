@@ -1,3 +1,19 @@
+/* A basic POSIX plaintext client.
+ *
+ * Building with GCC (for example):
+ *
+ *     gcc -std=c11 -I.. ../cno{,-common,-hpack}.c ../picohttpparser/picohttpparser.c simple_client.c -o client
+ *
+ * Usage:
+ *
+ *        ./client http://example.com/
+ *   e.g. ./client http://ec2-52-0-206-26.compute-1.amazonaws.com/
+ *                 ^---- Deuterium test server: http://robbysimpson.com/deuterium/
+ *
+ * (Only plain-text HTTP 2, i.e. h2c, over port 80 is supported. Upgrading is done via
+ *  prior knowledge. So don't try to connect to Twitter or Google -- these require TLS.)
+ *
+ */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
