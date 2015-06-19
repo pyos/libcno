@@ -680,7 +680,7 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     conn->state = kind == CNO_HTTP2_CLIENT ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
     memcpy(conn->settings,     &CNO_SETTINGS_STANDARD, sizeof(cno_settings_t));
     memcpy(conn->settings + 1, &CNO_SETTINGS_INITIAL,  sizeof(cno_settings_t));
-    conn->window_recv = CNO_SETTINGS_INITIAL .initial_window_size;
+    conn->window_recv = CNO_SETTINGS_STANDARD.initial_window_size;
     conn->window_send = CNO_SETTINGS_STANDARD.initial_window_size;
     cno_hpack_init(&conn->decoder, CNO_SETTINGS_INITIAL .header_table_size);
     cno_hpack_init(&conn->encoder, CNO_SETTINGS_STANDARD.header_table_size);
