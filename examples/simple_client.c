@@ -101,9 +101,10 @@ int main(int argc, char *argv[])
     };
 
     cno_message_t message = { 0, CNO_IO_VECTOR_CONST("GET"), CNO_IO_VECTOR_STRING(path), headers, 2 };
+    size_t stream = cno_stream_next_id(client);
 
     if (cno_connection_made(client)
-     || cno_write_message(client, 1, &message, 1)) goto error;
+     || cno_write_message(client, stream, &message, 1)) goto error;
 
     char buf[8196];
     ssize_t ln;
