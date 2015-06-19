@@ -62,6 +62,20 @@ enum CNO_STREAM_STATE {
 };
 
 
+enum CNO_STREAM_ACCEPT {
+    CNO_ACCEPT_NOTHING = 0x0,  // bitwise fields marking acceptable input on said stream.
+    CNO_ACCEPT_HEADERS = 0x1,  // stream can receive a HEADERS frame.
+    CNO_ACCEPT_HEADCNT = 0x2,  // stream can receive a CONTINUATION to HEADERS.
+    CNO_ACCEPT_DATA    = 0x4,  // stream can receive a DATA frame.
+    CNO_ACCEPT_PUSH    = 0x8,  // stream can receive a PUSH_PROMISE frame.
+    CNO_ACCEPT_PUSHCNT = 0x10, // stream can receive a CONTINUATION to a PUSH_PROMISE.
+
+    CNO_ACCEPT_WRITE_PUSH    = 0x100,
+    CNO_ACCEPT_WRITE_HEADERS = 0x200,  // this time continuations are handled automatically
+    CNO_ACCEPT_WRITE_DATA    = 0x300,
+};
+
+
 enum CNO_FRAME_TYPE {
     CNO_FRAME_DATA          = 0x0,
     CNO_FRAME_HEADERS       = 0x1,
@@ -139,6 +153,7 @@ struct cno_st_stream_t {
     size_t last_promise;
     enum CNO_FRAME_TYPE last_frame;  // can be set to HEADERS/PUSH_PROMISE, used for CONTINUATION
     enum CNO_STREAM_STATE state;
+    enum CNO_STREAM_ACCEPT accept;
     struct cno_st_message_t msg;
     struct cno_st_io_vector_t cache;  // frames that can have CONTINUATIONs are buffered here
 };
