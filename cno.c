@@ -853,6 +853,7 @@ int cno_connection_made(cno_connection_t *conn)
             stream->msg.headers     = (cno_header_t *) &headers;
             stream->msg.headers_len = header_num;
             stream->state = CNO_STREAM_OPEN;
+            stream->accept |= CNO_ACCEPT_WRITE_HEADERS;
 
             if (conn->state == CNO_CONNECTION_HTTP1_READY) {
                 conn->state = CNO_CONNECTION_HTTP1_READING;
