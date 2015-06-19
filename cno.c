@@ -807,6 +807,10 @@ int cno_connection_made(cno_connection_t *conn)
                 } else
 
                 if (strncmp(name, "upgrade", size) == 0 && strncmp(value, "h2c", vsize) == 0) {
+                    if (conn->state != CNO_CONNECTION_HTTP1_READY) {
+                        STOP(CNO_ERROR_TRANSPORT("bad HTTP/1.x request: multiple upgrade headers"));
+                    }
+
                     cno_header_t upgrade_headers[] = {
                         { CNO_IO_VECTOR_CONST("connection"), CNO_IO_VECTOR_CONST("upgrade") },
                         { CNO_IO_VECTOR_CONST("upgrade"),    CNO_IO_VECTOR_CONST("h2c")     },
