@@ -151,7 +151,8 @@ struct cno_st_stream_t {
     size_t window_recv;
     size_t window_send;
     size_t last_promise;
-    enum CNO_FRAME_TYPE last_frame;  // can be set to HEADERS/PUSH_PROMISE, used for CONTINUATION
+    enum CNO_FRAME_TYPE  last_frame;  // can be set to HEADERS/PUSH_PROMISE, used for CONTINUATION
+    enum CNO_FRAME_FLAGS last_flags;  // carry END_HEADERS from HEADERS/PUSH_PROMISE to CONTINUATION
     enum CNO_STREAM_STATE state;
     enum CNO_STREAM_ACCEPT accept;
     struct cno_st_message_t msg;
