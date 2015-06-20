@@ -124,7 +124,7 @@ static int cno_hpack_decode_uint(cno_io_vector_tmp_t *source, int prefix, size_t
     unsigned char size = 0;
 
     if (head != mask) {
-        // /--\------- prefix
+        //     /--\------- prefix
         // xxxx....
         *result = (size_t) head;
         return cno_io_vector_shift(source, 1);
@@ -141,11 +141,11 @@ static int cno_hpack_decode_uint(cno_io_vector_tmp_t *source, int prefix, size_t
             return CNO_ERROR_TRANSPORT("hpack: truncated multi-byte uint");
         }
 
-        if (++size > sizeof(size_t)) {
+        *result |= (*src & 0x7F) << (7 * size);
+
+        if (++size >= sizeof(size_t)) {
             return CNO_ERROR_TRANSPORT("hpack: uint literal too large");
         }
-
-        *result = (*result << 7) | (*src & 0x7F);
     } while (*src++ & 0x80);
 
     *result += mask;
