@@ -132,7 +132,6 @@ class AIOServer (AIOConnection):
         data = self._readers[stream] = Stream(loop=self._loop)
         item = Request(self, stream, method, path, headers, data, None)
         task = self._futures[stream] = asyncio.async(self._callback(item, loop=self._loop), loop=self._loop)
-        task.add_done_callback(lambda _: self.on_stream_end(stream))
 
 
 class AIOClient (AIOConnection):

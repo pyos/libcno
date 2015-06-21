@@ -66,6 +66,10 @@ static PyObject * pycno_handle_cno_error(PyCNO *self)
     if (self->close) {
         PyObject *ob = PyObject_CallFunction(self->close, "");
         Py_XDECREF(ob);
+        Py_XDECREF(self->close);
+        Py_XDECREF(self->transport);
+        self->transport = NULL;
+        self->close = NULL;
 
         if (PyErr_Occurred()) {
             PyErr_Clear();
