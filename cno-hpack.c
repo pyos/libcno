@@ -74,7 +74,7 @@ static int cno_hpack_find_index(cno_hpack_t *state, size_t index, const cno_head
         hdr = hdr->next;
 
         if (hdr == cno_list_end(state)) {
-            return CNO_ERROR(TRANSPORT, "hpack: dynamic table index out of bounds");
+            return CNO_ERROR(COMPRESSION, "dynamic table index out of bounds");
         }
     }
 
@@ -122,11 +122,11 @@ static int cno_hpack_decode_uint(cno_io_vector_tmp_t *source, uint8_t mask, size
 
     do {
         if (size == source->size) {
-            return CNO_ERROR(TRANSPORT, "hpack: truncated multi-byte uint");
+            return CNO_ERROR(COMPRESSION, "truncated multi-byte uint");
         }
 
         if (size == sizeof(size_t)) {
-            return CNO_ERROR(TRANSPORT, "hpack: uint literal too large");
+            return CNO_ERROR(COMPRESSION, "uint literal too large");
         }
 
         *out += (*src & 0x7F) << (7 * size++ - 7);
@@ -175,7 +175,7 @@ static int cno_hpack_decode_string(cno_io_vector_tmp_t *source, cno_io_vector_t 
 
                 if (ref.type & CNO_HUFFMAN_LEAF_ERROR) {
                     free(buf);
-                    return CNO_ERROR(TRANSPORT, "hpack: invalid Huffman code");
+                    return CNO_ERROR(COMPRESSION, "invalid Huffman code");
                 }
 
                 if (ref.type & CNO_HUFFMAN_LEAF_CHAR) {
