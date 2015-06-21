@@ -35,6 +35,13 @@ void cno_hpack_clear(cno_hpack_t *state)
 }
 
 
+static inline int cno_hpack_indexed(cno_header_t *hdr)
+{
+    return (hdr->name.size != 6  || memcmp(hdr->name.data, "cookie", 6))
+        && (hdr->name.size != 10 || memcmp(hdr->name.data, "set-cookie", 10));
+}
+
+
 static int cno_hpack_index(cno_hpack_t *state, cno_header_t *source)
 {
     cno_header_table_t *entry = calloc(1, sizeof(cno_header_table_t));
@@ -57,7 +64,7 @@ static int cno_hpack_index(cno_hpack_t *state, cno_header_t *source)
 }
 
 
-static int cno_hpack_find_index(cno_hpack_t *state, size_t index, const cno_header_t **out)
+static int cno_hpack_lookup(cno_hpack_t *state, size_t index, const cno_header_t **out)
 {
     if (index == 0) {
         return CNO_ERROR(COMPRESSION, "header index 0 is reserved");
@@ -83,16 +90,16 @@ static int cno_hpack_find_index(cno_hpack_t *state, size_t index, const cno_head
 }
 
 
-static int cno_hpack_compare_index(cno_hpack_t *state, const cno_header_t *src, size_t *out)
+static int cno_hpack_index_of(cno_hpack_t *state, const cno_header_t *src, size_t *out)
 {
-    // Returns 0 if no match, 1 if a name-only match exists, 2 if a full match exists.
+    // Returns 1 if both name and value match, 0 if only name does. (*out = 0 if neither.)
     size_t i = 1, r = 0;
     const cno_header_t       *hp = CNO_HPACK_STATIC_TABLE;
     const cno_header_table_t *tp = state->first;
     #define MATCH(a, b) (a).size == (b).size && !memcmp((a).data, (b).data, (b).size)
     #define CHECK(a, b) do {                                         \
         if (MATCH((a).name, (b).name)) {                             \
-            if (MATCH((a).value, (b).value)) { *out = i; return 2; } \
+            if (MATCH((a).value, (b).value)) { *out = i; return 1; } \
             if (!r) r = i;                                           \
         }                                                            \
     } while (0)
@@ -102,7 +109,8 @@ static int cno_hpack_compare_index(cno_hpack_t *state, const cno_header_t *src, 
 
     #undef MATCH
     #undef CHECK
-    return (*out = r) != 0;
+    *out = r;
+    return 0;
 }
 
 
@@ -217,7 +225,7 @@ static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source,
     if (head & 0x80) {
         // Indexed header field.
         if (cno_hpack_decode_uint(source, 0x7F, &index)
-         || cno_hpack_find_index(state, index, &header)
+         || cno_hpack_lookup(state, index, &header)
          || cno_io_vector_copy(&target->name,  &header->name)
          || cno_io_vector_copy(&target->value, &header->value))
         {
@@ -258,7 +266,7 @@ static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source,
             return CNO_PROPAGATE;
         }
     } else {
-        if (cno_hpack_find_index(state, index, &header)
+        if (cno_hpack_lookup(state, index, &header)
          || cno_io_vector_copy(&target->name, &header->name))
         {
             return CNO_PROPAGATE;
@@ -394,25 +402,26 @@ static int cno_hpack_encode_size_update(cno_hpack_t *state, cno_io_vector_t *tar
 }
 
 
-static int cno_hpack_encode_one(cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *source, int indexed)
+static int cno_hpack_encode_one(cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *source)
 {
     size_t index = 0;
-    int    match = cno_hpack_compare_index(state, source, &index);
+    int    full  = cno_hpack_index_of(state, source, &index);
 
-    if (!indexed) {
-        if (cno_hpack_encode_uint(target, 0x10, 0xF, index)) {
+    if (cno_hpack_indexed(source)) {
+        if (full) {
+            return cno_hpack_encode_uint(target, 0x80, 0x7F, index);
+        }
+
+        if (cno_hpack_encode_uint(target, 0x40, 0x3F, index) || cno_hpack_index(state, source)) {
             return CNO_PROPAGATE;
         }
-    } else if (match == 2) {
-        // Matched the whole header. Note that non-indexed headers cannot be full matches.
-        return cno_hpack_encode_uint(target, 0x80, 0x7F, index);
     } else {
-        if (cno_hpack_encode_uint(target, 0x40, 0x3F, index) || cno_hpack_index(state, source)) {
+        if (cno_hpack_encode_uint(target, 0x10, 0xF, index)) {
             return CNO_PROPAGATE;
         }
     }
 
-    if (!match) {
+    if (!index) {
         if (cno_hpack_encode_string(target, &source->name)) {
             return CNO_PROPAGATE;
         }
@@ -443,15 +452,15 @@ int cno_hpack_encode(cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *
         if (cno_hpack_encode_size_update(state, target, state->limit_update_end)) {
             return CNO_PROPAGATE;
         }
-        state->limit_update_min = state->limit;
     }
 
-    for (; amount; --amount) {
-        if (cno_hpack_encode_one(state, target, array++, 1)) {
+    while (amount--) {
+        if (cno_hpack_encode_one(state, target, array++)) {
             cno_io_vector_clear(target);
             return CNO_PROPAGATE;
         }
     }
 
+    state->limit_update_min = state->limit;
     return CNO_OK;
 }
