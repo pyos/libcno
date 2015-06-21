@@ -28,7 +28,7 @@ static const cno_settings_t  CNO_SETTINGS_STANDARD = {{{ 4096, 1, -1,   65536, 1
 static const cno_settings_t  CNO_SETTINGS_INITIAL  = {{{ 4096, 1, 1024, 65536, 65536, -1 }}};
 
 
-#define CNO_ERROR_GOAWAY(conn, type, ...) (cno_frame_write_goaway(conn, type) ? CNO_PROPAGATE : CNO_ERROR(TRANSPORT, __VA_ARGS__))
+#define CNO_GOAWAY(conn, type, ...) (cno_frame_write_goaway(conn, CNO_STATE_##type) ? CNO_PROPAGATE : CNO_ERROR(TRANSPORT, __VA_ARGS__))
 const char  CNO_FRAME_FLOW_CONTROLLED [256] = { 1 };  // only DATA is
 const char *CNO_FRAME_NAME            [256] = {
     "DATA",         "HEADERS", "PRIORITY", "RST_STREAM",    "SETTINGS",
@@ -211,7 +211,7 @@ static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
 static int cno_frame_write_rst_stream(cno_connection_t *conn, size_t stream, size_t code)
 {
     if (!stream) {
-        return CNO_ERROR_GOAWAY(conn, code, "RST'd stream 0");
+        return CNO_ERROR(ASSERTION, "RST'd stream 0");
     }
 
     cno_stream_t *obj = cno_stream_find(conn, stream);
@@ -269,14 +269,17 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
     if (frame->type == CNO_FRAME_CONTINUATION) {
         if (!stream) {
-            return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "CONTINUATION on a non-existent stream");
+            return CNO_ERROR(TRANSPORT, "CONTINUATION on a non-existent stream");
         }
 
-        if (!(stream->accept & (CNO_ACCEPT_HEADCNT | CNO_ACCEPT_PUSHCNT))) {
-            return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "CONTINUATION not after HEADERS/PUSH_PROMISE");
+        if (stream->accept & CNO_ACCEPT_PUSHCNT) {
+            frame->type = CNO_FRAME_PUSH_PROMISE;
+        } else if (stream->accept & CNO_ACCEPT_HEADCNT) {
+            frame->type = CNO_FRAME_HEADERS;
+        } else {
+            return CNO_ERROR(TRANSPORT, "CONTINUATION not after HEADERS/PUSH_PROMISE");
         }
 
-        frame->type   = stream->last_frame;
         frame->flags |= stream->last_flags;
     }
 
@@ -284,7 +287,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
         unsigned char pad = *ptr++;
 
         if (pad >= --sz) {
-            return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "frame padding bigger than whole payload");
+            return CNO_GOAWAY(conn, PROTOCOL_ERROR, "frame padding bigger than whole payload");
         }
 
         sz -= pad;
@@ -299,11 +302,11 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
     switch (frame->type) {
         case CNO_FRAME_PING: {
             if (frame->stream) {
-                return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "got stream %lu PING-ed", frame->stream);
+                return CNO_GOAWAY(conn, PROTOCOL_ERROR, "got stream %lu PING-ed", frame->stream);
             }
 
             if (sz != 8) {
-                return CNO_ERROR_GOAWAY(conn, CNO_STATE_FRAME_SIZE_ERROR, "bad PING frame (length = %lu)", sz);
+                return CNO_GOAWAY(conn, FRAME_SIZE_ERROR, "bad PING frame (length = %lu)", sz);
             }
 
             if (frame->flags & CNO_FLAG_ACK) {
@@ -316,7 +319,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
         case CNO_FRAME_GOAWAY: {
             if (frame->stream) {
-                return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "got GOAWAY on stream %lu", frame->stream);
+                return CNO_GOAWAY(conn, PROTOCOL_ERROR, "got GOAWAY on stream %lu", frame->stream);
             }
 
             if (cno_connection_lost(conn)) {
@@ -328,12 +331,16 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
         }
 
         case CNO_FRAME_RST_STREAM: {
+            if (sz != 4) {
+                return CNO_GOAWAY(conn, FRAME_SIZE_ERROR, "RST_STREAM of invalid length (%lu != 4)", sz);
+            }
+
             if (!stream) {
                 if (rstd) {
                     return CNO_OK;
                 }
 
-                return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "reset of a nonexistent stream");
+                return CNO_ERROR(TRANSPORT, "reset of a nonexistent stream");
             }
 
             if (cno_stream_destroy_clean(conn, stream)) {
@@ -346,7 +353,11 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
         case CNO_FRAME_PRIORITY: {
             if (!frame->stream) {
-                return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "PRIORITY on stream 0");
+                return CNO_GOAWAY(conn, PROTOCOL_ERROR, "PRIORITY on stream 0");
+            }
+
+            if (sz != 5) {
+                return CNO_GOAWAY(conn, FRAME_SIZE_ERROR, "PRIORITY of invalid length (%lu != 5)", sz);
             }
 
             // TODO something.
@@ -355,31 +366,45 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
         case CNO_FRAME_SETTINGS: {
             if (frame->stream) {
-                return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "got SETTINGS on stream %lu", frame->stream);
+                return CNO_GOAWAY(conn, PROTOCOL_ERROR, "got SETTINGS on stream %lu", frame->stream);
             }
 
             if (frame->flags & CNO_FLAG_ACK) {
                 if (sz) {
-                    return CNO_ERROR_GOAWAY(conn, CNO_STATE_FRAME_SIZE_ERROR, "bad SETTINGS (ack with length = %lu)", sz);
+                    return CNO_GOAWAY(conn, FRAME_SIZE_ERROR, "bad SETTINGS (ack with length = %lu)", sz);
                 }
 
                 return CNO_OK;
             }
 
             if (sz % 6) {
-                return CNO_ERROR_GOAWAY(conn, CNO_STATE_FRAME_SIZE_ERROR, "bad SETTINGS (length = %lu)", sz);
+                return CNO_GOAWAY(conn, FRAME_SIZE_ERROR, "bad SETTINGS (length = %lu)", sz);
             }
+
+            cno_settings_t *cfg = &conn->settings[CNO_PEER_REMOTE];
 
             for (; ptr != end; ptr += 6) {
                 size_t setting = read2(ptr);
                 size_t value   = read4(ptr + 2);
 
                 if (setting && setting < CNO_SETTINGS_UNDEFINED) {
-                    conn->settings[CNO_PEER_REMOTE].array[setting - 1] = value;
+                    cfg->array[setting - 1] = value;
                 }
             }
 
-            conn->encoder.limit_upper = conn->settings[CNO_PEER_REMOTE].header_table_size;
+            if (cfg->enable_push != 0 && cfg->enable_push != 1) {
+                return CNO_GOAWAY(conn, PROTOCOL_ERROR, "invalid enable_push value (%lu != 0, 1)", cfg->enable_push);
+            }
+
+            if (cfg->initial_window_size >= 0x80000000u) {
+                return CNO_GOAWAY(conn, PROTOCOL_ERROR, "initial flow window %lu out of bounds", cfg->initial_window_size);
+            }
+
+            if (cfg->max_frame_size < 16384 || cfg->max_frame_size > 16777215) {
+                return CNO_GOAWAY(conn, PROTOCOL_ERROR, "maximum frame size out of bounds (2^14..2^24-1)");
+            }
+
+            conn->encoder.limit_upper = cfg->header_table_size;
             cno_hpack_setlimit(&conn->encoder, conn->encoder.limit_upper);
             // TODO update stream flow control windows.
             cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK };
@@ -388,7 +413,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
         case CNO_FRAME_WINDOW_UPDATE: {
             if (sz != 4) {
-                return CNO_ERROR_GOAWAY(conn, CNO_STATE_FRAME_SIZE_ERROR, "bad WINDOW_UPDATE (length = %lu)", sz);
+                return CNO_GOAWAY(conn, FRAME_SIZE_ERROR, "bad WINDOW_UPDATE (length = %lu)", sz);
             }
 
             size_t increment = read4(ptr);
@@ -396,7 +421,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
             #ifdef CNO_HTTP2_STRICT
                 // nghttp2 fails this check sometimes.
                 if (increment == 0) {
-                    return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "bad WINDOW_UPDATE (incr = %lu)", increment);
+                    return CNO_ERROR(TRANSPORT, "bad WINDOW_UPDATE (incr = %lu)", increment);
                 }
             #endif
 
@@ -404,15 +429,16 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
                 conn->window_send += increment;
 
                 if (conn->window_send >= 0x80000000u) {
-                    return CNO_ERROR_GOAWAY(conn, CNO_STATE_FLOW_CONTROL_ERROR,
-                        "flow control window got too big (total = %lu)", conn->window_send);
+                    return CNO_GOAWAY(conn, FLOW_CONTROL_ERROR, "flow control window got too big (total = %lu)", conn->window_send);
                 }
             } else if (stream != NULL) {
                 stream->window_send += increment;
 
                 if (stream->window_send >= 0x80000000u) {
-                    return cno_frame_write_rst_stream(conn, frame->stream, CNO_STATE_PROTOCOL_ERROR);
+                    return cno_frame_write_rst_stream(conn, frame->stream, CNO_STATE_FLOW_CONTROL_ERROR);
                 }
+            } else {
+                return CNO_ERROR(TRANSPORT, "bad WINDOW_UPDATE (invalid stream)");
             }
 
             return CNO_FIRE(conn, on_flow_increase, frame->stream);
@@ -438,10 +464,9 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
                     stream->state = CNO_STREAM_CLOSED_LOCAL;
                 }
             } else {
-                return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "got HEADERS on a stream in wrong state");
+                return CNO_ERROR(TRANSPORT, "got HEADERS on a stream in wrong state");
             }
 
-            stream->last_frame = CNO_FRAME_HEADERS;
             stream->last_flags = CNO_FLAG_END_STREAM & frame->flags;
             stream->accept &= ~CNO_ACCEPT_HEADERS;
             stream->accept |=  CNO_ACCEPT_HEADCNT;
@@ -458,15 +483,15 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
         case CNO_FRAME_PUSH_PROMISE: {
             if (!conn->client) {
-                return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "clients can't push");
+                return CNO_ERROR(TRANSPORT, "clients can't push");
             }
 
             if (!conn->settings[CNO_PEER_LOCAL].enable_push) {
-                return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "push disabled");
+                return CNO_ERROR(TRANSPORT, "push disabled");
             }
 
             if (!(stream && (stream->accept & (CNO_ACCEPT_PUSH | CNO_ACCEPT_PUSHCNT)))) {
-                return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "PUSH_PROMISE not on an open stream");
+                return CNO_ERROR(TRANSPORT, "PUSH_PROMISE not on an open stream");
             }
 
             if (stream->accept & CNO_ACCEPT_PUSHCNT) {
@@ -479,7 +504,6 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
                 cno_stream_t *prstream = cno_stream_new(conn, promised, CNO_PEER_REMOTE);
 
                 if (prstream == NULL) {
-                    cno_frame_write_goaway(conn, CNO_STATE_PROTOCOL_ERROR);
                     return CNO_PROPAGATE;
                 }
 
@@ -488,7 +512,6 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
                 stream->last_promise = promised;
             }
 
-            stream->last_frame = CNO_FRAME_PUSH_PROMISE;
             stream->last_flags = 0;
 
             if (cno_io_vector_extend(&stream->cache, (char *) ptr, sz)) {
@@ -504,7 +527,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
                     return CNO_OK;  // ignore data on reset stream
                 }
 
-                return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "DATA on nonexistent stream");
+                return CNO_ERROR(TRANSPORT, "DATA on nonexistent stream");
             }
 
             if (!(stream->accept & CNO_ACCEPT_DATA)) {
@@ -523,7 +546,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
     if (frame->flags & CNO_FLAG_END_HEADERS) {
         if (frame->type != CNO_FRAME_HEADERS && frame->type != CNO_FRAME_PUSH_PROMISE) {
-            return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "END_HEADERS not on HEADERS");
+            return CNO_ERROR(TRANSPORT, "END_HEADERS not on HEADERS");
         }
 
         size_t limit = CNO_MAX_HEADERS;
@@ -531,7 +554,6 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
         cno_header_t *it;
 
         if (cno_hpack_decode(&conn->decoder, &stream->cache, headers, &limit)) {
-            cno_frame_write_goaway(conn, CNO_STATE_COMPRESSION_ERROR);
             cno_io_vector_clear(&stream->cache);
             return CNO_PROPAGATE;
         }
@@ -596,7 +618,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
     if (frame->flags & CNO_FLAG_END_STREAM) {
         if (frame->type != CNO_FRAME_HEADERS && frame->type != CNO_FRAME_DATA) {
-            return CNO_ERROR_GOAWAY(conn, CNO_STATE_PROTOCOL_ERROR, "END_STREAM not on HEADERS/DATA");
+            return CNO_ERROR(TRANSPORT, "END_STREAM not on HEADERS/DATA");
         }
 
         if (stream && (frame->type != CNO_FRAME_HEADERS || (frame->flags & CNO_FLAG_END_HEADERS))) {
@@ -736,7 +758,7 @@ int cno_connection_made(cno_connection_t *conn)
 
     while (!conn->closed) switch (conn->state) {
         case CNO_CONNECTION_HTTP1_INIT: {
-            if (cno_stream_new(conn, 1, conn->client == CNO_PEER_LOCAL) == NULL) {
+            if (cno_stream_new(conn, 1, conn->client) == NULL) {
                 STOP(CNO_PROPAGATE);
             }
 
@@ -764,7 +786,6 @@ int cno_connection_made(cno_connection_t *conn)
                 int may_be_http2 = strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size) == 0;
                 WAIT(conn->buffer.size >= CNO_PREFACE.size || !may_be_http2);
                 if  (conn->buffer.size >= CNO_PREFACE.size &&  may_be_http2) {
-                    // Definitely HTTP2. Stream 1 should be recycled, though.
                     cno_stream_destroy(conn, stream);
                     conn->last_stream[0] = 0;
                     conn->last_stream[1] = 0;
@@ -982,7 +1003,7 @@ int cno_connection_made(cno_connection_t *conn)
             size_t m = read3(base);
 
             if (m > conn->settings[CNO_PEER_LOCAL].max_frame_size) {
-                STOP(CNO_ERROR_GOAWAY(conn, CNO_STATE_FRAME_SIZE_ERROR, "recv'd a frame that is too big"));
+                STOP(CNO_ERROR(TRANSPORT, "recv'd a frame that is too big"));
             }
 
             WAIT(conn->buffer.size >= 9 + m);
@@ -1254,7 +1275,7 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
     cno_stream_t *streamobj = cno_stream_find(conn, stream);
 
     if (streamobj == NULL) {
-        if (!conn->client) {
+        if (!conn->client || cno_stream_is_local(conn, stream)) {
             return CNO_ERROR(INVALID_STREAM, "responding to invalid stream %lu", stream);
         }
 
