@@ -46,17 +46,15 @@ static int cno_hpack_index(cno_hpack_t *state, cno_header_t *source)
         return CNO_PROPAGATE;
     }
 
-    if (cno_io_vector_extend(&entry->data.name, source->name.data, source->name.size)) {
-        return CNO_PROPAGATE;
-    }
-
-    if (cno_io_vector_extend(&entry->data.value, source->value.data, source->value.size)) {
+    if (cno_io_vector_extend(&entry->data.name,  source->name.data,  source->name.size)
+     || cno_io_vector_extend(&entry->data.value, source->value.data, source->value.size))
+    {
         cno_io_vector_clear(&entry->data.name);
         return CNO_PROPAGATE;
     }
 
     state->size += 32 + source->name.size + source->value.size;
-    cno_list_insert_after(state, entry);
+    cno_list_prepend(state, entry);
     cno_hpack_evict(state);
     return CNO_OK;
 }
@@ -65,7 +63,7 @@ static int cno_hpack_index(cno_hpack_t *state, cno_header_t *source)
 static int cno_hpack_find_index(cno_hpack_t *state, size_t index, const cno_header_t **out)
 {
     if (index == 0) {
-        return CNO_ERROR_TRANSPORT("hpack: header index 0 is reserved");
+        return CNO_ERROR(TRANSPORT, "hpack: header index 0 is reserved");
     }
 
     if (index <= CNO_HPACK_STATIC_TABLE_SIZE) {
@@ -79,7 +77,7 @@ static int cno_hpack_find_index(cno_hpack_t *state, size_t index, const cno_head
         hdr = hdr->next;
 
         if (hdr == cno_list_end(state)) {
-            return CNO_ERROR_TRANSPORT("hpack: dynamic table index out of bounds");
+            return CNO_ERROR(TRANSPORT, "hpack: dynamic table index out of bounds");
         }
     }
 
@@ -114,7 +112,7 @@ static int cno_hpack_compare_index(cno_hpack_t *state, const cno_header_t *src, 
 static int cno_hpack_decode_uint(cno_io_vector_tmp_t *source, int prefix, size_t *result)
 {
     if (!source->size) {
-        return CNO_ERROR_TRANSPORT("hpack: expected uint, got EOF");
+        return CNO_ERROR(TRANSPORT, "hpack: expected uint, got EOF");
     }
 
     unsigned char *src = (unsigned char *) source->data;
@@ -138,13 +136,13 @@ static int cno_hpack_decode_uint(cno_io_vector_tmp_t *source, int prefix, size_t
         // 1... any amount of lines starting with 1
         // 0.......
         if (src == end) {
-            return CNO_ERROR_TRANSPORT("hpack: truncated multi-byte uint");
+            return CNO_ERROR(TRANSPORT, "hpack: truncated multi-byte uint");
         }
 
         *result |= (*src & 0x7F) << (7 * size);
 
         if (++size >= sizeof(size_t)) {
-            return CNO_ERROR_TRANSPORT("hpack: uint literal too large");
+            return CNO_ERROR(TRANSPORT, "hpack: uint literal too large");
         }
     } while (*src++ & 0x80);
 
@@ -156,7 +154,7 @@ static int cno_hpack_decode_uint(cno_io_vector_tmp_t *source, int prefix, size_t
 static int cno_hpack_decode_string(cno_io_vector_tmp_t *source, cno_io_vector_t *out)
 {
     if (!source->size) {
-        return CNO_ERROR_TRANSPORT("hpack: expected string, got EOF");
+        return CNO_ERROR(TRANSPORT, "hpack: expected string, got EOF");
     }
 
     char huffman = *source->data >> 7;
@@ -167,7 +165,7 @@ static int cno_hpack_decode_string(cno_io_vector_tmp_t *source, cno_io_vector_t 
     }
 
     if (length > source->size) {
-        return CNO_ERROR_TRANSPORT("hpack: truncated string literal (%lu out of %lu octets)", source->size, length);
+        return CNO_ERROR(TRANSPORT, "hpack: truncated string literal (%lu out of %lu octets)", source->size, length);
     }
 
     if (huffman) {
@@ -178,7 +176,7 @@ static int cno_hpack_decode_string(cno_io_vector_tmp_t *source, cno_io_vector_t 
         unsigned char *ptr = buf;
 
         if (!buf) {
-            return CNO_ERROR_NO_MEMORY;
+            return CNO_ERROR(NO_MEMORY);
         }
 
         unsigned short tree = 0;
@@ -194,7 +192,7 @@ static int cno_hpack_decode_string(cno_io_vector_tmp_t *source, cno_io_vector_t 
 
                 if (a.type & CNO_HUFFMAN_LEAF_ERROR) {
                     free(buf);
-                    return CNO_ERROR_TRANSPORT("hpack: invalid Huffman code");
+                    return CNO_ERROR(TRANSPORT, "hpack: invalid Huffman code");
                 }
 
                 if (a.type & CNO_HUFFMAN_LEAF_CHAR) {
@@ -209,7 +207,7 @@ static int cno_hpack_decode_string(cno_io_vector_tmp_t *source, cno_io_vector_t 
 
         if (!eos) {
             free(buf);
-            return CNO_ERROR_TRANSPORT("hpack: truncated Huffman code");
+            return CNO_ERROR(TRANSPORT, "hpack: truncated Huffman code");
         }
 
         out->data = (char *) buf;
@@ -220,7 +218,7 @@ static int cno_hpack_decode_string(cno_io_vector_tmp_t *source, cno_io_vector_t 
     out->data = malloc(length);
 
     if (out->data == NULL) {
-        return CNO_ERROR_NO_MEMORY;
+        return CNO_ERROR(NO_MEMORY);
     }
 
     memcpy(out->data, source->data, length);
@@ -232,7 +230,7 @@ static int cno_hpack_decode_string(cno_io_vector_tmp_t *source, cno_io_vector_t 
 static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source, cno_header_t *target)
 {
     if (!source->size) {
-        return CNO_ERROR_TRANSPORT("hpack: expected header, got EOF");
+        return CNO_ERROR(TRANSPORT, "hpack: expected header, got EOF");
     }
 
     target->name.data = target->value.data = NULL;
@@ -262,7 +260,7 @@ static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source,
         }
 
         if (index > state->limit_upper) {
-            return CNO_ERROR_TRANSPORT("hpack: dynamic table size too big (%lu > %lu)", index, state->limit_upper);
+            return CNO_ERROR(TRANSPORT, "hpack: dynamic table size too big (%lu > %lu)", index, state->limit_upper);
         }
 
         state->limit = index;
@@ -274,7 +272,7 @@ static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source,
     if ((head >> 4) == 0) indexed = 0; else  // Literal without indexing.
     if ((head >> 4) == 1) indexed = 0; else  // Literal never indexed.
     {
-        return CNO_ERROR_TRANSPORT("hpack: invalid header field representation");
+        return CNO_ERROR(TRANSPORT, "hpack: invalid header field representation");
     }
 
     if (cno_hpack_decode_uint(source, 4 + 2 * indexed, &index)) {
@@ -373,7 +371,7 @@ static int cno_hpack_encode_string(cno_io_vector_t *target, cno_io_vector_t *sou
         unsigned char *ptr  = data;
 
         if (data == NULL) {
-            return CNO_ERROR_NO_MEMORY;
+            return CNO_ERROR(NO_MEMORY);
         }
 
         unsigned char *src  = (unsigned char *) source->data;

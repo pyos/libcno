@@ -25,15 +25,9 @@
  * `cno_error_*` functions (see below).
  *
  */
-#define CNO_ERROR_SET(code, ...) cno_error_set(code, __FILE__, __LINE__, ##__VA_ARGS__)
-#define CNO_ERROR_UNKNOWN(...)         CNO_ERROR_SET(CNO_ERRNO_UNKNOWN,         ##__VA_ARGS__)
-#define CNO_ERROR_ASSERTION(...)       CNO_ERROR_SET(CNO_ERRNO_ASSERTION,       ##__VA_ARGS__)
-#define CNO_ERROR_NO_MEMORY            CNO_ERROR_SET(CNO_ERRNO_NO_MEMORY,       "")
-#define CNO_ERROR_NOT_IMPLEMENTED(...) CNO_ERROR_SET(CNO_ERRNO_NOT_IMPLEMENTED, ##__VA_ARGS__)
-#define CNO_ERROR_TRANSPORT(...)       CNO_ERROR_SET(CNO_ERRNO_TRANSPORT,       ##__VA_ARGS__)
-#define CNO_ERROR_INVALID_STATE(...)   CNO_ERROR_SET(CNO_ERRNO_INVALID_STATE,   ##__VA_ARGS__)
-#define CNO_ERROR_INVALID_STREAM(...)  CNO_ERROR_SET(CNO_ERRNO_INVALID_STREAM,  ##__VA_ARGS__)
-#define CNO_ERROR_WOULD_BLOCK(...)     CNO_ERROR_SET(CNO_ERRNO_WOULD_BLOCK,     ##__VA_ARGS__)
+#define CNO_ERROR_SET(...)  cno_error_set(__FILE__, __LINE__, ##__VA_ARGS__, "")
+#define CNO_ERROR(...)      CNO_ERROR_SET(CNO_ERRNO_ ## __VA_ARGS__)
+#define CNO_ERROR_NUL(...) (CNO_ERROR(__VA_ARGS__), NULL)
 
 
 enum CNO_RETCODE {
@@ -43,18 +37,19 @@ enum CNO_RETCODE {
 
 
 enum CNO_ERRNO {
-    CNO_ERRNO_UNKNOWN,
+    CNO_ERRNO_GENERIC,
     CNO_ERRNO_ASSERTION,
     CNO_ERRNO_NO_MEMORY,
     CNO_ERRNO_NOT_IMPLEMENTED,
-    CNO_ERRNO_TRANSPORT,        // Transport-level syntax error. Stream-level errors simply close the stream.
-    CNO_ERRNO_INVALID_STATE,    // Connection cannot do that while in the current state.
-    CNO_ERRNO_INVALID_STREAM,   // Stream with given ID was not found.
-    CNO_ERRNO_WOULD_BLOCK,      // Frame too big to send with current flow control window
+    CNO_ERRNO_TRANSPORT,
+    CNO_ERRNO_INVALID_STATE,
+    CNO_ERRNO_INVALID_STREAM,
+    CNO_ERRNO_WOULD_BLOCK,  // frame too big to send with current flow control window
+    CNO_ERRNO_COMPRESSION,
 };
 
 
-int          cno_error_set  (int code, const char *file, int line, const char *fmt, ...);
+int          cno_error_set  (const char *file, int line, int code, ...);
 int          cno_error      (void);
 int          cno_error_line (void);
 const char * cno_error_file (void);
@@ -89,13 +84,14 @@ CNO_STRUCT_EXPORT(io_vector_tmp);
 #define CNO_IO_VECTOR_CONST(str)  { str, sizeof(str) - 1 }
 #define CNO_IO_VECTOR_ARRAY(arr)  { (char *) arr, sizeof(arr) }
 #define CNO_IO_VECTOR_EMPTY       { NULL, 0 }
-void   cno_io_vector_clear      (struct cno_st_io_vector_t *vec);
-int    cno_io_vector_extend     (struct cno_st_io_vector_t *vec, const char *data, size_t length);
+void   cno_io_vector_clear      (cno_io_vector_t *vec);
+int    cno_io_vector_extend     (cno_io_vector_t *vec, const char *data, size_t length);
+int    cno_io_vector_copy       (cno_io_vector_t *vec, const cno_io_vector_t *src);
 
-void   cno_io_vector_reset      (struct cno_st_io_vector_tmp_t *vec);
-int    cno_io_vector_shift      (struct cno_st_io_vector_tmp_t *vec, size_t offset);
-int    cno_io_vector_strip      (struct cno_st_io_vector_tmp_t *vec);
-int    cno_io_vector_extend_tmp (struct cno_st_io_vector_tmp_t *vec, const char *data, size_t length);
+void   cno_io_vector_reset      (cno_io_vector_tmp_t *vec);
+int    cno_io_vector_shift      (cno_io_vector_tmp_t *vec, size_t offset);
+int    cno_io_vector_strip      (cno_io_vector_tmp_t *vec);
+int    cno_io_vector_extend_tmp (cno_io_vector_tmp_t *vec, const char *data, size_t length);
 
 
 /* Generic circular doubly-linked list.
@@ -115,27 +111,27 @@ int    cno_io_vector_extend_tmp (struct cno_st_io_vector_tmp_t *vec, const char 
  *       the first member of the struct, or do some pointer arithmetic manually.
  *
  */
-struct cno_st_list_link_t { struct cno_st_list_link_t *prev, *next; };
+typedef struct cno_st_list_link_t { struct cno_st_list_link_t *prev, *next; } cno_list_link_t;
 
 
-#define CNO_LIST_LINK(T) union { struct { T *prev, *next;  }; struct cno_st_list_link_t __list_handle[1]; }
-#define CNO_LIST_ROOT(T) union { struct { T *last, *first; }; struct cno_st_list_link_t __list_handle[1]; }
+#define CNO_LIST_LINK(T) union { struct { T *prev, *next;  }; cno_list_link_t __list_handle[1]; }
+#define CNO_LIST_ROOT(T) union { struct { T *last, *first; }; cno_list_link_t __list_handle[1]; }
 
 
 #define cno_list_end(x)  (void *) (x)->__list_handle
-#define cno_list_init(x)            __cno_list_init((x)->__list_handle)
-#define cno_list_insert_after(x, y) __cno_list_insert_after((x)->__list_handle, (y)->__list_handle)
-#define cno_list_remove(x)          __cno_list_remove((x)->__list_handle)
+#define cno_list_init(x)       __cno_list_init((x)->__list_handle)
+#define cno_list_prepend(x, y) __cno_list_prepend((x)->__list_handle, (y)->__list_handle)
+#define cno_list_remove(x)     __cno_list_remove((x)->__list_handle)
 
 
-static inline void __cno_list_init(struct cno_st_list_link_t *node)
+static inline void __cno_list_init(cno_list_link_t *node)
 {
     node->next = node;
     node->prev = node;
 }
 
 
-static inline void __cno_list_insert_after(struct cno_st_list_link_t *node, struct cno_st_list_link_t *next)
+static inline void __cno_list_prepend(cno_list_link_t *node, cno_list_link_t *next)
 {
     next->next = node->next;
     next->prev = node;
@@ -143,7 +139,7 @@ static inline void __cno_list_insert_after(struct cno_st_list_link_t *node, stru
 }
 
 
-static inline void __cno_list_remove(struct cno_st_list_link_t *node)
+static inline void __cno_list_remove(cno_list_link_t *node)
 {
     node->next->prev = node->prev;
     node->prev->next = node->next;
@@ -226,7 +222,7 @@ static inline size_t __cno_set_hash(size_t key, size_t size)
 static inline void __cno_set_insert(size_t size, struct cno_st_set_bucket_t *set,
                                     size_t key,  struct cno_st_set_handle_t *ob)
 {
-    cno_list_insert_after(set + __cno_set_hash(ob->key = key, size), ob);
+    cno_list_prepend(set + __cno_set_hash(ob->key = key, size), ob);
 }
 
 
