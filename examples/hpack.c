@@ -44,14 +44,14 @@ static inline char to_hex(int i)
 int hex_to_bytes(cno_io_vector_t *source, cno_io_vector_t *target)
 {
     if (source->size % 2) {
-        return CNO_ERROR_ASSERTION("2 hex digits = 1 byte; 1 hex digit = nothing");
+        return CNO_ERROR(ASSERTION, "2 hex digits = 1 byte; 1 hex digit = nothing");
     }
 
     target->size = source->size / 2;
     target->data = malloc(source->size / 2);
 
     if (target->data == NULL) {
-        return CNO_ERROR_NO_MEMORY;
+        return CNO_ERROR(NO_MEMORY);
     }
 
     unsigned char *out = (unsigned char *) target->data;
@@ -64,7 +64,7 @@ int hex_to_bytes(cno_io_vector_t *source, cno_io_vector_t *target)
 
         if (ah == -1 || al == -1) {
             free(target->data);
-            return CNO_ERROR_ASSERTION("hex digits are [0-9a-fA-F]");
+            return CNO_ERROR(ASSERTION, "hex digits are [0-9a-fA-F]");
         }
 
         *out++ = (ah << 4) | al;
@@ -80,7 +80,7 @@ int bytes_to_hex(cno_io_vector_t *source, cno_io_vector_t *target)
     target->data = malloc(target->size);
 
     if (target->data == NULL) {
-        return CNO_ERROR_NO_MEMORY;
+        return CNO_ERROR(NO_MEMORY);
     }
 
     unsigned char *out = (unsigned char *) target->data;
