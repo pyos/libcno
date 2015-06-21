@@ -22,6 +22,7 @@
 typedef struct {
     PyObject_HEAD
     PyObject *transport;
+    PyObject *close;
     cno_connection_t *conn;
 } PyCNO;
 
@@ -62,6 +63,15 @@ static PyObject *message_headers(cno_message_t *msg)
 
 static PyObject * pycno_handle_cno_error(PyCNO *self)
 {
+    if (self->close) {
+        PyObject *ob = PyObject_CallFunction(self->close, "");
+        Py_XDECREF(ob);
+
+        if (PyErr_Occurred()) {
+            PyErr_Clear();
+        }
+    }
+
     int err = cno_error();
 
     if (err == CNO_ERRNO_PYTHON) {
@@ -74,6 +84,7 @@ static PyObject * pycno_handle_cno_error(PyCNO *self)
         err == CNO_ERRNO_NOT_IMPLEMENTED ? PyExc_NotImplementedError :
         err == CNO_ERRNO_TRANSPORT       ? PyExc_ConnectionError :
         err == CNO_ERRNO_INVALID_STATE   ? PyExc_ConnectionError :
+        err == CNO_ERRNO_INVALID_STREAM  ? PyExc_ConnectionError :
         err == CNO_ERRNO_WOULD_BLOCK     ? PyExc_BlockingIOError :
         PyExc_RuntimeError, "%s (%s:%d)", cno_error_text(), cno_error_file(), cno_error_line());
 }
@@ -154,6 +165,7 @@ static PyCNO * pycno_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 static int pycno_traverse(PyCNO *self, visitproc visit, void *arg)
 {
     Py_VISIT(self->transport);
+    Py_VISIT(self->close);
     return 0;
 }
 
@@ -161,7 +173,9 @@ static int pycno_traverse(PyCNO *self, visitproc visit, void *arg)
 static int pycno_clear(PyCNO *self)
 {
     Py_XDECREF(self->transport);
+    Py_XDECREF(self->close);
     self->transport = NULL;
+    self->close = NULL;
     return 0;
 }
 
@@ -230,8 +244,9 @@ static PyObject * pycno_connection_made(PyCNO *self, PyObject *args)
     }
 
     self->transport = PyObject_GetAttrString(transport, "write");
+    self->close     = PyObject_GetAttrString(transport, "close");
 
-    if (self->transport == NULL) {
+    if (self->transport == NULL || self->close == NULL) {
         PyErr_Clear();
     }
 
@@ -250,7 +265,9 @@ static PyObject * pycno_connection_lost(PyCNO *self, PyObject *args)
     }
 
     Py_XDECREF(self->transport);
+    Py_XDECREF(self->close);
     self->transport = NULL;
+    self->close = NULL;
     Py_RETURN_NONE;
 }
 
@@ -419,6 +436,7 @@ static void pycno_dealloc(PyCNO *self)
     }
 
     Py_XDECREF(self->transport);
+    Py_XDECREF(self->close);
     Py_TYPE(self)->tp_free(self);
 }
 
