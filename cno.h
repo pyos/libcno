@@ -155,7 +155,7 @@ struct cno_st_stream_t {
     enum CNO_STREAM_STATE state;
     enum CNO_STREAM_ACCEPT accept;
     struct cno_st_message_t msg;
-    struct cno_st_io_vector_t cache;  // frames that can have CONTINUATIONs are buffered here
+    struct cno_st_io_vector_t buffer;  // frames that can have CONTINUATIONs are buffered here
 };
 
 
@@ -212,9 +212,6 @@ CNO_STRUCT_EXPORT(settings);
 CNO_STRUCT_EXPORT(frame);
 CNO_STRUCT_EXPORT(stream);
 CNO_STRUCT_EXPORT(message);
-
-
-extern const char  CNO_FRAME_FLOW_CONTROLLED[256];
 extern const char *CNO_FRAME_NAME[256];
 
 
