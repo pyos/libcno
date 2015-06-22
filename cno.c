@@ -258,7 +258,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
             return CNO_PROPAGATE;
         }
 
-        if (frame->stream) {
+        if (stream && !(frame->flags & CNO_FLAG_END_STREAM)) {
             update.stream = frame->stream;
 
             if (cno_frame_write(conn, &update, stream)) {
