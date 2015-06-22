@@ -418,23 +418,20 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 
             size_t increment = read4(ptr);
 
-            #ifdef CNO_HTTP2_STRICT
-                // nghttp2 fails this check sometimes.
-                if (increment == 0) {
-                    return CNO_ERROR(TRANSPORT, "bad WINDOW_UPDATE (incr = %lu)", increment);
-                }
-            #endif
+            if (increment == 0) {
+                return CNO_ERROR(TRANSPORT, "bad WINDOW_UPDATE (incr = %lu)", increment);
+            }
 
             if (!frame->stream) {
                 conn->window_send += increment;
 
-                if (conn->window_send >= 0x80000000u) {
+                if (conn->window_send >= 0x80000000u || increment >= 0x80000000u) {
                     return CNO_GOAWAY(conn, FLOW_CONTROL_ERROR, "flow control window got too big (total = %lu)", conn->window_send);
                 }
             } else if (stream != NULL) {
                 stream->window_send += increment;
 
-                if (stream->window_send >= 0x80000000u) {
+                if (stream->window_send >= 0x80000000u || increment >= 0x80000000u) {
                     return cno_frame_write_rst_stream(conn, frame->stream, CNO_STATE_FLOW_CONTROL_ERROR);
                 }
             } else {
