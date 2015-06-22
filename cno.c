@@ -1272,7 +1272,7 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
     cno_stream_t *streamobj = cno_stream_find(conn, stream);
 
     if (streamobj == NULL) {
-        if (!conn->client || cno_stream_is_local(conn, stream)) {
+        if (!conn->client) {
             return CNO_ERROR(INVALID_STREAM, "responding to invalid stream %lu", stream);
         }
 
