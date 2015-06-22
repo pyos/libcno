@@ -8,15 +8,15 @@
 #include "picohttpparser/picohttpparser.h"
 
 
-static inline uint32_t read1(unsigned char *p) { return p[0]; }
-static inline uint32_t read2(unsigned char *p) { return p[0] <<  8 | p[1]; }
-static inline uint32_t read4(unsigned char *p) { return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
-static inline uint32_t read3(unsigned char *p) { return read4(p) >> 8; }
+static inline uint32_t read1(uint8_t *p) { return p[0]; }
+static inline uint32_t read2(uint8_t *p) { return p[0] <<  8 | p[1]; }
+static inline uint32_t read4(uint8_t *p) { return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
+static inline uint32_t read3(uint8_t *p) { return read4(p) >> 8; }
 
-static inline void write1(unsigned char *p, uint32_t x) { p[0] = x; }
-static inline void write2(unsigned char *p, uint32_t x) { p[0] = x >>  8; p[1] = x; }
-static inline void write3(unsigned char *p, uint32_t x) { p[0] = x >> 16; p[1] = x >>  8; p[2] = x; }
-static inline void write4(unsigned char *p, uint32_t x) { p[0] = x >> 24; p[1] = x >> 16; p[2] = x >> 8; p[3] = x; }
+static inline void write1(uint8_t *p, uint32_t x) { p[0] = x; }
+static inline void write2(uint8_t *p, uint32_t x) { p[0] = x >>  8; p[1] = x; }
+static inline void write3(uint8_t *p, uint32_t x) { p[0] = x >> 16; p[1] = x >>  8; p[2] = x; }
+static inline void write4(uint8_t *p, uint32_t x) { p[0] = x >> 24; p[1] = x >> 16; p[2] = x >> 8; p[3] = x; }
 
 static inline char *write_vector(char *ptr, const cno_io_vector_t *vec) { return (char *) memcpy(ptr, vec->data, vec->size) + vec->size; }
 static inline char *write_string(char *ptr, const char *data)           { return (char *) memcpy(ptr, data, strlen(data)) + strlen(data); }
@@ -179,7 +179,7 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame, cno_strea
         return cno_frame_write(conn, &part, stream);
     }
 
-    unsigned char header[9];
+    uint8_t header[9];
     write3(header,     length);
     write1(header + 3, frame->type);
     write1(header + 4, frame->flags);
@@ -193,7 +193,7 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame, cno_strea
 
 static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
 {
-    unsigned char descr[8];
+    uint8_t descr[8];
     write4(descr,     conn->last_stream[CNO_PEER_REMOTE]);
     write4(descr + 4, code);
     cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, CNO_IO_VECTOR_ARRAY(descr) };
@@ -213,7 +213,7 @@ static int cno_frame_write_rst_stream(cno_connection_t *conn, size_t stream, siz
         return CNO_OK;  // assume stream already ended naturally
     }
 
-    unsigned char descr[4];
+    uint8_t descr[4];
     write4(descr, code);
     cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, stream, CNO_IO_VECTOR_ARRAY(descr) };
 
@@ -237,7 +237,7 @@ static int cno_frame_write_rst_stream(cno_connection_t *conn, size_t stream, siz
 static int cno_frame_handle_flow(cno_connection_t *conn, cno_stream_t *stream, cno_frame_t *frame)
 {
     if (frame->payload.size) {
-        unsigned char payload[4];
+        uint8_t payload[4];
         write4(payload, frame->payload.size);
         cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, CNO_IO_VECTOR_ARRAY(payload) };
 
@@ -487,7 +487,7 @@ static int cno_frame_handle_push_promise(cno_connection_t *conn, cno_stream_t *s
     if (stream->accept & CNO_ACCEPT_PUSHCNT) {
         // continuation; proceed as with HEADERS.
     } else {
-        size_t promised = read4((unsigned char *) frame->payload.data);
+        size_t promised = read4((uint8_t *) frame->payload.data);
         frame->payload.data += 4;
         frame->payload.size -= 4;
 
@@ -646,8 +646,8 @@ static int cno_frame_handle_settings(cno_connection_t *conn, cno_stream_t *strea
     }
 
     cno_settings_t *cfg = &conn->settings[CNO_PEER_REMOTE];
-    unsigned char *ptr = (unsigned char *) frame->payload.data;
-    unsigned char *end = ptr + frame->payload.size;
+    uint8_t *ptr = (uint8_t *) frame->payload.data;
+    uint8_t *end = ptr + frame->payload.size;
 
     for (; ptr != end; ptr += 6) {
         size_t setting = read2(ptr);
@@ -673,7 +673,7 @@ static int cno_frame_handle_settings(cno_connection_t *conn, cno_stream_t *strea
     conn->encoder.limit_upper = cfg->header_table_size;
     cno_hpack_setlimit(&conn->encoder, conn->encoder.limit_upper);
     // TODO update stream flow control windows.
-    cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK };
+    cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK, 0, CNO_IO_VECTOR_EMPTY };
     return cno_frame_write(conn, &ack, NULL);
 }
 
@@ -684,7 +684,7 @@ static int cno_frame_handle_window_update(cno_connection_t *conn, cno_stream_t *
         return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "bad WINDOW_UPDATE (length = %lu)", frame->payload.size);
     }
 
-    size_t increment = read4((unsigned char *) frame->payload.data);
+    size_t increment = read4((uint8_t *) frame->payload.data);
 
     if (increment == 0) {
         return CNO_ERROR(TRANSPORT, "bad WINDOW_UPDATE (incr = %lu)", increment);
@@ -716,7 +716,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
     cno_stream_t *stream = cno_stream_find(conn, frame->stream);
 
     if (frame->flags & CNO_FLAG_PADDED) {
-        unsigned char pad = 1 + *(unsigned char *) frame->payload.data;
+        uint16_t pad = 1 + *(uint8_t *) frame->payload.data;
 
         if (pad >= frame->payload.size) {
             return WRITE_GOAWAY(conn, PROTOCOL_ERROR, "frame padding bigger than whole payload");
@@ -752,8 +752,8 @@ static int cno_settings_diff(cno_connection_t *conn, const cno_settings_t *old, 
 {
     size_t i = 0;
     // no. of configurable parameters * (2 byte id + 4 byte value)
-    unsigned char payload[(CNO_SETTINGS_UNDEFINED - 1) * 6];
-    unsigned char *ptr = payload;
+    uint8_t payload[(CNO_SETTINGS_UNDEFINED - 1) * 6];
+    uint8_t *ptr = payload;
     size_t *current = (size_t *) old;
     size_t *replace = (size_t *) updated;
 
@@ -765,9 +765,7 @@ static int cno_settings_diff(cno_connection_t *conn, const cno_settings_t *old, 
         }
     }
 
-    cno_frame_t frame = { CNO_FRAME_SETTINGS };
-    frame.payload.data = (char *) payload;
-    frame.payload.size = ptr - payload;
+    cno_frame_t frame = { CNO_FRAME_SETTINGS, 0, 0, { (char *) payload, ptr - payload } };
     return cno_frame_write(conn, &frame, NULL);
 }
 
@@ -1103,7 +1101,7 @@ int cno_connection_made(cno_connection_t *conn)
         case CNO_CONNECTION_READY: {
             WAIT(conn->buffer.size >= 3);
 
-            unsigned char *base = (unsigned char *) conn->buffer.data;
+            uint8_t *base = (uint8_t *) conn->buffer.data;
             size_t m = read3(base);
 
             if (m > conn->settings[CNO_PEER_LOCAL].max_frame_size) {
@@ -1293,7 +1291,7 @@ int cno_write_push(cno_connection_t *conn, size_t stream, const cno_message_t *m
     childobj->state  = CNO_STREAM_RESERVED_LOCAL;
     childobj->accept = CNO_ACCEPT_WRITE_HEADERS;
 
-    unsigned char childid[4];
+    uint8_t childid[4];
     write4(childid, child);
 
     cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, stream, CNO_IO_VECTOR_EMPTY };
@@ -1483,9 +1481,7 @@ int cno_write_data(cno_connection_t *conn, size_t stream, const char *data, size
         return CNO_ERROR(INVALID_STREAM, "can't carry data over stream %lu", stream);
     }
 
-    cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, stream };
-    frame.payload.data = (char *) data;
-    frame.payload.size = length;
+    cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, stream, { (char *) data, length } };
 
     if (cno_frame_write(conn, &frame, streamobj)) {
         return CNO_PROPAGATE;
