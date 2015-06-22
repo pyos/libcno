@@ -69,12 +69,8 @@ static int cno_stream_close(cno_connection_t *conn, cno_stream_t *stream)
         return cno_stream_destroy_clean(conn, stream);
     }
 
-    if (stream->state != CNO_STREAM_RESERVED_LOCAL && stream->state != CNO_STREAM_OPEN) {
-        return CNO_ERROR(ASSERTION, "invalid stream state %lu", stream->state);
-    }
-
     stream->accept &= ~(CNO_ACCEPT_WRITE_HEADERS | CNO_ACCEPT_WRITE_DATA | CNO_ACCEPT_WRITE_PUSH);
-    stream->state = CNO_STREAM_CLOSED_LOCAL;
+    stream->state   = CNO_STREAM_CLOSED_LOCAL;
     return CNO_OK;
 }
 
@@ -82,7 +78,7 @@ static int cno_stream_close(cno_connection_t *conn, cno_stream_t *stream)
 static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id, int local)
 {
     if (cno_stream_is_local(conn, id) != local) {
-        (void) CNO_ERROR(INVALID_STREAM, "invalid stream ID (%lu != %d mod 2)", id, local);
+        (void) CNO_ERROR(INVALID_STREAM, "invalid stream ID (%lu != %d mod 2)", id, local + !conn->client);
         return NULL;
     }
 
