@@ -260,12 +260,11 @@ static int cno_frame_handle_flow(cno_connection_t *conn, cno_stream_t *stream, c
 
 static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *stream, cno_frame_t *frame)
 {
-    size_t limit = CNO_MAX_HEADERS;
     cno_header_t  headers[CNO_MAX_HEADERS];
     cno_header_t *it;
-    cno_message_t msg = { 0, CNO_IO_VECTOR_EMPTY, CNO_IO_VECTOR_EMPTY, headers, limit };
+    cno_message_t msg = { 0, CNO_IO_VECTOR_EMPTY, CNO_IO_VECTOR_EMPTY, headers, CNO_MAX_HEADERS };
 
-    if (cno_hpack_decode(&conn->decoder, &stream->buffer, headers, &limit)) {
+    if (cno_hpack_decode(&conn->decoder, &stream->buffer, headers, &msg.headers_len)) {
         cno_io_vector_clear(&stream->buffer);
         cno_frame_write_goaway(conn, CNO_STATE_COMPRESSION_ERROR);
         return CNO_PROPAGATE;
@@ -277,7 +276,7 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
         int seen_normal = 0;
     #endif
 
-    for (it = headers; it != headers + limit; ++it) {
+    for (it = headers; it != headers + msg.headers_len; ++it) {
         #ifdef CNO_HTTP2_ENFORCE_MESSAGING_RULES
             if (it->name.size && it->name.data[0] == ':') {
                 if (seen_normal) {
@@ -394,7 +393,7 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
         stream->accept |=   CNO_ACCEPT_DATA;
     }
 
-    for (it = headers; it != headers + limit; ++it) {
+    for (it = headers; it != headers + msg.headers_len; ++it) {
         cno_io_vector_clear(&it->name);
         cno_io_vector_clear(&it->value);
     }
