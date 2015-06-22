@@ -7,31 +7,55 @@
 
 
 static _Thread_local struct {
-    int          code;
-    int          line;
-    const char * file;
+    int  code;
     char text[512];
-} _cno_error;
+    cno_traceback_t  tb_head[128];
+    cno_traceback_t *tb_last;
+} cno_error_st;
 
 
-int cno_error_set(const char *file, int line, int code, ...)
+int cno_error_set(const char *file, int line, const char *func, int code, ...)
 {
-    _cno_error.code = code;
-    _cno_error.line = line;
-    _cno_error.file = file;
+    cno_error_st.code = code;
+    cno_error_st.tb_last = cno_error_st.tb_head;
 
     va_list vl;
     va_start(vl, code);
-    vsnprintf(_cno_error.text, sizeof(_cno_error.text), va_arg(vl, const char *), vl);
+    vsnprintf(cno_error_st.text, sizeof(cno_error_st.text), va_arg(vl, const char *), vl);
     va_end(vl);
-    return CNO_PROPAGATE;
+
+    return cno_error_upd(file, line, func);
 }
 
 
-int          cno_error      (void) { return _cno_error.code; }
-int          cno_error_line (void) { return _cno_error.line; }
-const char * cno_error_file (void) { return _cno_error.file; }
-const char * cno_error_text (void) { return _cno_error.text; }
+const cno_traceback_t *cno_error_tb_head(void) { return cno_error_st.tb_head; }
+const cno_traceback_t *cno_error_tb_next(const cno_traceback_t *trace)
+{
+    if (++trace == cno_error_st.tb_last) {
+        return NULL;
+    }
+
+    return trace;
+}
+
+int cno_error_upd(const char *file, int line, const char *func)
+{
+    if (cno_error_st.tb_last == (cno_traceback_t *) &cno_error_st.tb_last) {
+        cno_error_st.tb_last[-1].file = "...";
+        cno_error_st.tb_last[-1].func = "...";
+        cno_error_st.tb_last[-1].line = 0;
+    } else {
+        cno_error_st.tb_last->file = file;
+        cno_error_st.tb_last->func = func;
+        cno_error_st.tb_last->line = line;
+        cno_error_st.tb_last++;
+    }
+    return -1;
+}
+
+
+int          cno_error      (void) { return cno_error_st.code; }
+const char * cno_error_text (void) { return cno_error_st.text; }
 const char * cno_error_name (void)
 {
     switch (cno_error()) {

@@ -25,15 +25,11 @@
  * `cno_error_*` functions (see below).
  *
  */
-#define CNO_ERROR_SET(...)  cno_error_set(__FILE__, __LINE__, ##__VA_ARGS__, "")
+#define CNO_OK              0
+#define CNO_PROPAGATE       cno_error_upd(__FILE__, __LINE__, __func__)
+#define CNO_ERROR_SET(...)  cno_error_set(__FILE__, __LINE__, __func__, ##__VA_ARGS__, "")
 #define CNO_ERROR(...)      CNO_ERROR_SET(CNO_ERRNO_ ## __VA_ARGS__)
 #define CNO_ERROR_NUL(...) (CNO_ERROR(__VA_ARGS__), NULL)
-
-
-enum CNO_RETCODE {
-    CNO_OK        =  0,
-    CNO_PROPAGATE = -1,
-};
 
 
 enum CNO_ERRNO {
@@ -49,12 +45,23 @@ enum CNO_ERRNO {
 };
 
 
-int          cno_error_set  (const char *file, int line, int code, ...);
-int          cno_error      (void);
-int          cno_error_line (void);
-const char * cno_error_file (void);
-const char * cno_error_text (void);
-const char * cno_error_name (void);
+struct cno_st_traceback_t {
+    const char * file;
+    const char * func;
+    int          line;
+};
+
+
+CNO_STRUCT_EXPORT(traceback);
+
+
+int                     cno_error_set     (const char *file, int line, const char *func, int code, ...);
+int                     cno_error_upd     (const char *file, int line, const char *func);
+int                     cno_error         (void);
+const char *            cno_error_text    (void);
+const char *            cno_error_name    (void);
+const cno_traceback_t * cno_error_tb_head (void);
+const cno_traceback_t * cno_error_tb_next (const cno_traceback_t *tb);
 
 
 /* String ops.

@@ -203,8 +203,8 @@ int main(int argc, char *argv[])
     return 0;
 
 error:
-    fprintf(stderr, "error: %s: %s (%s:%d)\n", cno_error_name(), cno_error_text(), cno_error_file(), cno_error_line());
     cno_hpack_clear(&encoder);
     cno_hpack_clear(&decoder);
+    print_traceback();
     return 1;
 }

@@ -141,10 +141,7 @@ int main(int argc, char *argv[])
 
 error:
     close(fd);
-    fprintf(stderr, "%s: %s at line %d in %s\n",
-        cno_error_name(), cno_error_text(),
-        cno_error_line(), cno_error_file());
-
+    print_traceback();
     if (client) cno_connection_destroy(client);
     return 1;
 }

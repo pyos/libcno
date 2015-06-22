@@ -83,11 +83,8 @@ int main(int argc, char *argv[])
     return 0;
 
 error:
-    fprintf(stderr, "%s: %s at line %d in %s\n",
-        cno_error_name(), cno_error_text(),
-        cno_error_line(), cno_error_file());
-
     if (client) cno_connection_destroy(client);
     if (server) cno_connection_destroy(server);
+    print_traceback();
     return 1;
 }

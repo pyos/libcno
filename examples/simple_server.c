@@ -106,13 +106,9 @@ static void *handle(fd) ssize_t fd;
 
 error:
     cno_connection_lost(conn);
-
-    fprintf(stderr, "%ld: %s: %s at line %d in %s\n", fd,
-        cno_error_name(), cno_error_text(),
-        cno_error_line(), cno_error_file());
-
-    close(fd);
     cno_connection_destroy(conn);
+    close(fd);
+    print_traceback();
     return NULL;
 }
 

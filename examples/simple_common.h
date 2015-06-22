@@ -83,4 +83,16 @@ int log_recv_message_end(cno_connection_t *conn, void *fd, size_t stream)
     return CNO_OK;
 }
 
+
+void print_traceback(void)
+{
+    const cno_traceback_t *it;
+
+    fprintf(stderr, "[errno %d] %s: %s\n", cno_error(), cno_error_name(), cno_error_text());
+
+    for (it = cno_error_tb_head(); it; it = cno_error_tb_next(it)) {
+        fprintf(stderr, "  | line %d @ %s [%s]\n", it->line, it->file, it->func);
+    }
+}
+
 #endif
