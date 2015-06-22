@@ -90,7 +90,7 @@ static PyObject * pycno_handle_cno_error(PyCNO *self)
         err == CNO_ERRNO_INVALID_STATE   ? PyExc_ConnectionError :
         err == CNO_ERRNO_INVALID_STREAM  ? PyExc_ConnectionError :
         err == CNO_ERRNO_WOULD_BLOCK     ? PyExc_BlockingIOError :
-        PyExc_RuntimeError, "%s (%s:%d)", cno_error_text(), cno_error_file(), cno_error_line());
+        PyExc_RuntimeError, "%s", cno_error_text());
 }
 
 
