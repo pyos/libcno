@@ -42,7 +42,7 @@ inline size_t cno_stream_next_id(cno_connection_t *conn)
 
 static inline int cno_stream_is_local(cno_connection_t *conn, size_t id)
 {
-    return (int) (id % 2) == (conn->client);
+    return (int) (id % 2) == !!conn->client;
 }
 
 
@@ -859,7 +859,7 @@ int cno_connection_made(cno_connection_t *conn)
 
     while (!conn->closed) switch (conn->state) {
         case CNO_CONNECTION_HTTP1_INIT: {
-            if (cno_stream_new(conn, 1, conn->client) == NULL) {
+            if (cno_stream_new(conn, 1, !!conn->client) == NULL) {
                 STOP(CNO_PROPAGATE);
             }
 
