@@ -226,8 +226,12 @@ static int cno_hpack_decode_one(cno_hpack_t *state, cno_io_vector_tmp_t *source,
         // Indexed header field.
         if (cno_hpack_decode_uint(source, 0x7F, &index)
          || cno_hpack_lookup(state, index, &header)
-         || cno_io_vector_copy(&target->name,  &header->name)
-         || cno_io_vector_copy(&target->value, &header->value))
+         || cno_io_vector_copy(&target->name,  &header->name))
+        {
+            return CNO_PROPAGATE;
+        }
+
+        if (cno_io_vector_copy(&target->value, &header->value))
         {
             cno_io_vector_clear(&target->name);
             return CNO_PROPAGATE;
