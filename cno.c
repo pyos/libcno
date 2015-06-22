@@ -741,7 +741,7 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
         case CNO_FRAME_HEADERS:       return cno_frame_handle_headers       (conn, stream, frame, rstd);
         case CNO_FRAME_PUSH_PROMISE:  return cno_frame_handle_push_promise  (conn, stream, frame, rstd);
         case CNO_FRAME_CONTINUATION:  return cno_frame_handle_continuation  (conn, stream, frame, rstd);
-        case CNO_FRAME_DATA:          return cno_frame_handle_data(conn, stream, frame, rstd);
+        case CNO_FRAME_DATA:          return cno_frame_handle_data          (conn, stream, frame, rstd);
         default: return CNO_OK;  // ignore unrecognized frames
     }
 }
@@ -887,7 +887,10 @@ int cno_connection_made(cno_connection_t *conn)
                 int may_be_http2 = strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size) == 0;
                 WAIT(conn->buffer.size >= CNO_PREFACE.size || !may_be_http2);
                 if  (conn->buffer.size >= CNO_PREFACE.size &&  may_be_http2) {
-                    cno_stream_destroy(conn, stream);
+                    if (cno_stream_destroy_clean(conn, stream)) {
+                        return CNO_PROPAGATE;
+                    }
+
                     conn->last_stream[0] = 0;
                     conn->last_stream[1] = 0;
                     conn->state = CNO_CONNECTION_INIT;
