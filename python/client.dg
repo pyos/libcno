@@ -1,25 +1,26 @@
-import '/ffiloader'
-
+import '/sys'
+import '/ssl'
 import '/asyncio'
+import '/urllib/parse/urlparse'
+
+import '/common'
 import '/cno'
 
 
-main = async $ loop host port ->
-  _, client = await loop.create_connection (-> cno.AIOClient True loop) host port
-  resp = await client.request 'GET' '/worldtest' [(':scheme', 'http'), (':authority', 'localhost')] b''
-  print 'code    =' resp.code
-  print 'headers =' resp.headers
-  print 'payload =' $ await resp.payload
-  print 'pushed  ='
-  async for req in resp.pushed =>
-    resp = await req.response
-    print '  path    =' req.path
-    print '  method  =' req.method
-    print '  reqhead =' req.headers
-    print '  code    =' resp.code
-    print '  headers =' resp.headers
-    print '  payload =' $ await resp.payload
+main = async $ url loop ->
+  sctx = if url.scheme == 'https' => ssl.SSLContext ssl.PROTOCOL_TLSv1_2
+            otherwise             => None
+  port = if url.port              => url.port
+            url.scheme == 'https' => 443
+            otherwise             => 80
+  sctx =>
+    sctx.set_npn_protocols  ['h2', 'http/1.1']
+    sctx.set_alpn_protocols ['h2', 'http/1.1']
+
+  _, client = await loop.create_connection (-> cno.AIOClient loop force_http2: True) url.hostname port ssl: sctx
+  await common.print_response $ await client.request 'GET' url.path [(':scheme', url.scheme), (':authority', url.netloc)] b''
 
 
+len sys.argv != 2 => exit $ 'usage: {0} <url>'.format *: sys.argv
 loop = asyncio.get_event_loop!
-loop.run_until_complete $ main loop 'localhost' 8000
+loop.run_until_complete $ main (urlparse $ sys.argv !! 1) loop

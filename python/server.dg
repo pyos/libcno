@@ -1,10 +1,11 @@
-import '/ffiloader'
-
 import '/asyncio'
+
+import '/common'
 import '/cno'
 
 
 respond = async $ loop ~>
+  await common.print_request self
   await @push "GET" "/hello" [(':authority', 'localhost'), (':scheme', 'http')]
   await @respond 200 [('server', 'libcno/0.1'), ('content-length', '14')] b'Hello, World!\n'
 
