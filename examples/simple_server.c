@@ -66,7 +66,7 @@ static void *handle(fd) ssize_t fd;
         return NULL;
     }
 
-    cno_connection_t *conn = cno_connection_new(CNO_HTTP2_SERVER);
+    cno_connection_t *conn = cno_connection_new(CNO_SERVER);
 
     if (conn == NULL) {
         goto error;
@@ -86,7 +86,7 @@ static void *handle(fd) ssize_t fd;
     conn->on_message_data  = &log_recv_message_data;
     conn->on_message_end   = &respond_with_hello_world;
 
-    if (cno_connection_made(conn)) {
+    if (cno_connection_made(conn, CNO_HTTP1)) {
         goto error;
     }
 

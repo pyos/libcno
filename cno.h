@@ -28,14 +28,18 @@
 enum CNO_PEER_KIND {
     CNO_PEER_REMOTE = 0,
     CNO_PEER_LOCAL  = 1,
-    CNO_PEER_UNDEF  = 2,  // http 1 mode
 };
 
 
 enum CNO_CONNECTION_KIND {
-    CNO_HTTP2_SERVER = 0,
-    CNO_HTTP2_CLIENT = 1,
-    CNO_HTTP1_CLIENT = 2,
+    CNO_SERVER = 0,
+    CNO_CLIENT = 1,
+};
+
+
+enum CNO_HTTP_VERSION {
+    CNO_HTTP1 = 0,
+    CNO_HTTP2 = 1,
 };
 
 
@@ -217,7 +221,7 @@ extern const char *CNO_FRAME_NAME[256];
 
 cno_connection_t * cno_connection_new           (enum CNO_CONNECTION_KIND kind);
 void               cno_connection_destroy       (cno_connection_t *conn);
-int                cno_connection_made          (cno_connection_t *conn);
+int                cno_connection_made          (cno_connection_t *conn, enum CNO_HTTP_VERSION version);
 int                cno_connection_data_received (cno_connection_t *conn, const char *data, size_t length);
 int                cno_connection_lost          (cno_connection_t *conn);
 int                cno_connection_stop          (cno_connection_t *conn);

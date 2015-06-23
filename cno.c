@@ -810,7 +810,7 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     }
 
     conn->kind  = kind;
-    conn->state = kind == CNO_HTTP2_CLIENT ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
+    conn->state = CNO_CONNECTION_HTTP1_INIT;
     memcpy(conn->settings,     &CNO_SETTINGS_STANDARD, sizeof(cno_settings_t));
     memcpy(conn->settings + 1, &CNO_SETTINGS_INITIAL,  sizeof(cno_settings_t));
     conn->window_recv = CNO_SETTINGS_STANDARD.initial_window_size;
@@ -851,7 +851,7 @@ static int cno_connection_upgrade(cno_connection_t *conn)
 }
 
 
-int cno_connection_made(cno_connection_t *conn)
+static int cno_connection_fire(cno_connection_t *conn)
 {
     int __retcode = CNO_OK;
     #define STOP(code) do              { __retcode = code;   goto done; } while (0)
@@ -1165,6 +1165,20 @@ done:
 }
 
 
+int cno_connection_made(cno_connection_t *conn, enum CNO_HTTP_VERSION version)
+{
+    if (conn->state != CNO_CONNECTION_HTTP1_INIT) {
+        return CNO_OK;
+    }
+
+    if (version == CNO_HTTP2) {
+        conn->state = CNO_CONNECTION_INIT;
+    }
+
+    return cno_connection_fire(conn);
+}
+
+
 int cno_connection_data_received(cno_connection_t *conn, const char *data, size_t length)
 {
     if (conn->closed) {
@@ -1175,7 +1189,7 @@ int cno_connection_data_received(cno_connection_t *conn, const char *data, size_
         return CNO_PROPAGATE;
     }
 
-    return cno_connection_made(conn);
+    return cno_connection_fire(conn);
 }
 
 
@@ -1194,7 +1208,7 @@ int cno_connection_lost(cno_connection_t *conn)
     if (!conn->closed) {
         conn->closed = 1;
 
-        if (cno_connection_made(conn)) {
+        if (cno_connection_fire(conn)) {
             conn->closed = 0;
             return CNO_PROPAGATE;
         }

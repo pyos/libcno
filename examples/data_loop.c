@@ -45,8 +45,8 @@ static int respond(cno_connection_t *conn, void *_, size_t stream)
 
 int main(int argc, char *argv[])
 {
-    cno_connection_t *client = cno_connection_new(CNO_HTTP2_CLIENT);
-    cno_connection_t *server = cno_connection_new(CNO_HTTP2_SERVER);
+    cno_connection_t *client = cno_connection_new(CNO_CLIENT);
+    cno_connection_t *server = cno_connection_new(CNO_SERVER);
 
     if (client == NULL || server == NULL) {
         goto error;
@@ -70,8 +70,8 @@ int main(int argc, char *argv[])
 
     cno_message_t message = { 0, CNO_IO_VECTOR_CONST("GET"), CNO_IO_VECTOR_CONST("/"), headers, 1};
 
-    if (cno_connection_made(client)
-     || cno_connection_made(server)
+    if (cno_connection_made(client, CNO_HTTP2)
+     || cno_connection_made(server, CNO_HTTP2)
      || cno_write_message(client, cno_stream_next_id(client), &message, 1)
      || cno_connection_stop(client)
      || cno_connection_lost(client)

@@ -91,7 +91,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    cno_connection_t *client = cno_connection_new(CNO_HTTP2_CLIENT);
+    cno_connection_t *client = cno_connection_new(CNO_CLIENT);
 
     if (client == NULL) {
         goto error;
@@ -119,7 +119,7 @@ int main(int argc, char *argv[])
     cno_message_t message = { 0, CNO_IO_VECTOR_CONST("GET"), CNO_IO_VECTOR_STRING(path), headers, 2 };
     size_t stream = cno_stream_next_id(client);
 
-    if (cno_connection_made(client)
+    if (cno_connection_made(client, CNO_HTTP2)
      || cno_write_message(client, stream, &message, 1)) goto error;
 
     char buf[8196];
