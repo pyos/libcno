@@ -105,6 +105,7 @@ print_request = async $ **: kwargs ~>
   print', color = print_colors **: kwargs
   print' '-> stream' @stream '=' (color.YELLOW @method) (color.WHITE @path)
   await print_headers @headers **: kwargs
+  print '   payload length =' $ len $ await @payload
 
 
 print_response = async $ **: kwargs ~>
