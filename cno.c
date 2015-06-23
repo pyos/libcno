@@ -810,7 +810,7 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     }
 
     conn->kind  = kind;
-    conn->state = CNO_CONNECTION_HTTP1_INIT;
+    conn->state = CNO_CONNECTION_UNDEFINED;
     memcpy(conn->settings,     &CNO_SETTINGS_STANDARD, sizeof(cno_settings_t));
     memcpy(conn->settings + 1, &CNO_SETTINGS_INITIAL,  sizeof(cno_settings_t));
     conn->window_recv = CNO_SETTINGS_STANDARD.initial_window_size;
@@ -858,6 +858,10 @@ static int cno_connection_fire(cno_connection_t *conn)
     #define WAIT(cond) do if (!(cond)) { __retcode = CNO_OK; goto done; } while (0)
 
     while (!conn->closed) switch (conn->state) {
+        case CNO_CONNECTION_UNDEFINED: {
+            WAIT(0);  // wait until connection_made before processing data
+        }
+
         case CNO_CONNECTION_HTTP1_INIT: {
             if (cno_stream_new(conn, 1, !!conn->client) == NULL) {
                 STOP(CNO_PROPAGATE);
@@ -1167,14 +1171,11 @@ done:
 
 int cno_connection_made(cno_connection_t *conn, enum CNO_HTTP_VERSION version)
 {
-    if (conn->state != CNO_CONNECTION_HTTP1_INIT) {
-        return CNO_OK;
+    if (conn->state != CNO_CONNECTION_UNDEFINED) {
+        return CNO_ERROR(ASSERTION, "called connection_made twice");
     }
 
-    if (version == CNO_HTTP2) {
-        conn->state = CNO_CONNECTION_INIT;
-    }
-
+    conn->state = version == CNO_HTTP2 ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
     return cno_connection_fire(conn);
 }
 
