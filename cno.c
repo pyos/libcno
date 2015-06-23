@@ -918,11 +918,11 @@ static int cno_connection_fire(cno_connection_t *conn)
             WAIT(ok != -2);
 
             if (ok == -1) {
-                STOP(CNO_ERROR(TRANSPORT, "bad HTTP/1.x request"));
+                STOP(CNO_ERROR(TRANSPORT, "bad HTTP/1.x message"));
             }
 
             if (minor != 1) {
-                STOP(CNO_ERROR(TRANSPORT, "bad HTTP/1.x request: HTTP/1.%d not supported", minor));
+                STOP(CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: HTTP/1.%d not supported", minor));
             }
 
             for (end = it + header_num; it != end; ++it) {
@@ -941,9 +941,9 @@ static int cno_connection_fire(cno_connection_t *conn)
                     // TODO decode & emit on_frame
                 } else
 
-                if (strncmp(name, "upgrade", size) == 0 && strncmp(value, "h2c", vsize) == 0) {
+                if (!conn->client && strncmp(name, "upgrade", size) == 0 && strncmp(value, "h2c", vsize) == 0) {
                     if (conn->state != CNO_CONNECTION_HTTP1_READY) {
-                        STOP(CNO_ERROR(TRANSPORT, "bad HTTP/1.x request: multiple upgrade headers"));
+                        STOP(CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: multiple upgrade headers"));
                     }
 
                     cno_header_t upgrade_headers[] = {
@@ -969,7 +969,7 @@ static int cno_connection_fire(cno_connection_t *conn)
 
                 if (strncmp(name, "content-length", size) == 0) {
                     if (conn->http1_remaining) {
-                        STOP(CNO_ERROR(TRANSPORT, "bad HTTP/1.x request: multiple content-lengths"));
+                        STOP(CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: multiple content-lengths"));
                     }
 
                     conn->http1_remaining = (size_t) atoi(value);
@@ -977,11 +977,11 @@ static int cno_connection_fire(cno_connection_t *conn)
 
                 if (strncmp(name, "transfer-encoding", size) == 0) {
                     if (strncmp(value, "chunked", vsize) != 0) {
-                        STOP(CNO_ERROR(TRANSPORT, "bad HTTP/1.x request: unknown transfer-encoding"));
+                        STOP(CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: unknown transfer-encoding"));
                     }
 
                     if (conn->http1_remaining) {
-                        STOP(CNO_ERROR(TRANSPORT, "bad HTTP/1.x request: chunked encoding w/ fixed length"));
+                        STOP(CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: chunked encoding w/ fixed length"));
                     }
 
                     conn->http1_remaining = (size_t) -1;
