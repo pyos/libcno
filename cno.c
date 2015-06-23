@@ -1307,6 +1307,8 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
             ptr = write_format(ptr, "HTTP/1.1 %d No Reason\r\n", msg->code);
         }
 
+        ptr = write_string(ptr, "connection: keep-alive\r\n");
+
         for (; it != end; ++it) {
             if (CNO_FIRE(conn, on_write, head, ptr - head)) {
                 return CNO_PROPAGATE;
