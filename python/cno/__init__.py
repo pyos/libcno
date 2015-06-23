@@ -78,6 +78,8 @@ class Response:
 class FakeStream:
     def send(self, ob): pass
     def eof(self): pass
+    async def __aiter__(self): return self
+    async def __anext__(self): raise StopAsyncIteration
 
 
 class FakeFuture:
@@ -135,13 +137,13 @@ class AIOServer (AIOConnection):
 
 
 class AIOClient (AIOConnection):
-    def __init__(self, http2=True, loop=None):
-        super().__init__(http2=http2, loop=loop)
+    def __init__(self, loop=None, force_http2=False):
+        super().__init__(force_http2=force_http2, loop=loop)
         self._pushreq = {}
 
     def on_message_start(self, stream, code, method, path, headers):
         data = self._readers[stream] = Stream(loop=self._loop)
-        item = Response(self, stream, code, headers, data, self._pushreq.get(stream))
+        item = Response(self, stream, code, headers, data, self._pushreq.get(stream, _NO_STREAM))
         self._futures.pop(stream, _NO_TASK).set_result(item)
 
     def on_stream_end(self, stream):
@@ -172,6 +174,8 @@ class AIOClient (AIOConnection):
 
         self._futures[stream] = fut = asyncio.Future(loop=self._loop)
         self._pushreq[stream] = Stream(loop=self._loop)
+        if not self.is_http2:
+            self._pushreq[stream].eof()
         try:
             return (await fut)
         finally:

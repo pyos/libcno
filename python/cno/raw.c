@@ -22,7 +22,9 @@
 typedef struct {
     PyObject_HEAD
     PyObject *transport;
+    PyObject *write;
     PyObject *close;
+    int force_http2;
     cno_connection_t *conn;
 } PyCNO;
 
@@ -67,8 +69,10 @@ static PyObject * pycno_handle_cno_error(PyCNO *self)
         PyObject *ob = PyObject_CallFunction(self->close, "");
         Py_XDECREF(ob);
         Py_XDECREF(self->close);
+        Py_XDECREF(self->write);
         Py_XDECREF(self->transport);
         self->transport = NULL;
+        self->write = NULL;
         self->close = NULL;
 
         if (PyErr_Occurred()) {
@@ -96,8 +100,12 @@ static PyObject * pycno_handle_cno_error(PyCNO *self)
 
 static int pycno_on_write(cno_connection_t *conn, PyCNO *self, const char *data, size_t length)
 {
-    PyObject *ret = self->transport
-        ? PyObject_CallFunction(self->transport, "y#", data, length)
+    if (self->transport == NULL) {
+        return CNO_OK;
+    }
+
+    PyObject *ret = self->write
+        ? PyObject_CallFunction(self->write, "y#", data, length)
         : PyObject_CallMethod((PyObject *) self, "on_write", "y#", data, length);
 
     if (ret == NULL) {
@@ -161,6 +169,7 @@ static PyCNO * pycno_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
+    self->force_http2 = 0;
     self->conn = NULL;
     return self;
 }
@@ -169,6 +178,7 @@ static PyCNO * pycno_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 static int pycno_traverse(PyCNO *self, visitproc visit, void *arg)
 {
     Py_VISIT(self->transport);
+    Py_VISIT(self->write);
     Py_VISIT(self->close);
     return 0;
 }
@@ -177,8 +187,10 @@ static int pycno_traverse(PyCNO *self, visitproc visit, void *arg)
 static int pycno_clear(PyCNO *self)
 {
     Py_XDECREF(self->transport);
+    Py_XDECREF(self->write);
     Py_XDECREF(self->close);
     self->transport = NULL;
+    self->write = NULL;
     self->close = NULL;
     return 0;
 }
@@ -186,15 +198,14 @@ static int pycno_clear(PyCNO *self)
 
 static PyObject * pycno_init(PyCNO *self, PyObject *args, PyObject *kwargs)
 {
-    int http2  = 1;
     int client = 1;
-    char *kwds[] = { "client", "http2", NULL };
+    char *kwds[] = { "client", "force_http2", NULL };
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|pp", kwds, &client, &http2)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|pp", kwds, &client, &self->force_http2)) {
         return NULL;
     }
 
-    self->conn = cno_connection_new(client ? http2 ? CNO_HTTP2_CLIENT : CNO_HTTP1_CLIENT : CNO_HTTP2_SERVER);
+    self->conn = cno_connection_new(client ? CNO_CLIENT : CNO_SERVER);
 
     if (self->conn == NULL) {
         return pycno_handle_cno_error(self);
@@ -239,6 +250,36 @@ static PyObject * pycno_data_received(PyCNO *self, PyObject *args)
 }
 
 
+static enum CNO_HTTP_VERSION get_version(PyCNO *self, PyObject *transport)
+{
+    #if 0
+    // asyncio provides no way to get this data.
+    PyObject *proto;
+    int i = 0;
+
+    for (proto = PyObject_CallMethod(transport, "get_extra_info", "s", "alpn_protocol"); i != 2;
+         proto = PyObject_CallMethod(transport, "get_extra_info", "s", "npn_protocol"), ++i)
+    {
+        if (proto != NULL) {
+            if (proto != Py_None) {
+                if (!PyUnicode_CompareWithASCIIString(proto, "h2")) {
+                    Py_DECREF(proto);
+                    return CNO_HTTP2;
+                }
+
+                Py_DECREF(proto);
+                return CNO_HTTP1;
+            }
+
+            Py_DECREF(proto);
+        }
+    }
+    #endif
+
+    return self->force_http2 ? CNO_HTTP2 : CNO_HTTP1;
+}
+
+
 static PyObject * pycno_connection_made(PyCNO *self, PyObject *args)
 {
     PyObject *transport;
@@ -247,14 +288,14 @@ static PyObject * pycno_connection_made(PyCNO *self, PyObject *args)
         return NULL;
     }
 
-    self->transport = PyObject_GetAttrString(transport, "write");
-    self->close     = PyObject_GetAttrString(transport, "close");
+    Py_INCREF(transport);
+    self->transport = transport;
+    self->write = PyObject_GetAttrString(transport, "write");
+    self->close = PyObject_GetAttrString(transport, "close");
+    enum CNO_HTTP_VERSION version = get_version(self, transport);
+    PyErr_Clear();
 
-    if (self->transport == NULL || self->close == NULL) {
-        PyErr_Clear();
-    }
-
-    if (cno_connection_made(self->conn)) {
+    if (cno_connection_made(self->conn, version)) {
         return pycno_handle_cno_error(self);
     }
 
@@ -264,14 +305,17 @@ static PyObject * pycno_connection_made(PyCNO *self, PyObject *args)
 
 static PyObject * pycno_connection_lost(PyCNO *self, PyObject *args)
 {
+    Py_XDECREF(self->transport);
+    Py_XDECREF(self->write);
+    Py_XDECREF(self->close);
+    self->transport = NULL;
+    self->write = NULL;
+    self->close = NULL;
+
     if (cno_connection_lost(self->conn)) {
         return pycno_handle_cno_error(self);
     }
 
-    Py_XDECREF(self->transport);
-    Py_XDECREF(self->close);
-    self->transport = NULL;
-    self->close = NULL;
     Py_RETURN_NONE;
 }
 
@@ -417,9 +461,30 @@ static PyObject * pycno_write_data(PyCNO *self, PyObject *args, PyObject *kwargs
 }
 
 
+static PyObject * pycno_transport(PyCNO *self, void *closure)
+{
+    if (self->transport == NULL) {
+        return PyErr_Format(PyExc_AttributeError, "transport does not exist yet");
+    }
+
+    Py_INCREF(self->transport);
+    return self->transport;
+}
+
+
 static PyObject * pycno_is_client(PyCNO *self, void *closure)
 {
     if (self->conn && self->conn->client) {
+        Py_RETURN_TRUE;
+    }
+
+    Py_RETURN_FALSE;
+}
+
+
+static PyObject * pycno_is_http2(PyCNO *self, void *closure)
+{
+    if (self->conn && cno_connection_is_http2(self->conn)) {
         Py_RETURN_TRUE;
     }
 
@@ -440,6 +505,7 @@ static void pycno_dealloc(PyCNO *self)
     }
 
     Py_XDECREF(self->transport);
+    Py_XDECREF(self->write);
     Py_XDECREF(self->close);
     Py_TYPE(self)->tp_free(self);
 }
@@ -474,7 +540,9 @@ static PyMethodDef PyCNOMethods[] = {
 
 
 static PyGetSetDef PyCNOGetSetters[] = {
+    { "transport",   (getter) pycno_transport,   NULL, NULL, NULL },
     { "is_client",   (getter) pycno_is_client,   NULL, NULL, NULL },
+    { "is_http2",    (getter) pycno_is_http2,    NULL, NULL, NULL },
     { "next_stream", (getter) pycno_next_stream, NULL, NULL, NULL },
     { NULL }
 };
