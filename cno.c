@@ -8,13 +8,13 @@
 #include "picohttpparser/picohttpparser.h"
 
 
-static inline uint32_t read1(uint8_t *p) { return p[0]; }
-static inline uint32_t read2(uint8_t *p) { return p[0] <<  8 | p[1]; }
+static inline uint8_t  read1(uint8_t *p) { return p[0]; }
+static inline uint16_t read2(uint8_t *p) { return p[0] <<  8 | p[1]; }
 static inline uint32_t read4(uint8_t *p) { return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 static inline uint32_t read3(uint8_t *p) { return read4(p) >> 8; }
 
-static inline void write1(uint8_t *p, uint32_t x) { p[0] = x; }
-static inline void write2(uint8_t *p, uint32_t x) { p[0] = x >>  8; p[1] = x; }
+static inline void write1(uint8_t *p, uint8_t  x) { p[0] = x; }
+static inline void write2(uint8_t *p, uint16_t x) { p[0] = x >>  8; p[1] = x; }
 static inline void write3(uint8_t *p, uint32_t x) { p[0] = x >> 16; p[1] = x >>  8; p[2] = x; }
 static inline void write4(uint8_t *p, uint32_t x) { p[0] = x >> 24; p[1] = x >> 16; p[2] = x >> 8; p[3] = x; }
 
@@ -33,14 +33,14 @@ const char *CNO_FRAME_NAME[256] = {
 };
 
 
-inline size_t cno_stream_next_id(cno_connection_t *conn)
+inline uint32_t cno_stream_next_id(cno_connection_t *conn)
 {
-    size_t last = conn->last_stream[CNO_PEER_LOCAL];
+    uint32_t last = conn->last_stream[CNO_PEER_LOCAL];
     return cno_connection_is_http2(conn) && (last || !conn->client) ? last + 2 : 1;
 }
 
 
-static inline int cno_stream_is_local(cno_connection_t *conn, size_t id)
+static inline int cno_stream_is_local(cno_connection_t *conn, uint32_t id)
 {
     return (int) (id % 2) == !!conn->client;
 }
@@ -57,7 +57,7 @@ static void cno_stream_destroy(cno_connection_t *conn, cno_stream_t *stream)
 
 static int cno_stream_destroy_clean(cno_connection_t *conn, cno_stream_t *stream)
 {
-    size_t id = stream->id;
+    uint32_t id = stream->id;
     cno_stream_destroy(conn, stream);
     return CNO_FIRE(conn, on_stream_end, id);
 }
@@ -75,7 +75,7 @@ static int cno_stream_close(cno_connection_t *conn, cno_stream_t *stream)
 }
 
 
-static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id, int local)
+static cno_stream_t * cno_stream_new(cno_connection_t *conn, uint32_t id, int local)
 {
     if (cno_stream_is_local(conn, id) != local) {
         (void) CNO_ERROR(INVALID_STREAM, "invalid stream ID (%lu != %d mod 2)", id, local + !conn->client);
@@ -116,7 +116,7 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, size_t id, int loca
 }
 
 
-static inline cno_stream_t * cno_stream_find(cno_connection_t *conn, size_t id)
+static inline cno_stream_t * cno_stream_find(cno_connection_t *conn, uint32_t id)
 {
     return id ? cno_set_find(&conn->streams, id) : NULL;
 }
@@ -157,7 +157,7 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame, cno_strea
             return CNO_ERROR(ASSERTION, "don't know how to split padded frames");
         }
 
-        size_t endflags = part.flags & (part.type == CNO_FRAME_DATA ? CNO_FLAG_END_STREAM : CNO_FLAG_END_HEADERS);
+        uint8_t endflags = part.flags & (part.type == CNO_FRAME_DATA ? CNO_FLAG_END_STREAM : CNO_FLAG_END_HEADERS);
 
         part.flags &= ~endflags;
         part.payload.size = limit;
@@ -191,7 +191,7 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame, cno_strea
 }
 
 
-static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
+static int cno_frame_write_goaway(cno_connection_t *conn, uint32_t /* enum CNO_STATE_CODE */ code)
 {
     uint8_t descr[8];
     write4(descr,     conn->last_stream[CNO_PEER_REMOTE]);
@@ -201,7 +201,7 @@ static int cno_frame_write_goaway(cno_connection_t *conn, size_t code)
 }
 
 
-static int cno_frame_write_rst_stream(cno_connection_t *conn, size_t stream, size_t code)
+static int cno_frame_write_rst_stream(cno_connection_t *conn, uint32_t stream, uint32_t /* enum CNO_STATE_CODE */ code)
 {
     if (!stream) {
         return CNO_ERROR(ASSERTION, "RST'd stream 0");
@@ -482,7 +482,7 @@ static int cno_frame_handle_push_promise(cno_connection_t *conn, cno_stream_t *s
     }
 
     if (frame->type != CNO_FRAME_CONTINUATION) {
-        size_t promised = read4((uint8_t *) frame->payload.data);
+        uint32_t promised = read4((uint8_t *) frame->payload.data);
         frame->payload.data += 4;
         frame->payload.size -= 4;
 
@@ -645,8 +645,8 @@ static int cno_frame_handle_settings(cno_connection_t *conn, cno_stream_t *strea
     uint8_t *end = ptr + frame->payload.size;
 
     for (; ptr != end; ptr += 6) {
-        size_t setting = read2(ptr);
-        size_t value   = read4(ptr + 2);
+        uint16_t setting = read2(ptr);
+        uint32_t value   = read4(ptr + 2);
 
         if (setting && setting < CNO_SETTINGS_UNDEFINED) {
             cfg->array[setting - 1] = value;
@@ -679,22 +679,22 @@ static int cno_frame_handle_window_update(cno_connection_t *conn, cno_stream_t *
         return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "bad WINDOW_UPDATE (length = %lu)", frame->payload.size);
     }
 
-    size_t increment = read4((uint8_t *) frame->payload.data);
+    uint32_t increment = read4((uint8_t *) frame->payload.data);
 
-    if (increment == 0) {
+    if (increment == 0 || increment >= 0x80000000u) {
         return CNO_ERROR(TRANSPORT, "bad WINDOW_UPDATE (incr = %lu)", increment);
     }
 
     if (!frame->stream) {
         conn->window_send += increment;
 
-        if (increment >= 0x80000000u || conn->window_send >= 0x80000000u) {
+        if (conn->window_send >= 0x80000000u) {
             return WRITE_GOAWAY(conn, FLOW_CONTROL_ERROR, "flow control window got too big (total = %lu)", conn->window_send);
         }
     } else if (stream != NULL) {
         stream->window_send += increment;
 
-        if (increment >= 0x80000000u || stream->window_send >= 0x80000000u) {
+        if (stream->window_send >= 0x80000000u) {
             return cno_frame_write_rst_stream(conn, frame->stream, CNO_STATE_FLOW_CONTROL_ERROR);
         }
     } else {
@@ -749,8 +749,8 @@ static int cno_settings_diff(cno_connection_t *conn, const cno_settings_t *old, 
     // no. of configurable parameters * (2 byte id + 4 byte value)
     uint8_t payload[(CNO_SETTINGS_UNDEFINED - 1) * 6];
     uint8_t *ptr = payload;
-    size_t *current = (size_t *) old;
-    size_t *replace = (size_t *) updated;
+    const uint32_t *current = old->array;
+    const uint32_t *replace = updated->array;
 
     for (; ++i < CNO_SETTINGS_UNDEFINED; ++current, ++replace) {
         if (*current != *replace) {
@@ -1232,7 +1232,7 @@ int cno_write_push(cno_connection_t *conn, size_t stream, const cno_message_t *m
         return CNO_ERROR(INVALID_STREAM, "stream %lu is not a response stream", stream);
     }
 
-    size_t child = cno_stream_next_id(conn);
+    uint32_t child = cno_stream_next_id(conn);
     cno_stream_t *childobj = cno_stream_new(conn, child, CNO_PEER_LOCAL);
 
     if (childobj == NULL) {
@@ -1384,10 +1384,7 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
     if (cno_hpack_encode(&conn->encoder, &frame.payload, msg->headers, msg->headers_len)
      || cno_frame_write(conn, &frame, streamobj))
     {
-        if (streamobj->state == CNO_STREAM_IDLE) {
-            cno_stream_destroy_clean(conn, streamobj);
-        }
-
+        // no point in cleaning up the stream, the encoder is probably in invalid state.
         cno_io_vector_clear(&frame.payload);
         return CNO_PROPAGATE;
     }

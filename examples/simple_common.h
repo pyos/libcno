@@ -6,7 +6,7 @@
 void log_frame(int fd, const cno_frame_t *frame, int recv)
 {
     const char *e = recv ? "recv" : "sent";
-    fprintf(stdout, "%d: %s frame %x (%s; length=%lu; flags=%x) on stream %lu\n", fd, e,
+    fprintf(stdout, "%d: %s frame %x (%s; length=%lu; flags=%x) on stream %u\n", fd, e,
         frame->type, CNO_FRAME_NAME[frame->type], frame->payload.size, frame->flags, frame->stream);
 }
 

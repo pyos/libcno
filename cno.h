@@ -76,16 +76,15 @@ enum CNO_STREAM_STATE {
 
 
 enum CNO_STREAM_ACCEPT {
-    CNO_ACCEPT_NOTHING = 0x0,  // bitwise fields marking acceptable input on said stream.
-    CNO_ACCEPT_HEADERS = 0x1,  // stream can receive a HEADERS frame.
-    CNO_ACCEPT_HEADCNT = 0x2,  // stream can receive a CONTINUATION to HEADERS.
-    CNO_ACCEPT_DATA    = 0x4,  // stream can receive a DATA frame.
-    CNO_ACCEPT_PUSH    = 0x8,  // stream can receive a PUSH_PROMISE frame.
-    CNO_ACCEPT_PUSHCNT = 0x10, // stream can receive a CONTINUATION to a PUSH_PROMISE.
-
-    CNO_ACCEPT_WRITE_PUSH    = 0x100,
-    CNO_ACCEPT_WRITE_HEADERS = 0x200,  // this time continuations are handled automatically
-    CNO_ACCEPT_WRITE_DATA    = 0x300,
+    CNO_ACCEPT_NOTHING       = 0x00,  // bitwise fields marking acceptable input on said stream.
+    CNO_ACCEPT_HEADERS       = 0x01,  // stream can receive a HEADERS frame.
+    CNO_ACCEPT_HEADCNT       = 0x02,  // stream can receive a CONTINUATION to HEADERS.
+    CNO_ACCEPT_DATA          = 0x04,  // stream can receive a DATA frame.
+    CNO_ACCEPT_PUSH          = 0x08,  // stream can receive a PUSH_PROMISE frame.
+    CNO_ACCEPT_PUSHCNT       = 0x10, // stream can receive a CONTINUATION to a PUSH_PROMISE.
+    CNO_ACCEPT_WRITE_PUSH    = 0x20,
+    CNO_ACCEPT_WRITE_HEADERS = 0x40,  // this time continuations are handled automatically
+    CNO_ACCEPT_WRITE_DATA    = 0x80,
 };
 
 
@@ -142,9 +141,9 @@ enum CNO_CONNECTION_SETTINGS {
 
 
 struct cno_st_frame_t {
-    enum CNO_FRAME_TYPE  type;
-    enum CNO_FRAME_FLAGS flags;
-    size_t stream;
+    uint8_t /* enum CNO_FRAME_TYPE  */ type;
+    uint8_t /* enum CNO_FRAME_FLAGS */ flags;
+    uint32_t stream;
     struct cno_st_io_vector_t payload;
 };
 
@@ -160,14 +159,14 @@ struct cno_st_message_t {
 
 struct cno_st_stream_t {
     CNO_SET_VALUE;
-    size_t id;
-    size_t window_recv;
-    size_t window_send;
-    size_t last_promise;
-    enum CNO_FRAME_FLAGS last_flags;  // carry END_HEADERS from HEADERS/PUSH_PROMISE to CONTINUATION
-    enum CNO_STREAM_STATE state;
-    enum CNO_STREAM_ACCEPT accept;
-    struct cno_st_message_t msg;
+    uint32_t id;
+    uint32_t window_recv;
+    uint32_t window_send;
+    uint32_t last_promise;
+    uint8_t /* enum CNO_STREAM_STATE  */ state;
+    uint8_t /* enum CNO_STREAM_ACCEPT */ accept;
+    // carry END_HEADERS from HEADERS/PUSH_PROMISE to CONTINUATION
+    uint8_t /* enum CNO_FRAME_FLAGS   */ last_flags;
     struct cno_st_io_vector_t buffer;  // frames that can have CONTINUATIONs are buffered here
 };
 
@@ -175,29 +174,29 @@ struct cno_st_stream_t {
 struct cno_st_settings_t {
     union {  // TODO find a better way to implement this to avoid alignment bullshit
         struct {
-            size_t header_table_size;
-            size_t enable_push;
-            size_t max_concurrent_streams;
-            size_t initial_window_size;
-            size_t max_frame_size;
-            size_t max_header_list_size;
+            uint32_t header_table_size;
+            uint32_t enable_push;
+            uint32_t max_concurrent_streams;
+            uint32_t initial_window_size;
+            uint32_t max_frame_size;
+            uint32_t max_header_list_size;
         };
-        size_t array[CNO_SETTINGS_UNDEFINED - 1];
+        uint32_t array[CNO_SETTINGS_UNDEFINED - 1];
     };
 };
 
 
 struct cno_st_connection_t {
     union {
-        enum CNO_CONNECTION_KIND kind;
-        enum CNO_PEER_KIND client;  // == CNO_PEER_LOCAL iff we are the client
+        uint8_t /*enum CNO_CONNECTION_KIND */ kind;
+        uint8_t /*enum CNO_PEER_KIND       */ client;  // == CNO_PEER_LOCAL iff we are the client
     };
-    enum CNO_CONNECTION_STATE state;
-    int closed;
-    size_t window_recv;
-    size_t window_send;
-    size_t last_stream[2];  // dereferencable with CNO_PEER_REMOTE/CNO_PEER_LOCAL
-    size_t stream_count[2];
+    uint8_t /* enum CNO_CONNECTION_STATE */ state;
+    uint8_t closed;
+    uint32_t window_recv;
+    uint32_t window_send;
+    uint32_t last_stream[2];  // dereferencable with CNO_PEER_REMOTE/CNO_PEER_LOCAL
+    uint32_t stream_count[2];
     size_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
     struct cno_st_settings_t settings[2];
     struct cno_st_io_vector_tmp_t buffer;
@@ -236,7 +235,7 @@ int                cno_connection_stop          (cno_connection_t *conn);
 int                cno_connection_is_http2      (cno_connection_t *conn);
 void               cno_settings_copy            (cno_connection_t *conn, cno_settings_t *target);
 int                cno_settings_apply           (cno_connection_t *conn, const cno_settings_t *new_settings);
-size_t             cno_stream_next_id           (cno_connection_t *conn);
+uint32_t           cno_stream_next_id           (cno_connection_t *conn);
 
 int cno_write_reset   (cno_connection_t *conn, size_t stream);
 int cno_write_push    (cno_connection_t *conn, size_t stream, const cno_message_t *msg);
