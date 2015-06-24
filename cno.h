@@ -193,7 +193,6 @@ struct cno_st_connection_t {
     size_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
     struct cno_st_settings_t settings[2];
     struct cno_st_io_vector_tmp_t buffer;
-    struct cno_st_frame_t frame;
     struct cno_st_hpack_t decoder;
     struct cno_st_hpack_t encoder;
     CNO_SET(64) streams;

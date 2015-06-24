@@ -1116,24 +1116,20 @@ static int cno_connection_fire(cno_connection_t *conn)
 
             WAIT(conn->buffer.size >= 9 + m);
 
-            conn->frame.payload.size = m;
-            conn->frame.type         = read1(base + 3);
-            conn->frame.flags        = read1(base + 4);
-            conn->frame.stream       = read4(base + 5);
-            conn->frame.payload.data = (char *) base + 9;
+            cno_frame_t frame = { read1(base + 3), read1(base + 4), read4(base + 5), { (char *) base + 9, m } };
 
-            if (conn->state == CNO_CONNECTION_READY_NO_SETTINGS && conn->frame.type != CNO_FRAME_SETTINGS) {
+            if (conn->state == CNO_CONNECTION_READY_NO_SETTINGS && frame.type != CNO_FRAME_SETTINGS) {
                 STOP(CNO_ERROR(TRANSPORT, "invalid HTTP 2 preface: no initial SETTINGS"));
             }
 
             conn->state = CNO_CONNECTION_READY;
-            cno_io_vector_shift(&conn->buffer, 9 + conn->frame.payload.size);
+            cno_io_vector_shift(&conn->buffer, 9 + m);
 
-            if (CNO_FIRE(conn, on_frame, &conn->frame)) {
+            if (CNO_FIRE(conn, on_frame, &frame)) {
                 STOP(CNO_PROPAGATE);
             }
 
-            if (cno_frame_handle(conn, &conn->frame)) {
+            if (cno_frame_handle(conn, &frame)) {
                 STOP(CNO_PROPAGATE);
             }
 
