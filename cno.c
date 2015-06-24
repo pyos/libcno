@@ -898,22 +898,20 @@ static int cno_connection_fire(cno_connection_t *conn)
                 }
             }
 
-            size_t header_num = CNO_MAX_HEADERS;
-            struct phr_header headers[CNO_MAX_HEADERS], *it = headers, *end;
+            // `phr_header` and `cno_header_t` have same contents.
+            cno_header_t headers[CNO_MAX_HEADERS], *it = headers, *end;
+            cno_message_t msg = { 0, CNO_IO_VECTOR_EMPTY, CNO_IO_VECTOR_EMPTY, headers, CNO_MAX_HEADERS };
 
             int minor;
             int ok = conn->client
-              ? phr_parse_response(conn->buffer.data, conn->buffer.size, &minor,
-                                    &stream->msg.code,
-                    (const char **) &stream->msg.method.data,
-                                    &stream->msg.method.size,
-                                    headers, &header_num, 0)
+              ? phr_parse_response(conn->buffer.data, conn->buffer.size, &minor, &msg.code,
+                    (const char **) &msg.method.data, &msg.method.size,
+                    (struct phr_header *) headers, &msg.headers_len, 0)
+
               : phr_parse_request(conn->buffer.data, conn->buffer.size,
-                    (const char **) &stream->msg.method.data,
-                                    &stream->msg.method.size,
-                    (const char **) &stream->msg.path.data,
-                                    &stream->msg.path.size,
-                                    &minor, headers, &header_num, 0);
+                    (const char **) &msg.method.data, &msg.method.size,
+                    (const char **) &msg.path.data, &msg.path.size,
+                    &minor, (struct phr_header *) headers, &msg.headers_len, 0);
 
             WAIT(ok != -2);
 
@@ -925,11 +923,11 @@ static int cno_connection_fire(cno_connection_t *conn)
                 STOP(CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: HTTP/1.%d not supported", minor));
             }
 
-            for (end = it + header_num; it != end; ++it) {
-                char * name  = (char *) it->name;
-                size_t size  = (size_t) it->name_len;
-                char * value = (char *) it->value;
-                size_t vsize = (size_t) it->value_len;
+            for (end = it + msg.headers_len; it != end; ++it) {
+                char * name  = it->name.data;
+                size_t size  = it->name.size;
+                char * value = it->value.data;
+                size_t vsize = it->value.size;
 
                 {
                     char *it  = name;
@@ -988,9 +986,6 @@ static int cno_connection_fire(cno_connection_t *conn)
                 }
             }
 
-            // `phr_header` and `cno_header_t` have same contents.
-            stream->msg.headers     = (cno_header_t *) &headers;
-            stream->msg.headers_len = header_num;
             stream->state = CNO_STREAM_OPEN;
             stream->accept |= CNO_ACCEPT_WRITE_HEADERS;
 
@@ -1000,7 +995,7 @@ static int cno_connection_fire(cno_connection_t *conn)
 
             cno_io_vector_shift(&conn->buffer, (size_t) ok);
 
-            if (CNO_FIRE(conn, on_message_start, stream->id, &stream->msg)) {
+            if (CNO_FIRE(conn, on_message_start, stream->id, &msg)) {
                 STOP(CNO_PROPAGATE);
             }
 
