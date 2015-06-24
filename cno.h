@@ -7,6 +7,14 @@
 #include "cno-hpack.h"
 
 
+#ifndef CNO_HTTP2_ENFORCE_MESSAGING_RULES
+/* Enable additional checks, which include ensuring only standard-defined pseudo-headers
+ * appear in the message, responses contain a status code, requests have a path and
+ * a method, etc. */
+#define CNO_HTTP2_ENFORCE_MESSAGING_RULES 0
+#endif
+
+
 #ifndef CNO_MAX_HTTP1_HEADER_SIZE
 /* Max. length of a header, i.e. length of the name + length of the value + 4 bytes
  * (the ": " separator and the CRLF.) If a header longer than this is passed

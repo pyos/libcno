@@ -272,12 +272,12 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
 
     cno_io_vector_clear(&stream->buffer);
 
-    #ifdef CNO_HTTP2_ENFORCE_MESSAGING_RULES
+    #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
         int seen_normal = 0;
     #endif
 
     for (it = headers; it != headers + msg.headers_len; ++it) {
-        #ifdef CNO_HTTP2_ENFORCE_MESSAGING_RULES
+        #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
             if (it->name.size && it->name.data[0] == ':') {
                 if (seen_normal) {
                     return WRITE_GOAWAY(conn, PROTOCOL_ERROR, "pseudo-header after normal header");
@@ -288,7 +288,7 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
         #endif
 
         if (strncmp(it->name.data, ":status", it->name.size) == 0) {
-            #ifdef CNO_HTTP2_ENFORCE_MESSAGING_RULES
+            #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
                 if (!conn->client) {
                     return WRITE_GOAWAY(conn, PROTOCOL_ERROR, ":status in a request");
                 }
@@ -313,7 +313,7 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
         } else
 
         if (strncmp(it->name.data, ":path", it->name.size) == 0) {
-            #ifdef CNO_HTTP2_ENFORCE_MESSAGING_RULES
+            #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
                 if (conn->client && frame->type == CNO_FRAME_HEADERS) {
                     return WRITE_GOAWAY(conn, PROTOCOL_ERROR, ":path in a response");
                 }
@@ -328,7 +328,7 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
         } else
 
         if (strncmp(it->name.data, ":method", it->name.size) == 0) {
-            #ifdef CNO_HTTP2_ENFORCE_MESSAGING_RULES
+            #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
                 if (conn->client && frame->type == CNO_FRAME_HEADERS) {
                     return WRITE_GOAWAY(conn, PROTOCOL_ERROR, ":method in a response");
                 }
@@ -342,7 +342,7 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
             msg.method.size = it->value.size;
         }
 
-        #ifdef CNO_HTTP2_ENFORCE_MESSAGING_RULES
+        #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
             else if (it->name.size && it->name.data[0] == ':'
               && strncmp(it->name.data, ":authority", it->name.size)
               && strncmp(it->name.data, ":scheme",    it->name.size))
@@ -361,7 +361,7 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
         #endif
     }
 
-    #ifdef CNO_HTTP2_ENFORCE_MESSAGING_RULES
+    #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
         if (conn->client && frame->type == CNO_FRAME_HEADERS) {
             if (msg.code == 0) {
                 return WRITE_GOAWAY(conn, PROTOCOL_ERROR, "no :status in a response");
@@ -432,16 +432,14 @@ static int cno_frame_handle_headers(cno_connection_t *conn, cno_stream_t *stream
         stream->accept = CNO_ACCEPT_HEADERS | CNO_ACCEPT_WRITE_HEADERS | CNO_ACCEPT_WRITE_PUSH;
     }
 
-    if (stream->accept & CNO_ACCEPT_HEADCNT) {
-        // continuation; proceed normally, state has already changed.
-    } else if (stream->accept & CNO_ACCEPT_HEADERS) {
-        if (stream->state == CNO_STREAM_IDLE) {
-            stream->state = CNO_STREAM_OPEN;
-        } else if (stream->state == CNO_STREAM_RESERVED_REMOTE) {
-            stream->state = CNO_STREAM_CLOSED_LOCAL;
-        }
-    } else {
+    if (!(stream->accept & (CNO_ACCEPT_HEADERS | CNO_ACCEPT_HEADCNT))) {
         return CNO_ERROR(TRANSPORT, "got HEADERS on a stream in wrong state");
+    }
+
+    if (stream->state == CNO_STREAM_IDLE) {
+        stream->state = CNO_STREAM_OPEN;
+    } else if (stream->state == CNO_STREAM_RESERVED_REMOTE) {
+        stream->state = CNO_STREAM_CLOSED_LOCAL;
     }
 
     stream->last_flags = CNO_FLAG_END_STREAM & frame->flags;
@@ -483,9 +481,7 @@ static int cno_frame_handle_push_promise(cno_connection_t *conn, cno_stream_t *s
         return CNO_ERROR(TRANSPORT, "PUSH_PROMISE not on an open stream");
     }
 
-    if (stream->accept & CNO_ACCEPT_PUSHCNT) {
-        // continuation; proceed as with HEADERS.
-    } else {
+    if (frame->type != CNO_FRAME_CONTINUATION) {
         size_t promised = read4((uint8_t *) frame->payload.data);
         frame->payload.data += 4;
         frame->payload.size -= 4;
