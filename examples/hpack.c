@@ -51,7 +51,7 @@ int hex_to_bytes(cno_io_vector_t *source, cno_io_vector_t *target)
     target->data = malloc(source->size / 2);
 
     if (target->data == NULL) {
-        return CNO_ERROR(NO_MEMORY);
+        return CNO_ERROR(NO_MEMORY, "--");
     }
 
     unsigned char *out = (unsigned char *) target->data;
@@ -80,7 +80,7 @@ int bytes_to_hex(cno_io_vector_t *source, cno_io_vector_t *target)
     target->data = malloc(target->size);
 
     if (target->data == NULL) {
-        return CNO_ERROR(NO_MEMORY);
+        return CNO_ERROR(NO_MEMORY, "--");
     }
 
     unsigned char *out = (unsigned char *) target->data;
@@ -123,7 +123,7 @@ void print_table(cno_hpack_t *state)
         print_header(&table->data);
         table = table->next;
     }
-    printf(" -- [size: %lu, limit: %lu]\n\n", state->size, state->limit);
+    printf(" -- [size: %zu, limit: %zu]\n\n", state->size, state->limit);
 }
 
 
@@ -165,7 +165,7 @@ int main(int argc, char *argv[])
             goto error;
         }
 
-        printf("decode(#%lu) =\n", i + 1);
+        printf("decode(#%zu) =\n", i + 1);
 
         for (k = 0; k < limit; ++k) {
             print_header(result + k);
@@ -183,7 +183,7 @@ int main(int argc, char *argv[])
 
         clear_headers(result, result + limit);
 
-        printf("input (#%lu) = ", i + 1); fwrite(hexdata.data, hexdata.size, 1, stdout);
+        printf("input (#%zu) = ", i + 1); fwrite(hexdata.data, hexdata.size, 1, stdout);
         printf("\n");
 
         if (bytes_to_hex(&source, &hexdata)) {
@@ -191,7 +191,7 @@ int main(int argc, char *argv[])
             goto error;
         }
 
-        printf("encode(#%lu) = ", i + 1); fwrite(hexdata.data, hexdata.size, 1, stdout);
+        printf("encode(#%zu) = ", i + 1); fwrite(hexdata.data, hexdata.size, 1, stdout);
         printf(" with ");
         cno_io_vector_clear(&source);
         cno_io_vector_clear(&hexdata);

@@ -78,12 +78,12 @@ static int cno_stream_close(cno_connection_t *conn, cno_stream_t *stream)
 static cno_stream_t * cno_stream_new(cno_connection_t *conn, uint32_t id, int local)
 {
     if (cno_stream_is_local(conn, id) != local) {
-        (void) CNO_ERROR(INVALID_STREAM, "invalid stream ID (%lu != %d mod 2)", id, local + !conn->client);
+        (void) CNO_ERROR(INVALID_STREAM, "invalid stream ID (%u != %d mod 2)", id, local + !conn->client);
         return NULL;
     }
 
     if (id <= conn->last_stream[local]) {
-        (void) CNO_ERROR(INVALID_STREAM, "invalid stream ID (%lu <= %lu)", id, conn->last_stream[local]);
+        (void) CNO_ERROR(INVALID_STREAM, "invalid stream ID (%u <= %u)", id, conn->last_stream[local]);
         return NULL;
     }
 
@@ -96,7 +96,7 @@ static cno_stream_t * cno_stream_new(cno_connection_t *conn, uint32_t id, int lo
     cno_stream_t *stream = calloc(1, sizeof(cno_stream_t));
 
     if (!stream) {
-        (void) CNO_ERROR(NO_MEMORY);
+        (void) CNO_ERROR(NO_MEMORY, "--");
         return NULL;
     }
 
@@ -129,13 +129,13 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame, cno_strea
 
     if (frame->type == CNO_FRAME_DATA) {
         if (length > conn->window_send) {
-            return CNO_ERROR(WOULD_BLOCK, "frame exceeds connection flow window (%lu > %lu)",
+            return CNO_ERROR(WOULD_BLOCK, "frame exceeds connection flow window (%zu > %u)",
                 length, conn->window_send);
         }
 
         if (stream) {
             if (length > stream->window_send) {
-                return CNO_ERROR(WOULD_BLOCK, "frame exceeds stream flow window (%lu > %lu)",
+                return CNO_ERROR(WOULD_BLOCK, "frame exceeds stream flow window (%zu > %u)",
                     length, stream->window_send);
             }
 
@@ -150,7 +150,7 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame, cno_strea
 
         if (part.type != CNO_FRAME_DATA         && part.type != CNO_FRAME_HEADERS
          && part.type != CNO_FRAME_PUSH_PROMISE && part.type != CNO_FRAME_CONTINUATION) {
-            return CNO_ERROR(ASSERTION, "frame too big (%lu > %lu)", length, limit);
+            return CNO_ERROR(ASSERTION, "frame too big (%zu > %zu)", length, limit);
         }
 
         if (part.flags & CNO_FLAG_PADDED) {
@@ -559,11 +559,11 @@ static int cno_frame_handle_data(cno_connection_t *conn, cno_stream_t *stream, c
 static int cno_frame_handle_ping(cno_connection_t *conn, cno_stream_t *steram, cno_frame_t *frame, int rstd)
 {
     if (frame->stream) {
-        return WRITE_GOAWAY(conn, PROTOCOL_ERROR, "got stream %lu PING-ed", frame->stream);
+        return WRITE_GOAWAY(conn, PROTOCOL_ERROR, "got stream %u PING-ed", frame->stream);
     }
 
     if (frame->payload.size != 8) {
-        return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "bad PING frame (length = %lu)", frame->payload.size);
+        return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "bad PING frame (length = %zu)", frame->payload.size);
     }
 
     if (frame->flags & CNO_FLAG_ACK) {
@@ -578,7 +578,7 @@ static int cno_frame_handle_ping(cno_connection_t *conn, cno_stream_t *steram, c
 static int cno_frame_handle_goaway(cno_connection_t *conn, cno_stream_t *stream, cno_frame_t *frame, int rstd)
 {
     if (frame->stream) {
-        return WRITE_GOAWAY(conn, PROTOCOL_ERROR, "got GOAWAY on stream %lu", frame->stream);
+        return WRITE_GOAWAY(conn, PROTOCOL_ERROR, "got GOAWAY on stream %u", frame->stream);
     }
 
     if (cno_connection_lost(conn)) {
@@ -593,7 +593,7 @@ static int cno_frame_handle_goaway(cno_connection_t *conn, cno_stream_t *stream,
 static int cno_frame_handle_rst_stream(cno_connection_t *conn, cno_stream_t *stream, cno_frame_t *frame, int rstd)
 {
     if (frame->payload.size != 4) {
-        return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "RST_STREAM of invalid length (%lu != 4)", frame->payload.size);
+        return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "RST_STREAM of invalid length (%zu != 4)", frame->payload.size);
     }
 
     if (!stream) {
@@ -616,7 +616,7 @@ static int cno_frame_handle_priority(cno_connection_t *conn, cno_stream_t *strea
     }
 
     if (frame->payload.size != 5) {
-        return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "PRIORITY of invalid length (%lu != 5)", frame->payload.size);
+        return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "PRIORITY of invalid length (%zu != 5)", frame->payload.size);
     }
 
     // TODO something.
@@ -627,17 +627,17 @@ static int cno_frame_handle_priority(cno_connection_t *conn, cno_stream_t *strea
 static int cno_frame_handle_settings(cno_connection_t *conn, cno_stream_t *stream, cno_frame_t *frame, int rstd)
 {
     if (frame->stream) {
-        return WRITE_GOAWAY(conn, PROTOCOL_ERROR, "got SETTINGS on stream %lu", frame->stream);
+        return WRITE_GOAWAY(conn, PROTOCOL_ERROR, "got SETTINGS on stream %u", frame->stream);
     }
 
     if (frame->flags & CNO_FLAG_ACK) {
         return frame->payload.size
-             ? WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "bad SETTINGS (ack with length = %lu)", frame->payload.size)
+             ? WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "bad SETTINGS (ack with length = %zu)", frame->payload.size)
              : CNO_OK;
     }
 
     if (frame->payload.size % 6) {
-        return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "bad SETTINGS (length = %lu)", frame->payload.size);
+        return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "bad SETTINGS (length = %zu)", frame->payload.size);
     }
 
     cno_settings_t *cfg = &conn->settings[CNO_PEER_REMOTE];
@@ -654,11 +654,11 @@ static int cno_frame_handle_settings(cno_connection_t *conn, cno_stream_t *strea
     }
 
     if (cfg->enable_push != 0 && cfg->enable_push != 1) {
-        return WRITE_GOAWAY(conn, PROTOCOL_ERROR, "invalid enable_push value (%lu != 0, 1)", cfg->enable_push);
+        return WRITE_GOAWAY(conn, PROTOCOL_ERROR, "invalid enable_push value (%u != 0, 1)", cfg->enable_push);
     }
 
     if (cfg->initial_window_size >= 0x80000000u) {
-        return WRITE_GOAWAY(conn, PROTOCOL_ERROR, "initial flow window %lu out of bounds", cfg->initial_window_size);
+        return WRITE_GOAWAY(conn, PROTOCOL_ERROR, "initial flow window %u out of bounds", cfg->initial_window_size);
     }
 
     if (cfg->max_frame_size < 16384 || cfg->max_frame_size > 16777215) {
@@ -676,20 +676,20 @@ static int cno_frame_handle_settings(cno_connection_t *conn, cno_stream_t *strea
 static int cno_frame_handle_window_update(cno_connection_t *conn, cno_stream_t *stream, cno_frame_t *frame, int rstd)
 {
     if (frame->payload.size != 4) {
-        return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "bad WINDOW_UPDATE (length = %lu)", frame->payload.size);
+        return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "bad WINDOW_UPDATE (length = %zu)", frame->payload.size);
     }
 
     uint32_t increment = read4((uint8_t *) frame->payload.data);
 
     if (increment == 0 || increment >= 0x80000000u) {
-        return CNO_ERROR(TRANSPORT, "bad WINDOW_UPDATE (incr = %lu)", increment);
+        return CNO_ERROR(TRANSPORT, "bad WINDOW_UPDATE (incr = %u)", increment);
     }
 
     if (!frame->stream) {
         conn->window_send += increment;
 
         if (conn->window_send >= 0x80000000u) {
-            return WRITE_GOAWAY(conn, FLOW_CONTROL_ERROR, "flow control window got too big (total = %lu)", conn->window_send);
+            return WRITE_GOAWAY(conn, FLOW_CONTROL_ERROR, "flow control window got too big (total = %u)", conn->window_send);
         }
     } else if (stream != NULL) {
         stream->window_send += increment;
@@ -801,7 +801,7 @@ cno_connection_t * cno_connection_new(enum CNO_CONNECTION_KIND kind)
     cno_connection_t *conn = calloc(1, sizeof(cno_connection_t));
 
     if (conn == NULL) {
-        (void) CNO_ERROR(NO_MEMORY);
+        (void) CNO_ERROR(NO_MEMORY, "--");
         return NULL;
     }
 
@@ -1229,7 +1229,7 @@ int cno_write_push(cno_connection_t *conn, size_t stream, const cno_message_t *m
     cno_stream_t *streamobj = cno_stream_find(conn, stream);
 
     if (streamobj == NULL || !(streamobj->accept & CNO_ACCEPT_WRITE_PUSH)) {
-        return CNO_ERROR(INVALID_STREAM, "stream %lu is not a response stream", stream);
+        return CNO_ERROR(INVALID_STREAM, "stream %zu is not a response stream", stream);
     }
 
     uint32_t child = cno_stream_next_id(conn);
@@ -1275,7 +1275,7 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
 
     if (!cno_connection_is_http2(conn)) {
         if (stream != 1) {
-            return CNO_ERROR(INVALID_STREAM, "can only write to stream 1 in HTTP 1 mode, not %lu", stream);
+            return CNO_ERROR(INVALID_STREAM, "can only write to stream 1 in HTTP 1 mode, not %zu", stream);
         }
 
         char head[CNO_MAX_HTTP1_HEADER_SIZE], *ptr = head;
@@ -1331,7 +1331,7 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
 
     if (streamobj == NULL) {
         if (!conn->client) {
-            return CNO_ERROR(INVALID_STREAM, "responding to invalid stream %lu", stream);
+            return CNO_ERROR(INVALID_STREAM, "responding to invalid stream %zu", stream);
         }
 
         streamobj = cno_stream_new(conn, stream, CNO_PEER_LOCAL);
@@ -1344,7 +1344,7 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
     }
 
     if (!(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS)) {
-        return CNO_ERROR(INVALID_STREAM, "stream %lu not writable", stream);
+        return CNO_ERROR(INVALID_STREAM, "stream %zu not writable", stream);
     }
 
     cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, stream, CNO_IO_VECTOR_EMPTY };
@@ -1415,7 +1415,7 @@ int cno_write_data(cno_connection_t *conn, size_t stream, const char *data, size
 
     if (!cno_connection_is_http2(conn)) {
         if (stream != 1) {
-            return CNO_ERROR(INVALID_STREAM, "can only write to stream 1 in HTTP 1 mode, not %lu", stream);
+            return CNO_ERROR(INVALID_STREAM, "can only write to stream 1 in HTTP 1 mode, not %zu", stream);
         }
 
         return length && CNO_FIRE(conn, on_write, data, length) ? CNO_PROPAGATE : CNO_OK;
@@ -1424,11 +1424,11 @@ int cno_write_data(cno_connection_t *conn, size_t stream, const char *data, size
     cno_stream_t *streamobj = cno_stream_find(conn, stream);
 
     if (streamobj == NULL) {
-        return CNO_ERROR(INVALID_STREAM, "stream %lu does not exist", stream);
+        return CNO_ERROR(INVALID_STREAM, "stream %zu does not exist", stream);
     }
 
     if (!(streamobj->accept & CNO_ACCEPT_WRITE_DATA)) {
-        return CNO_ERROR(INVALID_STREAM, "can't carry data over stream %lu", stream);
+        return CNO_ERROR(INVALID_STREAM, "can't carry data over stream %zu", stream);
     }
 
     cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, stream, { (char *) data, length } };

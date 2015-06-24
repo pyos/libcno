@@ -158,7 +158,7 @@ static int cno_hpack_decode_string(cno_io_vector_tmp_t *source, cno_io_vector_t 
     }
 
     if (length > source->size) {
-        return CNO_ERROR(COMPRESSION, "expected %lu octets, got %lu", length, source->size);
+        return CNO_ERROR(COMPRESSION, "expected %zu octets, got %zu", length, source->size);
     }
 
     if (huffman) {
@@ -169,7 +169,7 @@ static int cno_hpack_decode_string(cno_io_vector_tmp_t *source, cno_io_vector_t 
         uint8_t *ptr = buf;
 
         if (!buf) {
-            return CNO_ERROR(NO_MEMORY);
+            return CNO_ERROR(NO_MEMORY, "--");
         }
 
         cno_huffman_leaf_t ref = { CNO_HUFFMAN_LEAF_EOS, 0, 0 };
@@ -349,7 +349,7 @@ static int cno_hpack_encode_string(cno_io_vector_t *target, cno_io_vector_t *sou
         uint8_t *ptr  = data;
 
         if (data == NULL) {
-            return CNO_ERROR(NO_MEMORY);
+            return CNO_ERROR(NO_MEMORY, "--");
         }
 
         uint8_t *src  = (uint8_t *) source->data;

@@ -27,7 +27,7 @@
  */
 #define CNO_OK              0
 #define CNO_PROPAGATE       cno_error_upd(__FILE__, __LINE__, __func__)
-#define CNO_ERROR_SET(...)  cno_error_set(__FILE__, __LINE__, __func__, ##__VA_ARGS__, "")
+#define CNO_ERROR_SET(...)  cno_error_set(__FILE__, __LINE__, __func__, ##__VA_ARGS__)
 #define CNO_ERROR(...)      CNO_ERROR_SET(CNO_ERRNO_ ## __VA_ARGS__)
 #define CNO_ERROR_NUL(...) (CNO_ERROR(__VA_ARGS__), NULL)
 
@@ -55,11 +55,11 @@ struct cno_st_traceback_t {
 CNO_STRUCT_EXPORT(traceback);
 
 
-int                     cno_error_set     (const char *file, int line, const char *func, int code, ...);
-int                     cno_error_upd     (const char *file, int line, const char *func);
-int                     cno_error         (void);
-const char *            cno_error_text    (void);
-const char *            cno_error_name    (void);
+int cno_error     (void);
+int cno_error_set (const char *file, int line, const char *func, int code, const char *fmt, ...) __attribute__ ((format(printf, 5, 6)));
+int cno_error_upd (const char *file, int line, const char *func);
+const char * cno_error_name (void);
+const char * cno_error_text (void);
 const cno_traceback_t * cno_error_tb_head (void);
 const cno_traceback_t * cno_error_tb_next (const cno_traceback_t *tb);
 
@@ -198,7 +198,7 @@ struct cno_st_set_bucket_t { CNO_LIST_ROOT(struct cno_st_set_handle_t); };
  *    CNO_SET(256) set;
  *    ...
  *    cno_set_iterate(&set, something_t *, value, {
- *        printf("%lu -> %s\n", cno_set_key(value), value->some_field_of_something_t);
+ *        printf("%zu -> %s\n", cno_set_key(value), value->some_field_of_something_t);
  *    });
  */
 #define cno_set_iterate(m, T, value, block) do {                                                  \

@@ -14,14 +14,14 @@ static _Thread_local struct {
 } cno_error_st;
 
 
-int cno_error_set(const char *file, int line, const char *func, int code, ...)
+int cno_error_set(const char *file, int line, const char *func, int code, const char *fmt, ...)
 {
     cno_error_st.code = code;
     cno_error_st.tb_last = cno_error_st.tb_head;
 
     va_list vl;
-    va_start(vl, code);
-    vsnprintf(cno_error_st.text, sizeof(cno_error_st.text), va_arg(vl, const char *), vl);
+    va_start(vl, fmt);
+    vsnprintf(cno_error_st.text, sizeof(cno_error_st.text), fmt, vl);
     va_end(vl);
 
     return cno_error_upd(file, line, func);
@@ -103,7 +103,7 @@ int cno_io_vector_strip(cno_io_vector_tmp_t *vec)
     char *ptr = malloc(vec->size);
 
     if (ptr == NULL) {
-        return CNO_ERROR(NO_MEMORY);
+        return CNO_ERROR(NO_MEMORY, "--");
     }
 
     memcpy(ptr, vec->data, vec->size);
@@ -119,7 +119,7 @@ int cno_io_vector_copy(cno_io_vector_t *vec, const cno_io_vector_t *src)
     char *mem = malloc(src->size);
 
     if (mem == NULL) {
-        return CNO_ERROR(NO_MEMORY);
+        return CNO_ERROR(NO_MEMORY, "--");
     }
 
     memcpy(mem, src->data, src->size);
@@ -135,7 +135,7 @@ int cno_io_vector_extend(cno_io_vector_t *vec, const char *data, size_t length)
     char * region = realloc(vec->data, offset + length);
 
     if (region == NULL) {
-        return CNO_ERROR(NO_MEMORY);
+        return CNO_ERROR(NO_MEMORY, "--");
     }
 
     vec->size += length;

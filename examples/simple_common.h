@@ -6,7 +6,7 @@
 void log_frame(int fd, const cno_frame_t *frame, int recv)
 {
     const char *e = recv ? "recv" : "sent";
-    fprintf(stdout, "%d: %s frame %x (%s; length=%lu; flags=%x) on stream %u\n", fd, e,
+    fprintf(stdout, "%d: %s frame %x (%s; length=%zu; flags=%x) on stream %u\n", fd, e,
         frame->type, CNO_FRAME_NAME[frame->type], frame->payload.size, frame->flags, frame->stream);
 }
 
@@ -79,7 +79,7 @@ int log_recv_message_data(cno_connection_t *conn, void *fd, size_t stream, const
 
 int log_recv_message_end(cno_connection_t *conn, void *fd, size_t stream)
 {
-    fprintf(stdout, "%d: recv end of message; stream %lu closed\n", *(int *) fd, stream);
+    fprintf(stdout, "%d: recv end of message; stream %zu closed\n", *(int *) fd, stream);
     return CNO_OK;
 }
 
