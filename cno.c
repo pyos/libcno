@@ -13,10 +13,11 @@ static inline uint16_t read2(uint8_t *p) { return p[0] <<  8 | p[1]; }
 static inline uint32_t read4(uint8_t *p) { return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 static inline uint32_t read3(uint8_t *p) { return read4(p) >> 8; }
 
-static inline void write1(uint8_t *p, uint8_t  x) { p[0] = x; }
-static inline void write2(uint8_t *p, uint16_t x) { p[0] = x >>  8; p[1] = x; }
-static inline void write3(uint8_t *p, uint32_t x) { p[0] = x >> 16; p[1] = x >>  8; p[2] = x; }
-static inline void write4(uint8_t *p, uint32_t x) { p[0] = x >> 24; p[1] = x >> 16; p[2] = x >> 8; p[3] = x; }
+#define I8(x)  x
+#define I16(x) x >> 8, x
+#define I24(x) x >> 16, x >> 8, x
+#define I32(x) x >> 24, x >> 16, x >> 8, x
+#define PACK(...) (char *) (uint8_t []) { __VA_ARGS__ }, sizeof((uint8_t []) { __VA_ARGS__ })
 
 static inline char *write_vector(char *ptr, const cno_io_vector_t *vec) { return (char *) memcpy(ptr, vec->data, vec->size) + vec->size; }
 static inline char *write_string(char *ptr, const char *data)           { return (char *) memcpy(ptr, data, strlen(data)) + strlen(data); }
@@ -179,24 +180,15 @@ static int cno_frame_write(cno_connection_t *conn, cno_frame_t *frame, cno_strea
         return cno_frame_write(conn, &part, stream);
     }
 
-    uint8_t header[9];
-    write3(header,     length);
-    write1(header + 3, frame->type);
-    write1(header + 4, frame->flags);
-    write4(header + 5, frame->stream);
-
     return CNO_FIRE(conn, on_frame_send, frame)
-        || CNO_FIRE(conn, on_write, (char *) header, sizeof(header))
+        || CNO_FIRE(conn, on_write, PACK(I24(length), I8(frame->type), I8(frame->flags), I32(frame->stream)))
         || (length && CNO_FIRE(conn, on_write, frame->payload.data, length));
 }
 
 
 static int cno_frame_write_goaway(cno_connection_t *conn, uint32_t /* enum CNO_STATE_CODE */ code)
 {
-    uint8_t descr[8];
-    write4(descr,     conn->last_stream[CNO_PEER_REMOTE]);
-    write4(descr + 4, code);
-    cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, CNO_IO_VECTOR_ARRAY(descr) };
+    cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, { PACK(I32(conn->last_stream[CNO_PEER_REMOTE]), I32(code)) } };
     return cno_frame_write(conn, &error, NULL);
 }
 
@@ -213,9 +205,7 @@ static int cno_frame_write_rst_stream(cno_connection_t *conn, uint32_t stream, u
         return CNO_OK;  // assume stream already ended naturally
     }
 
-    uint8_t descr[4];
-    write4(descr, code);
-    cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, stream, CNO_IO_VECTOR_ARRAY(descr) };
+    cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, stream, { PACK(I32(code)) } };
 
     if (cno_frame_write(conn, &error, obj)) {
         return CNO_PROPAGATE;
@@ -237,9 +227,7 @@ static int cno_frame_write_rst_stream(cno_connection_t *conn, uint32_t stream, u
 static int cno_frame_handle_flow(cno_connection_t *conn, cno_stream_t *stream, cno_frame_t *frame)
 {
     if (frame->payload.size) {
-        uint8_t payload[4];
-        write4(payload, frame->payload.size);
-        cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, CNO_IO_VECTOR_ARRAY(payload) };
+        cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, { PACK(frame->payload.size) } };
 
         if (cno_frame_write(conn, &update, NULL)) {
             return CNO_PROPAGATE;
@@ -745,21 +733,17 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
 static int cno_settings_diff(cno_connection_t *conn, const cno_settings_t *old, const cno_settings_t *updated)
 {
     size_t i = 0;
-    // no. of configurable parameters * (2 byte id + 4 byte value)
-    uint8_t payload[(CNO_SETTINGS_UNDEFINED - 1) * 6];
-    uint8_t *ptr = payload;
+    uint8_t payload[CNO_SETTINGS_UNDEFINED - 1][6], (*ptr)[6] = payload;
     const uint32_t *current = old->array;
     const uint32_t *replace = updated->array;
 
     for (; ++i < CNO_SETTINGS_UNDEFINED; ++current, ++replace) {
         if (*current != *replace) {
-            write2(ptr, i);
-            write4(ptr + 2, *replace);
-            ptr += 6;
+            memcpy(ptr++, PACK(I16(i), I32(*replace)));
         }
     }
 
-    cno_frame_t frame = { CNO_FRAME_SETTINGS, 0, 0, { (char *) payload, ptr - payload } };
+    cno_frame_t frame = { CNO_FRAME_SETTINGS, 0, 0, { (char *) payload, (ptr - payload) * sizeof(*ptr) } };
     return cno_frame_write(conn, &frame, NULL);
 }
 
@@ -1241,16 +1225,13 @@ int cno_write_push(cno_connection_t *conn, size_t stream, const cno_message_t *m
     childobj->state  = CNO_STREAM_RESERVED_LOCAL;
     childobj->accept = CNO_ACCEPT_WRITE_HEADERS;
 
-    uint8_t childid[4];
-    write4(childid, child);
-
     cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, stream, CNO_IO_VECTOR_EMPTY };
     cno_header_t head[2] = {
         { CNO_IO_VECTOR_CONST(":method"), msg->method },
         { CNO_IO_VECTOR_CONST(":path"),   msg->path   },
     };
 
-    if (cno_io_vector_extend(&frame.payload, (char *) childid, 4)
+    if (cno_io_vector_extend(&frame.payload, PACK(I32(child)))
      || cno_hpack_encode(&conn->encoder, &frame.payload, head, 2)
      || cno_hpack_encode(&conn->encoder, &frame.payload, msg->headers, msg->headers_len)
      || cno_frame_write(conn, &frame, streamobj))
