@@ -381,16 +381,15 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
 
     if (frame->type != CNO_FRAME_HEADERS) {
         // accept pushes even on reset streams.
-        failed = CNO_FIRE(conn, on_message_push, stream->last_promise, &msg, frame->stream);
         stream->accept &= ~CNO_ACCEPT_PUSHCNT;
+        failed = CNO_FIRE(conn, on_message_push, stream->last_promise, &msg, frame->stream);
     } else if (stream->state == CNO_STREAM_CLOSED) {
         // can finally destroy the thing.
         failed = cno_stream_destroy_clean(conn, stream);
-        stream = NULL;
     } else {
-        failed = CNO_FIRE(conn, on_message_start, frame->stream, &msg);
         stream->accept &= ~(CNO_ACCEPT_HEADERS | CNO_ACCEPT_HEADCNT);
         stream->accept |=   CNO_ACCEPT_DATA;
+        failed = CNO_FIRE(conn, on_message_start, frame->stream, &msg);
     }
 
     for (it = headers; it != headers + msg.headers_len; ++it) {
