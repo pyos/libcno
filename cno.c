@@ -227,7 +227,7 @@ static int cno_frame_write_rst_stream(cno_connection_t *conn, uint32_t stream, u
 static int cno_frame_handle_flow(cno_connection_t *conn, cno_stream_t *stream, cno_frame_t *frame)
 {
     if (frame->payload.size) {
-        cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, { PACK(frame->payload.size) } };
+        cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, { PACK(I32(frame->payload.size)) } };
 
         if (cno_frame_write(conn, &update, NULL)) {
             return CNO_PROPAGATE;
