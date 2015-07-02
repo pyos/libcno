@@ -245,7 +245,7 @@ static int cno_frame_handle_flow(cno_connection_t *conn, cno_stream_t *stream, c
 }
 
 
-static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *stream, cno_frame_t *frame)
+static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *stream, uint8_t /* enum CNO_FRAME_TYPE */ frame)
 {
     cno_header_t  headers[CNO_MAX_HEADERS];
     cno_header_t *it;
@@ -301,7 +301,7 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
 
         if (strncmp(it->name.data, ":path", it->name.size) == 0) {
             #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
-                if (conn->client && frame->type == CNO_FRAME_HEADERS) {
+                if (conn->client && frame == CNO_FRAME_HEADERS) {
                     return WRITE_GOAWAY(conn, PROTOCOL_ERROR, ":path in a response");
                 }
 
@@ -316,7 +316,7 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
 
         if (strncmp(it->name.data, ":method", it->name.size) == 0) {
             #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
-                if (conn->client && frame->type == CNO_FRAME_HEADERS) {
+                if (conn->client && frame == CNO_FRAME_HEADERS) {
                     return WRITE_GOAWAY(conn, PROTOCOL_ERROR, ":method in a response");
                 }
 
@@ -349,7 +349,7 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
     }
 
     #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
-        if (conn->client && frame->type == CNO_FRAME_HEADERS) {
+        if (conn->client && frame == CNO_FRAME_HEADERS) {
             if (msg.code == 0) {
                 return WRITE_GOAWAY(conn, PROTOCOL_ERROR, "no :status in a response");
             }
@@ -366,17 +366,17 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
 
     int failed;
 
-    if (frame->type != CNO_FRAME_HEADERS) {
+    if (frame != CNO_FRAME_HEADERS) {
         // accept pushes even on reset streams.
         stream->accept &= ~CNO_ACCEPT_PUSHCNT;
-        failed = CNO_FIRE(conn, on_message_push, stream->last_promise, &msg, frame->stream);
+        failed = CNO_FIRE(conn, on_message_push, stream->last_promise, &msg, stream->id);
     } else if (stream->closed) {
         // can finally destroy the thing.
         failed = cno_stream_destroy_clean(conn, stream);
     } else {
         stream->accept &= ~(CNO_ACCEPT_HEADERS | CNO_ACCEPT_HEADCNT);
         stream->accept |=   CNO_ACCEPT_DATA;
-        failed = CNO_FIRE(conn, on_message_start, frame->stream, &msg);
+        failed = CNO_FIRE(conn, on_message_start, stream->id, &msg);
     }
 
     for (it = headers; it != headers + msg.headers_len; ++it) {
@@ -430,7 +430,7 @@ static int cno_frame_handle_headers(cno_connection_t *conn, cno_stream_t *stream
     }
 
     if (frame->flags & CNO_FLAG_END_HEADERS) {
-        if (cno_frame_handle_end_headers(conn, stream, frame)) {
+        if (cno_frame_handle_end_headers(conn, stream, CNO_FRAME_HEADERS)) {
             return CNO_PROPAGATE;
         }
 
@@ -479,7 +479,7 @@ static int cno_frame_handle_push_promise(cno_connection_t *conn, cno_stream_t *s
     }
 
     if (frame->flags & CNO_FLAG_END_HEADERS) {
-        return cno_frame_handle_end_headers(conn, stream, frame);
+        return cno_frame_handle_end_headers(conn, stream, CNO_FRAME_PUSH_PROMISE);
     }
 
     return CNO_OK;
