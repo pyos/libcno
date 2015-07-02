@@ -65,27 +65,18 @@ enum CNO_CONNECTION_STATE {
 };
 
 
-enum CNO_STREAM_STATE {
-    CNO_STREAM_IDLE,  // initial state
-    CNO_STREAM_OPEN,  // recv HEADERS / sent HEADERS
-    CNO_STREAM_CLOSED_LOCAL,  // sent END_STREAM
-    CNO_STREAM_CLOSED_REMOTE, // recv END_STREAM
-    CNO_STREAM_RESERVED_LOCAL,  // sent PUSH_PROMISE
-    CNO_STREAM_RESERVED_REMOTE, // recv PUSH_PROMISE
-    CNO_STREAM_CLOSED,  // recv RST_STREAM / sent RST_STREAM / both END_STREAM
-};
-
-
 enum CNO_STREAM_ACCEPT {
     CNO_ACCEPT_NOTHING       = 0x00,  // bitwise fields marking acceptable input on said stream.
     CNO_ACCEPT_HEADERS       = 0x01,  // stream can receive a HEADERS frame.
     CNO_ACCEPT_HEADCNT       = 0x02,  // stream can receive a CONTINUATION to HEADERS.
     CNO_ACCEPT_DATA          = 0x04,  // stream can receive a DATA frame.
     CNO_ACCEPT_PUSH          = 0x08,  // stream can receive a PUSH_PROMISE frame.
-    CNO_ACCEPT_PUSHCNT       = 0x10, // stream can receive a CONTINUATION to a PUSH_PROMISE.
+    CNO_ACCEPT_PUSHCNT       = 0x10,  // stream can receive a CONTINUATION to a PUSH_PROMISE.
+    CNO_ACCEPT_INBOUND       = 0x1f,
     CNO_ACCEPT_WRITE_PUSH    = 0x20,
     CNO_ACCEPT_WRITE_HEADERS = 0x40,  // this time continuations are handled automatically
     CNO_ACCEPT_WRITE_DATA    = 0x80,
+    CNO_ACCEPT_OUTBOUND      = 0xe0,
 };
 
 
@@ -164,7 +155,7 @@ struct cno_st_stream_t {
     uint32_t window_recv;
     uint32_t window_send;
     uint32_t last_promise;
-    uint8_t /* enum CNO_STREAM_STATE  */ state;
+    uint8_t closed;
     uint8_t /* enum CNO_STREAM_ACCEPT */ accept;
     // carry END_HEADERS from HEADERS/PUSH_PROMISE to CONTINUATION
     uint8_t /* enum CNO_FRAME_FLAGS   */ last_flags;

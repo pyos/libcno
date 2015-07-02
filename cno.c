@@ -66,12 +66,11 @@ static int cno_stream_destroy_clean(cno_connection_t *conn, cno_stream_t *stream
 
 static int cno_stream_close(cno_connection_t *conn, cno_stream_t *stream)
 {
-    if (stream->state == CNO_STREAM_CLOSED_REMOTE) {
+    if (!(stream->accept & CNO_ACCEPT_INBOUND)) {
         return cno_stream_destroy_clean(conn, stream);
     }
 
-    stream->accept &= ~(CNO_ACCEPT_WRITE_HEADERS | CNO_ACCEPT_WRITE_DATA | CNO_ACCEPT_WRITE_PUSH);
-    stream->state   = CNO_STREAM_CLOSED_LOCAL;
+    stream->accept &= ~CNO_ACCEPT_OUTBOUND;
     return CNO_OK;
 }
 
@@ -213,7 +212,7 @@ static int cno_frame_write_rst_stream(cno_connection_t *conn, uint32_t stream, u
 
     // a stream in closed state can still accept headers/data.
     // headers will be decompressed; other than that, everything is ignored.
-    obj->state = CNO_STREAM_CLOSED;
+    obj->closed = 1;
 
     if (!(obj->accept & (CNO_ACCEPT_HEADERS | CNO_ACCEPT_HEADCNT))) {
         // since headers were already handled, this stream can be safely destroyed.
@@ -371,7 +370,7 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
         // accept pushes even on reset streams.
         stream->accept &= ~CNO_ACCEPT_PUSHCNT;
         failed = CNO_FIRE(conn, on_message_push, stream->last_promise, &msg, frame->stream);
-    } else if (stream->state == CNO_STREAM_CLOSED) {
+    } else if (stream->closed) {
         // can finally destroy the thing.
         failed = cno_stream_destroy_clean(conn, stream);
     } else {
@@ -391,16 +390,12 @@ static int cno_frame_handle_end_headers(cno_connection_t *conn, cno_stream_t *st
 
 static int cno_frame_handle_end_stream(cno_connection_t *conn, cno_stream_t *stream, cno_frame_t *frame)
 {
-    stream->accept &= ~CNO_ACCEPT_DATA;
+    stream->accept &= ~CNO_ACCEPT_INBOUND;
 
-    if (stream->state == CNO_STREAM_CLOSED_LOCAL) {
+    if (!(stream->accept & CNO_ACCEPT_OUTBOUND)) {
         if (cno_stream_destroy_clean(conn, stream)) {
             return CNO_PROPAGATE;
         }
-    } else
-
-    if (stream->state != CNO_STREAM_CLOSED) {
-        stream->state = CNO_STREAM_CLOSED_REMOTE;
     }
 
     return CNO_FIRE(conn, on_message_end, frame->stream);
@@ -421,12 +416,6 @@ static int cno_frame_handle_headers(cno_connection_t *conn, cno_stream_t *stream
 
     if (!(stream->accept & (CNO_ACCEPT_HEADERS | CNO_ACCEPT_HEADCNT))) {
         return CNO_ERROR(TRANSPORT, "got HEADERS on a stream in wrong state");
-    }
-
-    if (stream->state == CNO_STREAM_IDLE) {
-        stream->state = CNO_STREAM_OPEN;
-    } else if (stream->state == CNO_STREAM_RESERVED_REMOTE) {
-        stream->state = CNO_STREAM_CLOSED_LOCAL;
     }
 
     stream->last_flags = CNO_FLAG_END_STREAM & frame->flags;
@@ -479,7 +468,6 @@ static int cno_frame_handle_push_promise(cno_connection_t *conn, cno_stream_t *s
             return CNO_PROPAGATE;
         }
 
-        prstream->state  = CNO_STREAM_RESERVED_REMOTE;
         prstream->accept = CNO_ACCEPT_HEADERS;
         stream->last_promise = promised;
     }
@@ -969,7 +957,6 @@ static int cno_connection_fire(cno_connection_t *conn)
                 }
             }
 
-            stream->state = CNO_STREAM_OPEN;
             stream->accept |= CNO_ACCEPT_WRITE_HEADERS;
 
             if (conn->state == CNO_CONNECTION_HTTP1_READY) {
@@ -1040,10 +1027,8 @@ static int cno_connection_fire(cno_connection_t *conn)
 
             if (conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE) {
                 conn->state = CNO_CONNECTION_PREFACE;
-                stream->state = CNO_STREAM_CLOSED_REMOTE;
             } else {
                 conn->state = CNO_CONNECTION_HTTP1_READY;
-                stream->state = CNO_STREAM_IDLE;
             }
 
             if (CNO_FIRE(conn, on_message_end, stream->id)) {
@@ -1222,7 +1207,6 @@ int cno_write_push(cno_connection_t *conn, size_t stream, const cno_message_t *m
         return NULL;
     }
 
-    childobj->state  = CNO_STREAM_RESERVED_LOCAL;
     childobj->accept = CNO_ACCEPT_WRITE_HEADERS;
 
     cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, stream, CNO_IO_VECTOR_EMPTY };
@@ -1340,11 +1324,8 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
         };
 
         if (cno_hpack_encode(&conn->encoder, &frame.payload, head, 2)) {
-            if (streamobj->state == CNO_STREAM_IDLE) {
-                // this time the error is (maybe) recoverable so we should clean up.
-                cno_stream_destroy_clean(conn, streamobj);
-            }
-
+            // non-recoverable error, so no point in destroying the stream
+            // even if we just created it.
             return CNO_PROPAGATE;
         }
     } else {
@@ -1356,7 +1337,6 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
         };
 
         if (cno_hpack_encode(&conn->encoder, &frame.payload, head, 1)) {
-            // stream initiated by client, we 100% did not create the object.
             return CNO_PROPAGATE;
         }
     }
@@ -1370,12 +1350,6 @@ int cno_write_message(cno_connection_t *conn, size_t stream, const cno_message_t
     }
 
     cno_io_vector_clear(&frame.payload);
-
-    if (streamobj->state == CNO_STREAM_IDLE) {
-        streamobj->state = CNO_STREAM_OPEN;
-    } else if (streamobj->state == CNO_STREAM_RESERVED_LOCAL) {
-        streamobj->state = CNO_STREAM_CLOSED_REMOTE;
-    }
 
     if (final) {
         return cno_stream_close(conn, streamobj);
