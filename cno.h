@@ -1,6 +1,7 @@
 #ifndef _CNO_CORE_H_
 #define _CNO_CORE_H_
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "cno-common.h"
