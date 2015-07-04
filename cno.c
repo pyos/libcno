@@ -458,6 +458,10 @@ static int cno_frame_handle_push_promise(cno_connection_t *conn, cno_stream_t *s
     }
 
     if (frame->type != CNO_FRAME_CONTINUATION) {
+        if (frame->payload.size < 4) {
+            return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "PUSH_PROMISE too short");
+        }
+
         uint32_t promised = read4((uint8_t *) frame->payload.data);
         frame->payload.data += 4;
         frame->payload.size -= 4;
@@ -686,6 +690,10 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
     cno_stream_t *stream = cno_stream_find(conn, frame->stream);
 
     if (frame->flags & CNO_FLAG_PADDED) {
+        if (frame->payload.size == 0) {
+            return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "padded frame with no pad length");
+        }
+
         uint16_t pad = 1 + *(uint8_t *) frame->payload.data;
 
         if (pad >= frame->payload.size) {
@@ -697,6 +705,10 @@ static int cno_frame_handle(cno_connection_t *conn, cno_frame_t *frame)
     }
 
     if (frame->flags & CNO_FLAG_PRIORITY) {
+        if (frame->payload.size < 5) {
+            return WRITE_GOAWAY(conn, FRAME_SIZE_ERROR, "no priority spec in priority frame");
+        }
+
         // TODO do something with this info.
         frame->payload.data += 5;
         frame->payload.size -= 5;
