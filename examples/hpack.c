@@ -24,6 +24,7 @@
 #include <stdlib.h>
 
 #include "cno-hpack.h"
+#include "simple_common.h"
 
 
 static inline int from_hex(char x)
@@ -147,7 +148,7 @@ int main(int argc, char *argv[])
     cno_hpack_init(&decoder, size);
 
     cno_header_t result[20];
-    size_t i;
+    int i;
 
     for (i = 0; i < argc - 2; ++i) {
         size_t k;
@@ -165,7 +166,7 @@ int main(int argc, char *argv[])
             goto error;
         }
 
-        printf("decode(#%zu) =\n", i + 1);
+        printf("decode(#%d) =\n", i + 1);
 
         for (k = 0; k < limit; ++k) {
             print_header(result + k);
@@ -183,7 +184,7 @@ int main(int argc, char *argv[])
 
         clear_headers(result, result + limit);
 
-        printf("input (#%zu) = ", i + 1); fwrite(hexdata.data, hexdata.size, 1, stdout);
+        printf("input (#%d) = ", i + 1); fwrite(hexdata.data, hexdata.size, 1, stdout);
         printf("\n");
 
         if (bytes_to_hex(&source, &hexdata)) {
@@ -191,7 +192,7 @@ int main(int argc, char *argv[])
             goto error;
         }
 
-        printf("encode(#%zu) = ", i + 1); fwrite(hexdata.data, hexdata.size, 1, stdout);
+        printf("encode(#%d) = ", i + 1); fwrite(hexdata.data, hexdata.size, 1, stdout);
         printf(" with ");
         cno_io_vector_clear(&source);
         cno_io_vector_clear(&hexdata);

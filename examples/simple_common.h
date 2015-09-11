@@ -1,5 +1,7 @@
 #ifndef _SIMPLE_COMMON_H_
 #define _SIMPLE_COMMON_H_
+#include <unistd.h>
+
 #include "cno.h"
 
 
