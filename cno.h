@@ -206,7 +206,7 @@ struct cno_st_connection_t {
     int (*on_message_end   )(struct cno_st_connection_t *, void *, size_t /* stream */);
     int (*on_frame         )(struct cno_st_connection_t *, void *, const struct cno_st_frame_t * /* frame */);
     int (*on_frame_send    )(struct cno_st_connection_t *, void *, const struct cno_st_frame_t * /* frame */);
-    int (*on_pong          )(struct cno_st_connection_t *, void *, const char [8] /* payload */);
+    int (*on_pong          )(struct cno_st_connection_t *, void *, const char * /* payload */);
 };
 
 
