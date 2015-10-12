@@ -19,7 +19,7 @@ _require_objects = \
 	obj/core.o \
 	obj/common.o \
 	obj/hpack.o \
-    obj/../picohttpparser/picohttpparser.o \
+	obj/../picohttpparser/picohttpparser.o \
 
 
 _require_examples = \
