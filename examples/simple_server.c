@@ -1,9 +1,5 @@
 /* A basic POSIX multithreaded plaintext server.
  *
- * Building with GCC (for example):
- *
- *     gcc -std=c11 -pthread -I.. ../cno{,-common,-hpack}.c ../picohttpparser/picohttpparser.c simple_server.c -o server
- *
  * Usage:
  *
  *     ./server 8000

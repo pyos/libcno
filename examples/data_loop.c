@@ -1,10 +1,6 @@
 /* An HTTP 2 request-response loop: it sets up a client and a server and connects
  * them to each other without using sockets.
  *
- * Building with GCC (for example):
- *
- *     gcc -std=c11 -I.. ../cno{,-common,-hpack}.c ../picohttpparser/picohttpparser.c data_loop.c -o data_loop
- *
  * Usage:
  *
  *     ./data_loop

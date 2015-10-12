@@ -1,10 +1,6 @@
 /* An HPACK example & test app. Decompresses and then recompresses a bunch of
  * headers passed through the command line in hex-encoded form (e.g. `0123456789ABCDEF`).
  *
- * Building with GCC (for example):
- *
- *     gcc -std=c11 -I.. ../cno{-common,-hpack}.c hpack.c -o hpack
- *
  * Usage:
  *
  *     ./hpack 220 828684418cf1e3c2e5f23a6ba0ab90f4ff

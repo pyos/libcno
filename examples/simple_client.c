@@ -1,9 +1,5 @@
 /* A basic POSIX plaintext client.
  *
- * Building with GCC (for example):
- *
- *     gcc -std=c11 -I.. ../cno{,-common,-hpack}.c ../picohttpparser/picohttpparser.c simple_client.c -o client
- *
  * Usage:
  *
  *        ./client http://example.com/
