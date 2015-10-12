@@ -4,8 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "cno.h"
-#include "picohttpparser/picohttpparser.h"
+#include <cno/core.h>
+#include <picohttpparser/picohttpparser.h>
 
 
 static inline uint8_t  read1(uint8_t *p) { return p[0]; }

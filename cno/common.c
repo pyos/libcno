@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "cno-common.h"
+#include <cno/common.h>
 
 
 static _Thread_local struct {

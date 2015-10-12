@@ -25,10 +25,10 @@
 #include <netinet/ip.h>
 #include <sys/socket.h>
 
-#include "cno.h"
-#include "urlparse.h"
+#include <cno/core.h>
+#include "examples/urlparse.h"
 // See this file for callbacks:
-#include "simple_common.h"
+#include "examples/simple_common.h"
 
 
 int disconnect(cno_connection_t *conn, void *fd, size_t stream)

@@ -4,8 +4,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "cno-common.h"
-#include "cno-hpack.h"
+#include <cno/common.h>
+#include <cno/hpack.h>
 
 
 #ifndef CNO_HTTP2_ENFORCE_MESSAGING_RULES

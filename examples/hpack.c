@@ -23,8 +23,8 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "cno-hpack.h"
-#include "simple_common.h"
+#include <cno/hpack.h>
+#include "examples/simple_common.h"
 
 
 static inline int from_hex(char x)

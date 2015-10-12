@@ -1,7 +1,7 @@
 #ifndef _CNO_HPACK_H_
 #define _CNO_HPACK_H_
 
-#include "cno-common.h"
+#include <cno/common.h>
 
 
 struct cno_st_header_t {

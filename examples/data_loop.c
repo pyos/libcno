@@ -17,8 +17,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#include "cno.h"
-#include "simple_common.h"
+#include <cno/core.h>
+#include "examples/simple_common.h"
 
 
 static int pass(cno_connection_t *conn, void *other, const char *data, size_t length)

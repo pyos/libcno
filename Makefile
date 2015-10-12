@@ -1,26 +1,56 @@
-CC     = gcc
-CFLAGS = -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -fPIC -I. -L.
+CC      = gcc
+CFLAGS ?= -O3
+PYTHON ?= python3
 
-HDRS = cno.h cno-common.h cno-hpack.h picohttpparser/picohttpparser.h cno-hpack-data.h
-OBJS = cno.o cno-common.o cno-hpack.o picohttpparser/picohttpparser.o
-EXEC = examples/simple_server examples/simple_client examples/data_loop examples/hpack
+COMPILE = $(CC) $(CFLAGS) -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -fPIC -I. -L./obj -o
+DYNLINK = $(CC) -shared -o
+ARCHIVE = ar rcs
+
+
+_require_headers = \
+	cno/core.h \
+	cno/common.h \
+	cno/hpack.h \
+	cno/hpack-data.h \
+	picohttpparser/picohttpparser.h
+
+
+_require_objects = \
+	obj/core.o \
+	obj/common.o \
+	obj/hpack.o \
+    obj/../picohttpparser/picohttpparser.o \
+
+
+_require_examples = \
+	obj/examples/simple_server \
+	obj/examples/simple_client \
+	obj/examples/data_loop \
+	obj/examples/hpack
+
 
 .PHONY: all clean
-.PRECIOUS: %.o
+.PRECIOUS: obj/%.o obj/libcno.a obj/libcno.so obj/examples/%
 
-all: $(EXEC)
+
+all: $(_require_examples)
+
+obj/libcno.a: $(_require_objects)
+	$(DYNLINK) $@ $^
+
+obj/libcno.so: $(_require_objects)
+	$(ARCHIVE) $@ $^
+
+obj/%.o: cno/%.c $(_require_headers)
+	@mkdir -p obj
+	$(COMPILE) $@ $< -c
+
+obj/examples/%: examples/%.c obj/libcno.a
+	@mkdir -p obj/examples
+	$(COMPILE) $@ $< -lcno -pthread
+
+cno/hpack-data.h: cno/hpack-data.py
+	$(PYTHON) cno/hpack-data.py > cno/hpack-data.h
 
 clean:
-	rm -f $(OBJS) $(EXEC) libcno.a libcno.so
-
-libcno.a: $(OBJS)
-	ar rcs $@ $^
-
-libcno.so: $(OBJS)
-	$(CC) -shared -o $@ $^
-
-%.o: %.c $(HDRS)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-examples/%: examples/%.c libcno.a
-	$(CC) $(CFLAGS) -pthread -o $@ $< -lcno
+	rm -rf obj build

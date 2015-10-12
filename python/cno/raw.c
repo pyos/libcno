@@ -1,7 +1,5 @@
-//! file: ../../cno.c
-//! file: ../../cno-hpack.c
-//! file: ../../cno-common.c
-//! file: ../../picohttpparser/picohttpparser.c
+//! library: cno
+//! library_dir: ../../obj
 //! include_dir: ../..
 #ifndef PyModuleDef_NAME
 #define PyModuleDef_NAME "raw"
@@ -13,7 +11,7 @@
 #include <string.h>
 #include <stddef.h>
 
-#include "cno.h"
+#include <cno/core.h>
 
 #define CNO_ERRNO_PYTHON 65
 #define CNO_ERROR_PYTHON CNO_ERROR_SET(CNO_ERRNO_PYTHON, "See Python exception info")

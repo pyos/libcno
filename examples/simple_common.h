@@ -2,7 +2,7 @@
 #define _SIMPLE_COMMON_H_
 #include <unistd.h>
 
-#include "cno.h"
+#include <cno/core.h>
 
 
 void log_frame(int fd, const cno_frame_t *frame, int recv)

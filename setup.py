@@ -10,7 +10,7 @@ setup(
     package_dir={'cno': 'python/cno'},
     ext_modules=[
         Extension('cno.raw', [
-            'cno.c', 'cno-hpack.c', 'cno-common.c',
+            'cno/core.c', 'cno/hpack.c', 'cno/common.c',
             'python/cno/raw.c', 'picohttpparser/picohttpparser.c'
         ], include_dirs=['.'])
     ]

@@ -23,9 +23,9 @@
 #include <pthread.h>
 #include <unistd.h>
 
-#include "cno.h"
+#include <cno/core.h>
 // See this file for callbacks:
-#include "simple_common.h"
+#include "examples/simple_common.h"
 
 
 static const int ONE = 1;  // Heh. See `setsockopt` below.
