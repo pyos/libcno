@@ -35,10 +35,10 @@ _require_examples = \
 
 all: $(_require_examples)
 
-obj/libcno.a: $(_require_objects)
+obj/libcno.so: $(_require_objects)
 	$(DYNLINK) $@ $^
 
-obj/libcno.so: $(_require_objects)
+obj/libcno.a: $(_require_objects)
 	$(ARCHIVE) $@ $^
 
 obj/%.o: cno/%.c $(_require_headers)
