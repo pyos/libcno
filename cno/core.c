@@ -1216,7 +1216,7 @@ int cno_write_push(cno_connection_t *conn, size_t stream, const cno_message_t *m
     cno_stream_t *childobj = cno_stream_new(conn, child, CNO_PEER_LOCAL);
 
     if (childobj == NULL) {
-        return NULL;
+        return CNO_PROPAGATE;
     }
 
     childobj->accept = CNO_ACCEPT_WRITE_HEADERS;

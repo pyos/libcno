@@ -138,8 +138,8 @@ int main(int argc, char *argv[])
         return 2;
     }
 
-    cno_hpack_t decoder = { 0 };
-    cno_hpack_t encoder = { 0 };
+    cno_hpack_t decoder;
+    cno_hpack_t encoder;
     cno_hpack_init(&encoder, size);
     cno_hpack_init(&decoder, size);
 

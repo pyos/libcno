@@ -9,6 +9,7 @@
 void cno_hpack_init(cno_hpack_t *state, size_t limit)
 {
     cno_list_init(state);
+    state->size = 0;
     state->limit            = \
     state->limit_upper      = \
     state->limit_update_min = \

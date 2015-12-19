@@ -2,7 +2,7 @@ CC      = gcc
 CFLAGS ?= -O3
 PYTHON ?= python3
 
-COMPILE = $(CC) $(CFLAGS) -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -fPIC -I. -L./obj -o
+COMPILE = $(CC) $(CFLAGS) -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -fPIC -I. -o
 DYNLINK = $(CC) -shared -o
 ARCHIVE = ar rcs
 
@@ -47,7 +47,7 @@ obj/%.o: cno/%.c $(_require_headers)
 
 obj/examples/%: examples/%.c obj/libcno.a
 	@mkdir -p obj/examples
-	$(COMPILE) $@ $< -lcno -pthread
+	$(COMPILE) $@ $< -L./obj -lcno -pthread
 
 cno/hpack-data.h: cno/hpack-data.py
 	$(PYTHON) cno/hpack-data.py > cno/hpack-data.h
