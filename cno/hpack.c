@@ -77,11 +77,14 @@ static int cno_hpack_index(struct cno_hpack_t *state, const struct cno_header_t 
     if (entry == NULL)
         return CNO_ERROR(NO_MEMORY, "%zu bytes", sizeof(struct cno_header_table_t));
 
-    if (cno_buffer_concat(&entry->data.name,  &source->name))
+    if (cno_buffer_concat(&entry->data.name,  &source->name)) {
+        free(entry);
         return CNO_ERROR_UP();
+    }
 
     if (cno_buffer_concat(&entry->data.value, &source->value)) {
         cno_buffer_clear(&entry->data.name);
+        free(entry);
         return CNO_ERROR_UP();
     }
 
