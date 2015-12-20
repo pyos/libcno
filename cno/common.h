@@ -237,26 +237,26 @@ struct cno_list_t
 };
 
 
-#define cno_list_link_t(T)                  \
-  {                                         \
-      struct cno_list_t cno_list_handle[0]; \
-      T *prev;                              \
-      T *next;                              \
-  }
+#define cno_list_link_t(T)               \
+  { union {                              \
+      struct cno_list_t cno_list_handle; \
+      struct { T *prev;                  \
+               T *next; };               \
+  }; }
 
 
-#define cno_list_root_t(T)                  \
-  {                                         \
-      struct cno_list_t cno_list_handle[0]; \
-      T *last;                              \
-      T *first;                             \
-  }
+#define cno_list_root_t(T)               \
+  { union {                              \
+      struct cno_list_t cno_list_handle; \
+      struct { T *last;                  \
+               T *first; };              \
+  }; }
 
 
-#define cno_list_end(x)       ((void *) (x)->cno_list_handle)
-#define cno_list_init(x)      cno_list_gen_init((x)->cno_list_handle)
-#define cno_list_append(x, y) cno_list_gen_append((x)->cno_list_handle, (y)->cno_list_handle)
-#define cno_list_remove(x)    cno_list_gen_remove((x)->cno_list_handle)
+#define cno_list_end(x)       ((void *) &(x)->cno_list_handle)
+#define cno_list_init(x)      cno_list_gen_init(&(x)->cno_list_handle)
+#define cno_list_append(x, y) cno_list_gen_append(&(x)->cno_list_handle, &(y)->cno_list_handle)
+#define cno_list_remove(x)    cno_list_gen_remove(&(x)->cno_list_handle)
 
 
 static inline void cno_list_gen_init(struct cno_list_t *x)
