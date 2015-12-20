@@ -130,7 +130,7 @@ static inline int cno_buffer_equals(const struct cno_buffer_t *a, const struct c
 /* Append new data to the end of a dynamic buffer. */
 static inline int cno_buffer_append(struct cno_buffer_t *a, const char *b, size_t b_size)
 {
-    char *m = realloc(a->data, a->size + b_size);
+    char *m = (char *) realloc(a->data, a->size + b_size);
 
     if (m == NULL)
         return CNO_ERROR(NO_MEMORY, "%zu bytes", a->size + b_size);
@@ -199,7 +199,7 @@ static inline void cno_buffer_off_reset(struct cno_buffer_off_t *x)
 /* Append the contents of a buffer to a shifted buffer. */
 static inline int cno_buffer_off_append(struct cno_buffer_off_t *a, const char *b, size_t b_size)
 {
-    char *m = realloc(a->data - a->offset, a->size + a->offset + b_size);
+    char *m = (char *) realloc(a->data - a->offset, a->size + a->offset + b_size);
 
     if (m == NULL)
         return CNO_ERROR(NO_MEMORY, "%zu bytes", a->size + a->offset + b_size);
@@ -214,7 +214,7 @@ static inline int cno_buffer_off_append(struct cno_buffer_off_t *a, const char *
 /* Release the consumed part of a buffer. */
 static inline void cno_buffer_off_trim(struct cno_buffer_off_t *x)
 {
-    char *m = malloc(x->size);
+    char *m = (char *) malloc(x->size);
 
     if (m == NULL)
         // ok, maybe later.
