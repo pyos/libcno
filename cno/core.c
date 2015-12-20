@@ -643,7 +643,7 @@ static int cno_frame_handle(struct cno_connection_t *conn, struct cno_frame_t *f
 
         uint16_t pad = *(uint8_t *) frame->payload.data;
 
-        if (1 + pad > frame->payload.size)
+        if (1u + pad > frame->payload.size)
             return cno_protocol_error(conn, "frame padding bigger than whole payload");
 
         frame->payload.data += 1;
