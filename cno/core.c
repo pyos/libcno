@@ -300,7 +300,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
                 return cno_protocol_error(conn, "pseudo-header after normal header");
         #endif
 
-        if (strncmp(it->name.data, ":status", it->name.size) == 0) {
+        if (cno_buffer_eq_const(&it->name, ":status", 7)) {
             #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
                 if (!conn->client)
                     return cno_protocol_error(conn, ":status in a request");
@@ -319,7 +319,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
                     return cno_protocol_error(conn, "bad :status");
         } else
 
-        if (strncmp(it->name.data, ":path", it->name.size) == 0) {
+        if (cno_buffer_eq_const(&it->name, ":path", 5)) {
             #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
                 if (conn->client && !is_push)
                     return cno_protocol_error(conn, ":path in a response");
@@ -332,7 +332,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
             msg.path.size = it->value.size;
         } else
 
-        if (strncmp(it->name.data, ":method", it->name.size) == 0) {
+        if (cno_buffer_eq_const(&it->name, ":method", 7)) {
             #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
                 if (conn->client && !is_push)
                     return cno_protocol_error(conn, ":method in a response");
@@ -347,8 +347,8 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
 
         #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
             else if (it->name.size && it->name.data[0] == ':'
-                 && strncmp(it->name.data, ":authority", it->name.size)
-                 && strncmp(it->name.data, ":scheme",    it->name.size))
+                 && !cno_buffer_eq_const(&it->name, ":authority", 10)
+                 && !cno_buffer_eq_const(&it->name, ":scheme",    7))
                 return cno_protocol_error(conn, "invalid pseudo-header");
 
             else {
@@ -608,8 +608,12 @@ static int cno_frame_handle_ping(struct cno_connection_t *conn,
 }
 
 
-/* handle a GOAWAY frame by closing the connection. (although a GOAWAY with no error
- * is more of a polite suggestion that it's time to wrap everything up.)
+/* handle a GOAWAY frame. actually, don't. it means that no more new streams
+ * can be created, and no stream with id higher than the one in this frame was
+ * or will be acted upon. however, the connection is not yet dead -- the streams with
+ * ids lower or equal to the one given are still operational.
+ *
+ * in short, i have no idea what to do with this frame.
  *
  * fires: nothing.
  */
@@ -620,11 +624,15 @@ static int cno_frame_handle_goaway(struct cno_connection_t *conn,
     if (frame->stream)
         return cno_protocol_error(conn, "got GOAWAY on stream %u", frame->stream);
 
-    // TODO parse error code.
+    // TODO parse the error code? or do something at all?
     return CNO_OK;
 }
 
 
+/* handle an RST_STREAM frame by destroying an appropriate object.
+ *
+ * fires: on_stream_end.
+ */
 static int cno_frame_handle_rst_stream(struct cno_connection_t *conn,
                                        struct cno_stream_t     *stream,
                                        struct cno_frame_t      *frame, int rstd)
@@ -638,11 +646,18 @@ static int cno_frame_handle_rst_stream(struct cno_connection_t *conn,
     if (frame->payload.size != 4)
         return cno_frame_write_error(conn, CNO_STATE_FRAME_SIZE_ERROR, "bad RST_STREAM");
 
-    // TODO parse error code.
+    // TODO parse the error code and do something with it.
     return cno_stream_destroy_clean(conn, stream);
 }
 
 
+/* do not handle a PRIORITY frame. prioritizing streams requires knowledge about
+ * the transport layer (essentially, a normal write buffer should be transformed into
+ * a priority queue of frames to send), which we do not have. we simply assume that
+ * everything sent through on_write is transmitted instantly, so there's no contention.
+ *
+ * fires: also nothing.
+ */
 static int cno_frame_handle_priority(struct cno_connection_t *conn,
                                      struct cno_stream_t     *stream,
                                      struct cno_frame_t      *frame, int rstd)
@@ -653,22 +668,25 @@ static int cno_frame_handle_priority(struct cno_connection_t *conn,
     if (frame->payload.size != 5)
         return cno_frame_write_error(conn, CNO_STATE_FRAME_SIZE_ERROR, "bad PRIORITY");
 
-    // TODO something.
     return CNO_OK;
 }
 
 
+/* handle a SETTINGS frame and apply everything it says to our connection.
+ *
+ * fires: on_flow_increase if the frame carries a new flow control window size.
+ */
 static int cno_frame_handle_settings(struct cno_connection_t *conn,
                                      struct cno_stream_t     *stream,
                                      struct cno_frame_t      *frame, int rstd)
 {
     if (frame->stream)
-        return cno_protocol_error(conn, "got SETTINGS on stream %u", frame->stream);
+        return cno_protocol_error(conn, "SETTINGS not on stream 0");
 
     if (frame->flags & CNO_FLAG_ACK)
-        return frame->payload.size
-             ? cno_frame_write_error(conn, CNO_STATE_FRAME_SIZE_ERROR, "bad SETTINGS ack")
-             : CNO_OK;
+        return frame->payload.size == 0
+             ? CNO_OK
+             : cno_frame_write_error(conn, CNO_STATE_FRAME_SIZE_ERROR, "bad SETTINGS ack");
 
     if (frame->payload.size % 6)
         return cno_frame_write_error(conn, CNO_STATE_FRAME_SIZE_ERROR, "bad SETTINGS");
@@ -703,6 +721,10 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
 }
 
 
+/* handle a WINDOW_UPDATE frame.
+ *
+ * fires: on_flow_increase.
+ */
 static int cno_frame_handle_window_update(struct cno_connection_t *conn,
                                           struct cno_stream_t     *stream,
                                           struct cno_frame_t      *frame, int rstd)
@@ -732,11 +754,28 @@ static int cno_frame_handle_window_update(struct cno_connection_t *conn,
 }
 
 
+typedef int cno_frame_handler_t(struct cno_connection_t *,
+                                struct cno_stream_t     *,
+                                struct cno_frame_t      *, int);
+
+
+static cno_frame_handler_t *CNO_FRAME_HANDLERS[] = {
+    // should be synced to enum CNO_FRAME_TYPE.
+    &cno_frame_handle_data,
+    &cno_frame_handle_headers,
+    &cno_frame_handle_priority,
+    &cno_frame_handle_rst_stream,
+    &cno_frame_handle_settings,
+    &cno_frame_handle_push_promise,
+    &cno_frame_handle_ping,
+    &cno_frame_handle_goaway,
+    &cno_frame_handle_window_update,
+    &cno_frame_handle_continuation,
+};
+
+
 static int cno_frame_handle(struct cno_connection_t *conn, struct cno_frame_t *frame)
 {
-    int rstd = 0 < frame->stream && frame->stream <= conn->last_stream[cno_stream_is_local(conn, frame->stream)];
-    struct cno_stream_t *stream = cno_hmap_find(&conn->streams, frame->stream);
-
     if (frame->flags & CNO_FLAG_PADDED) {
         if (frame->payload.size == 0)
             return cno_frame_write_error(conn, CNO_STATE_FRAME_SIZE_ERROR, "no padding");
@@ -754,32 +793,34 @@ static int cno_frame_handle(struct cno_connection_t *conn, struct cno_frame_t *f
         if (frame->payload.size < 5)
             return cno_frame_write_error(conn, CNO_STATE_FRAME_SIZE_ERROR, "no priority spec");
 
-        // TODO do something with this info.
+        // can do nothing with this data without access to the transport layer :((
         frame->payload.data += 5;
         frame->payload.size -= 5;
-        // technically, this is irrelevant because DATA frames cannot carry PRIORITY.
         frame->padding += 5;
     }
 
-    switch (frame->type) {
-        case CNO_FRAME_PING:          return cno_frame_handle_ping          (conn, stream, frame, rstd);
-        case CNO_FRAME_GOAWAY:        return cno_frame_handle_goaway        (conn, stream, frame, rstd);
-        case CNO_FRAME_RST_STREAM:    return cno_frame_handle_rst_stream    (conn, stream, frame, rstd);
-        case CNO_FRAME_PRIORITY:      return cno_frame_handle_priority      (conn, stream, frame, rstd);
-        case CNO_FRAME_SETTINGS:      return cno_frame_handle_settings      (conn, stream, frame, rstd);
-        case CNO_FRAME_WINDOW_UPDATE: return cno_frame_handle_window_update (conn, stream, frame, rstd);
-        case CNO_FRAME_HEADERS:       return cno_frame_handle_headers       (conn, stream, frame, rstd);
-        case CNO_FRAME_PUSH_PROMISE:  return cno_frame_handle_push_promise  (conn, stream, frame, rstd);
-        case CNO_FRAME_CONTINUATION:  return cno_frame_handle_continuation  (conn, stream, frame, rstd);
-        case CNO_FRAME_DATA:          return cno_frame_handle_data          (conn, stream, frame, rstd);
-        default: return CNO_OK;  // ignore unrecognized frames
-    }
+    if (frame->type >= CNO_FRAME_UNKNOWN)
+        return CNO_OK;
+
+    // if a stream does not exist but has a plausible id (lower or equal to highest
+    // seen so far) it may have been reset, in which case receiving some frames
+    // on that stream is not an error.
+    int local = cno_stream_is_local(conn, frame->stream);
+    int reset = 0 < frame->stream && frame->stream <= conn->last_stream[local];
+    struct cno_stream_t *stream = cno_hmap_find(&conn->streams, frame->stream);
+    return CNO_FRAME_HANDLERS[frame->type](conn, stream, frame, reset);
 }
 
 
+/* send a SETTINGS frame containing the delta from one configuration to the other.
+ *
+ * fires:
+ *   on_write
+ *   on_frame_send
+ */
 static int cno_settings_diff(struct cno_connection_t *conn,
-                       const struct cno_settings_t   *a,
-                       const struct cno_settings_t   *b)
+                       const struct cno_settings_t *a,
+                       const struct cno_settings_t *b)
 {
     size_t i = 0;
     uint8_t payload[CNO_SETTINGS_UNDEFINED - 1][6], (*ptr)[6] = payload;
@@ -795,12 +836,21 @@ static int cno_settings_diff(struct cno_connection_t *conn,
 }
 
 
+/* copy the current local settings into a provided struct. modify that struct
+ * then call cno_settings_apply to change the configuration. */
 void cno_settings_copy(struct cno_connection_t *conn, struct cno_settings_t *target)
 {
     memcpy(target, &conn->settings[CNO_PEER_LOCAL], sizeof(*target));
 }
 
 
+/* check the new config and apply it to the local end of the connection.
+ * (there's also the remote version of the configuration which we can't affect. each
+ * side has to conform to the other's config, e.g. a server should only send push
+ * promises if the client allows it even if the server itself has set enable_push to 0.)
+ *
+ * throws: ASSERTION if one of the parameters was set incorrectly.
+ */
 int cno_settings_apply(struct cno_connection_t *conn, const struct cno_settings_t *settings)
 {
     if (settings->enable_push != 0 && settings->enable_push != 1)
@@ -846,6 +896,8 @@ void cno_connection_reset(struct cno_connection_t *conn)
 }
 
 
+/* return 1 iff the requests/responses will be sent as http 2. note that there
+ * may still be an http 1 request in the buffer. */
 int cno_connection_is_http2(struct cno_connection_t *conn)
 {
     return conn->state != CNO_CONNECTION_HTTP1_INIT &&
@@ -854,16 +906,21 @@ int cno_connection_is_http2(struct cno_connection_t *conn)
 }
 
 
+/* switch the outbound communication to http 2 mode. */
 static int cno_connection_upgrade(struct cno_connection_t *conn)
 {
     if (conn->client && CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size))
         return CNO_ERROR_UP();
 
-    return cno_settings_diff(conn, &CNO_SETTINGS_STANDARD, conn->settings + CNO_PEER_LOCAL);
+    return cno_settings_diff(conn, &CNO_SETTINGS_STANDARD, &conn->settings[CNO_PEER_LOCAL]);
 }
 
 
-static int cno_connection_fire(struct cno_connection_t *conn)
+/* consume as much of the buffered data as possible. yep, this is a dfa!
+ *
+ * emits: EVERYTHING.
+ */
+static int cno_connection_proceed(struct cno_connection_t *conn)
 {
     for (; !conn->closed; cno_buffer_off_trim(&conn->buffer)) switch (conn->state) {
         case CNO_CONNECTION_UNDEFINED:
@@ -874,43 +931,43 @@ static int cno_connection_fire(struct cno_connection_t *conn)
                 return CNO_ERROR_UP();
 
             conn->state = CNO_CONNECTION_HTTP1_READY;
+            // the on_stream_start callback might have closed the connection.
+            // you never know...
             break;
 
         case CNO_CONNECTION_HTTP1_READY: {
-            // Ignore leading CR/LFs.
-            {
+            {   // ignore leading crlf-s.
                 char *buf = conn->buffer.data;
                 char *end = conn->buffer.size + buf;
                 while (buf != end && (*buf == '\r' || *buf == '\n')) ++buf;
                 cno_buffer_off_shift(&conn->buffer, buf - conn->buffer.data);
             }
 
-            // Should be exactly one stream right now.
-            struct cno_stream_t *stream = cno_hmap_find(&conn->streams, 1);
-            conn->http1_remaining = 0;
             if (!conn->buffer.size)
                 return CNO_OK;
 
-            // The HTTP 2 client preface starts with pseudo-broken HTTP/1.x.
-            // PicoHTTPParser will reject it, but we want to know if the client speaks HTTP 2.
-            if (!conn->client) {
-                int may_be_http2 = strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size) == 0;
+            // Should be exactly one stream right now.
+            struct cno_stream_t *stream = cno_hmap_find(&conn->streams, 1);
 
-                if (conn->buffer.size < CNO_PREFACE.size && may_be_http2)
+            // the http 2 client preface looks like an http 1 request, but is not.
+            // picohttpparser will reject it. (note: CNO_PREFACE is null-terminated.)
+            if (!conn->client && !strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size)) {
+                if (conn->buffer.size < CNO_PREFACE.size)
                     return CNO_OK;
-                else if (may_be_http2) {
-                    if (cno_stream_destroy_clean(conn, stream))
-                        return CNO_ERROR_UP();
 
-                    conn->last_stream[0] = 0;
-                    conn->last_stream[1] = 0;
-                    conn->state = CNO_CONNECTION_INIT;
-                    break;
-                }
+                if (cno_stream_destroy_clean(conn, stream))
+                    return CNO_ERROR_UP();
+
+                conn->last_stream[0] = 0;
+                conn->last_stream[1] = 0;
+                conn->state = CNO_CONNECTION_INIT;
+                break;
             }
 
             // `phr_header` and `cno_header_t` have same contents.
-            struct cno_header_t headers[CNO_MAX_HEADERS], *it = headers, *end;
+            struct cno_header_t headers[CNO_MAX_HEADERS];
+            struct cno_header_t *it = headers;
+            struct cno_header_t *end;
             struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, CNO_MAX_HEADERS };
 
             int minor;
@@ -926,28 +983,26 @@ static int cno_connection_fire(struct cno_connection_t *conn)
 
             if (ok == -2)
                 return CNO_OK;
-            else if (ok == -1)
+            if (ok == -1)
                 return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message");
-            else if (minor != 1)
+            if (minor != 1)
                 return CNO_ERROR(TRANSPORT, "HTTP/1.%d not supported", minor);
 
-            for (end = it + msg.headers_len; it != end; ++it) {
-                char * name  = it->name.data;
-                size_t size  = it->name.size;
-                char * value = it->value.data;
-                size_t vsize = it->value.size;
+            conn->http1_remaining = 0;
 
-                {
-                    char *it  = name;
-                    char *end = name + size;
-                    for (; it != end; ++it) *it = tolower(*it);
+            for (end = it + msg.headers_len; it != end; ++it) {
+                {   // header names are case-insensitive
+                    char * n = it->name.data;
+                    size_t s = it->name.size;
+                    for (; s--; n++) *n = tolower(*n);
                 }
 
-                if (strncmp(name, "http2-settings", size) == 0) {
+                if (cno_buffer_eq_const(&it->name, "http2-settings", 14)) {
                     // TODO decode & emit on_frame
                 } else
 
-                if (!conn->client && strncmp(name, "upgrade", size) == 0 && strncmp(value, "h2c", vsize) == 0) {
+                if (!conn->client && cno_buffer_eq_const(&it->name,  "upgrade", 7)
+                                  && cno_buffer_eq_const(&it->value, "h2c",     3)) {
                     if (conn->state != CNO_CONNECTION_HTTP1_READY)
                         return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: multiple upgrade headers");
 
@@ -961,25 +1016,32 @@ static int cno_connection_fire(struct cno_connection_t *conn)
                     if (cno_write_message(conn, stream->id, &upgrade_msg, 1))
                         return CNO_ERROR_UP();
 
-                    // If we send the preface now, we'll be able to send HTTP 2 frames
+                    // if we send the preface now, we'll be able to send HTTP 2 frames
                     // while in the HTTP1_READING_UPGRADE state.
                     if (cno_connection_upgrade(conn))
                         return CNO_ERROR_UP();
 
-                    // Technically, server should refuse if HTTP2-Settings are not present.
-                    // We'll let this slide.
+                    // technically, server should refuse if HTTP2-Settings are not present.
+                    // we'll let this slide.
                     conn->state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
                 } else
 
-                if (strncmp(name, "content-length", size) == 0) {
+                if (cno_buffer_eq_const(&it->name, "content-length", 14)) {
                     if (conn->http1_remaining)
                         return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: multiple content-lengths");
 
-                    conn->http1_remaining = (size_t) atoi(value);
+                    char *ptr = it->value.data;
+                    char *end = it->value.data + it->value.size;
+
+                    while (ptr != end)
+                        if ('0' <= *ptr && *ptr <= '9')
+                            conn->http1_remaining = conn->http1_remaining * 10 + (*ptr++ - '0');
+                        else
+                            return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: non-int length");
                 } else
 
-                if (strncmp(name, "transfer-encoding", size) == 0) {
-                    if (strncmp(value, "chunked", vsize) != 0)
+                if (cno_buffer_eq_const(&it->name, "transfer-encoding", 17)) {
+                    if (!cno_buffer_eq_const(&it->value, "chunked", 7))
                         return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: unknown transfer-encoding");
 
                     if (conn->http1_remaining)
@@ -1141,7 +1203,7 @@ int cno_connection_made(struct cno_connection_t *conn, enum CNO_HTTP_VERSION ver
         return CNO_ERROR(ASSERTION, "called connection_made twice");
 
     conn->state = version == CNO_HTTP2 ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_INIT;
-    return cno_connection_fire(conn);
+    return cno_connection_proceed(conn);
 }
 
 
@@ -1153,7 +1215,7 @@ int cno_connection_data_received(struct cno_connection_t *conn, const char *data
     if (cno_buffer_off_append(&conn->buffer, data, length))
         return CNO_ERROR_UP();
 
-    return cno_connection_fire(conn);
+    return cno_connection_proceed(conn);
 }
 
 

@@ -97,6 +97,7 @@ enum CNO_FRAME_TYPE
     CNO_FRAME_GOAWAY        = 0x7,
     CNO_FRAME_WINDOW_UPDATE = 0x8,
     CNO_FRAME_CONTINUATION  = 0x9,
+    CNO_FRAME_UNKNOWN       = 0xa,
 };
 
 

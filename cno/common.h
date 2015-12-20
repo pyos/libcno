@@ -127,6 +127,12 @@ static inline int cno_buffer_equals(const struct cno_buffer_t *a, const struct c
 }
 
 
+static inline int cno_buffer_eq_const(const struct cno_buffer_t *a, const char *b, size_t s)
+{
+    return a->size == s && 0 == memcmp(a->data, b, s);
+}
+
+
 /* Append new data to the end of a dynamic buffer. */
 static inline int cno_buffer_append(struct cno_buffer_t *a, const char *b, size_t b_size)
 {
