@@ -145,6 +145,7 @@ struct cno_frame_t
 {
     uint8_t /* enum CNO_FRAME_TYPE  */ type;
     uint8_t /* enum CNO_FRAME_FLAGS */ flags;
+    uint16_t padding;
     uint32_t stream;
     struct cno_buffer_t payload;
 };
@@ -166,11 +167,11 @@ struct cno_stream_t
     uint32_t id;
     uint32_t window_recv;
     uint32_t window_send;
-    uint32_t last_promise;
+    uint32_t continued_promise;
     uint8_t closed;
     uint8_t /* enum CNO_STREAM_ACCEPT */ accept;
-    uint8_t /* enum CNO_FRAME_FLAGS   */ last_flags;
-    struct cno_buffer_t buffer;  // frames that can have CONTINUATIONs are buffered here
+    uint8_t /* enum CNO_FRAME_FLAGS   */ continued_flags;
+    struct cno_buffer_t continued;
 };
 
 
