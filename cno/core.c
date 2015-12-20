@@ -1179,12 +1179,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
 
             break;
         }
-
-        default: return CNO_ERROR(ASSERTION, "invalid DFA state");
     }
-
-    #undef STOP
-    #undef WAIT
 
     cno_buffer_off_clear(&conn->buffer);
 
@@ -1230,8 +1225,11 @@ int cno_connection_stop(struct cno_connection_t *conn)
 
 int cno_connection_lost(struct cno_connection_t *conn)
 {
+    if (conn->closed == 1)
+        return CNO_OK;
+
     conn->closed = 1;
-    return CNO_OK;
+    return cno_connection_proceed(conn);
 }
 
 
