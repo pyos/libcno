@@ -147,7 +147,7 @@ int main(int argc, char *argv[])
         size_t k;
         size_t limit = sizeof(result) / sizeof(result[0]);
 
-        struct cno_buffer_t source;
+        struct cno_buffer_t source  = CNO_BUFFER_EMPTY;
         struct cno_buffer_t hexdata = { argv[i + 2], strlen(argv[i + 2]) };
 
         if (hex_to_bytes(&hexdata, &source))
