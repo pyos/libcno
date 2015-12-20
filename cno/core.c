@@ -545,6 +545,19 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
                                  struct cno_stream_t     *stream,
                                  struct cno_frame_t      *frame, int rstd)
 {
+    uint32_t length = frame->payload.size + frame->padding;
+
+    if (length) {
+        // XXX do frames sent to closed streams count against flow control?
+        //     what if the stream never even existed?
+        struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, 0, { PACK(I32(length)) } };
+
+        if (cno_frame_write(conn, NULL, &update))
+            return CNO_ERROR_UP();
+
+        // TODO update window_recv, should it ever become used.
+    }
+
     if (!stream)
         // ignore data on reset streams, as the spec requires. unfortunately, these are
         // indistinguishable from streams that were never opened, but hey, what can i do,
@@ -560,26 +573,11 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
     if (frame->flags & CNO_FLAG_END_STREAM) {
         if (cno_frame_handle_end_stream(conn, stream))
             return CNO_ERROR_UP();
+    } else if (length) {
+        struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, stream->id, { PACK(I32(length)) } };
 
-        stream = NULL;
-    }
-
-    uint32_t length = frame->payload.size + frame->padding;
-
-    if (length) {
-        struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, 0, { PACK(I32(length)) } };
-
-        if (cno_frame_write(conn, NULL, &update))
+        if (cno_frame_write(conn, stream, &update))
             return CNO_ERROR_UP();
-
-        if (stream) {
-            update.stream = frame->stream;
-
-            if (cno_frame_write(conn, stream, &update))
-                return CNO_ERROR_UP();
-        }
-
-        // TODO update window_recv, should it ever become used.
     }
 
     return CNO_OK;
