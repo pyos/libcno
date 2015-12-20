@@ -29,12 +29,21 @@ static const struct cno_settings_t CNO_SETTINGS_STANDARD = {{{ 4096, 1, -1,   65
 static const struct cno_settings_t CNO_SETTINGS_INITIAL  = {{{ 4096, 1, 1024, 65536, 65536, -1 }}};
 
 
+/* check whether a stream is initiated by us, not our peer.
+ *
+ * even-numbered streams are initiated by the client.
+ */
 static int cno_stream_is_local(struct cno_connection_t *conn, uint32_t id)
 {
     return id % 2 == !!conn->client;
 }
 
 
+/* deallocate a stream object *without firing a callback*.
+ *
+ * this is a fallback routine. since creating a stream always fires on_stream_start,
+ * it should only be used if the state doesn't matter anymore.
+ */
 static void cno_stream_destroy(struct cno_connection_t *conn, struct cno_stream_t *stream)
 {
     conn->stream_count[cno_stream_is_local(conn, stream->id)]--;
@@ -44,6 +53,11 @@ static void cno_stream_destroy(struct cno_connection_t *conn, struct cno_stream_
 }
 
 
+/* deallocate a stream object.
+ *
+ * fires:
+ *   on_stream_end.
+ */
 static int cno_stream_destroy_clean(struct cno_connection_t *conn, struct cno_stream_t *stream)
 {
     uint32_t id = stream->id;
@@ -52,6 +66,14 @@ static int cno_stream_destroy_clean(struct cno_connection_t *conn, struct cno_st
 }
 
 
+/* forbid sending any more data over this stream.
+ *
+ * inbound data will still be accepted. abort the stream (see cno_write_reset)
+ * if that data is undesired.
+ *
+ * fires:
+ *   on_stream_end if the stream is closed in the other direction as well.
+ */
 static int cno_stream_close(struct cno_connection_t *conn, struct cno_stream_t *stream)
 {
     if (!(stream->accept & CNO_ACCEPT_INBOUND))
@@ -62,6 +84,20 @@ static int cno_stream_close(struct cno_connection_t *conn, struct cno_stream_t *
 }
 
 
+/* allocate resources for a new stream.
+ *
+ * third argument should be 1 (== CNO_PEER_LOCAL) iff we're initiating this stream.
+ *
+ * fires:
+ *   on_stream_start.
+ *
+ * throws:
+ *   INVALID_STREAM if third argument is invalid.
+ *   INVALID_STREAM if stream id is lower than that of some existing stream.
+ *   WOULD_BLOCK    if we've already initiated too many streams.
+ *   TRANSPORT      if the peer has gone over our limit on concurrent streams.
+ *   NO_MEMORY
+ */
 static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint32_t id, int local)
 {
     if (cno_stream_is_local(conn, id) != local)
@@ -71,9 +107,8 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
         return CNO_ERROR_NULL(INVALID_STREAM, "nonmonotonic");
 
     if (conn->stream_count[local] >= conn->settings[!local].max_concurrent_streams)
-        return local
-             ? CNO_ERROR_NULL(WOULD_BLOCK, "wait for on_stream_end")
-             : CNO_ERROR_NULL(TRANSPORT,   "peer exceeded stream limit");
+        return local ? CNO_ERROR_NULL(WOULD_BLOCK, "wait for on_stream_end")
+                     : CNO_ERROR_NULL(TRANSPORT,   "peer exceeded stream limit");
 
     struct cno_stream_t *stream = calloc(1, sizeof(struct cno_stream_t));
 
@@ -96,6 +131,17 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
 }
 
 
+/* send a single frame.
+ *
+ * fires:
+ *   on_write
+ *   on_frame_send
+ *
+ * throws:
+ *   WOULD_BLOCK if a DATA frame is bigger than the peer can accept
+ *   ASSERTION   if a non-DATA frame exceeds the size limit (how)
+ *   ASSERTION   if a padded frame exceeds the size limit (FIXME)
+ */
 static int cno_frame_write(struct cno_connection_t *conn,
                            struct cno_stream_t     *stream,
                            struct cno_frame_t      *frame)
@@ -107,56 +153,57 @@ static int cno_frame_write(struct cno_connection_t *conn,
         if (length > conn->window_send)
             return CNO_ERROR(WOULD_BLOCK, "wait for on_flow_increase(0)");
 
-        if (stream) {
-            if (length > stream->window_send)
-                return CNO_ERROR(WOULD_BLOCK, "wait for on_flow_increase(%u)", stream->id);
-
-            stream->window_send -= length;
-        }
-
-        conn->window_send -= length;
+        if (stream && length > stream->window_send)
+            return CNO_ERROR(WOULD_BLOCK, "wait for on_flow_increase(%u)", stream->id);
     }
 
-    if (length > limit) {
-        struct cno_frame_t part = *frame;
-
-        if (part.type != CNO_FRAME_DATA         && part.type != CNO_FRAME_HEADERS
-        &&  part.type != CNO_FRAME_PUSH_PROMISE && part.type != CNO_FRAME_CONTINUATION)
-            return CNO_ERROR(ASSERTION, "control frame too big");
-
-        if (part.flags & CNO_FLAG_PADDED)
-            return CNO_ERROR(ASSERTION, "don't know how to split padded frames");
-
-        uint8_t endflags = part.flags & (part.type == CNO_FRAME_DATA ? CNO_FLAG_END_STREAM : CNO_FLAG_END_HEADERS);
-
-        part.flags &= ~endflags;
-        part.payload.size = limit;
-
-        for (; length > limit; length -= part.payload.size, part.payload.data += part.payload.size) {
-            if (cno_frame_write(conn, stream, &part))
-                return CNO_ERROR_UP();
-
-            if (part.type == CNO_FRAME_HEADERS || part.type == CNO_FRAME_PUSH_PROMISE)
-                part.type = CNO_FRAME_CONTINUATION;
-
-            part.flags &= ~(CNO_FLAG_PRIORITY | CNO_FLAG_END_STREAM);
+    if (length <= limit) {
+        if (frame->type == CNO_FRAME_DATA) {
+            if (stream)
+                stream->window_send -= length;
+            conn->window_send -= length;
         }
 
-        part.flags |= endflags;
-        part.payload.size = length;
-        return cno_frame_write(conn, stream, &part);
+        if (CNO_FIRE(conn, on_frame_send, frame))
+            return CNO_ERROR_UP();
+
+        if (CNO_FIRE(conn, on_write, PACK(I24(length), I8(frame->type), I8(frame->flags), I32(frame->stream))))
+            return CNO_ERROR_UP();
+
+        if (length)
+            return CNO_FIRE(conn, on_write, frame->payload.data, length);
+
+        return CNO_OK;
     }
 
-    if (CNO_FIRE(conn, on_frame_send, frame))
-        return CNO_ERROR_UP();
+    int carry_on_last = CNO_FLAG_END_HEADERS;
 
-    if (CNO_FIRE(conn, on_write, PACK(I24(length), I8(frame->type), I8(frame->flags), I32(frame->stream))))
-        return CNO_ERROR_UP();
+    if (frame->flags & CNO_FLAG_PADDED)
+        return CNO_ERROR(ASSERTION, "don't know how to split padded frames");
+    else if (frame->type == CNO_FRAME_DATA)
+        carry_on_last = CNO_FLAG_END_STREAM;
+    else if (frame->type != CNO_FRAME_HEADERS && frame->type != CNO_FRAME_PUSH_PROMISE)
+        return CNO_ERROR(ASSERTION, "control frame too big");
 
-    if (length)
-        return CNO_FIRE(conn, on_write, frame->payload.data, length);
+    struct cno_frame_t part = *frame;
+    part.flags &= ~carry_on_last;
+    part.payload.size = limit;
 
-    return CNO_OK;
+    while (length > limit) {
+        if (cno_frame_write(conn, stream, &part))
+            return CNO_ERROR_UP();
+
+        length -= limit;
+        part.flags &= ~(CNO_FLAG_PRIORITY | CNO_FLAG_END_STREAM);
+        part.payload.data += limit;
+
+        if (part.type != CNO_FRAME_DATA)
+            part.type = CNO_FRAME_CONTINUATION;
+    }
+
+    part.flags |= frame->flags & carry_on_last;
+    part.payload.size = length;
+    return cno_frame_write(conn, stream, &part);
 }
 
 
@@ -474,6 +521,7 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
         stream = NULL;
     }
 
+    // FIXME padding should be included
     if (frame->payload.size) {
         struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, { PACK(I32(frame->payload.size)) } };
 
