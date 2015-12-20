@@ -916,7 +916,7 @@ static int cno_connection_upgrade(struct cno_connection_t *conn)
 
 /* consume as much of the buffered data as possible. yep, this is a dfa!
  *
- * emits: EVERYTHING.
+ * fires: EVERYTHING.
  */
 static int cno_connection_proceed(struct cno_connection_t *conn)
 {

@@ -268,7 +268,7 @@ struct cno_connection_t
  *  2. allocate a connection object
  *  3. --- cno_connection_init
  *  4. set callbacks, most importantly on_write and on_message_*
- *  5. optinally:
+ *  5. optionally:
  *       --- cno_settings_copy, then modify them
  *       --- cno_settings_apply
  *  6. --- cno_connection_made
