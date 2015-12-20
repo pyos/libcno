@@ -36,7 +36,7 @@ int disconnect(void *data, size_t stream)
     if (cno_connection_stop(&cbdata->conn))
         return CNO_ERROR_UP();
 
-    close(cbdata->fd);
+    shutdown(cbdata->fd, SHUT_RD);
     return CNO_OK;
 }
 
@@ -88,22 +88,23 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    struct cno_connection_t client;
-    cno_connection_init(&client, CNO_CLIENT);
+    struct cbdata_t client;
+    client.fd = fd;
+    cno_connection_init(&client.conn, CNO_CLIENT);
 
     struct cno_settings_t settings;
-    cno_settings_copy(&client, &settings);
+    cno_settings_copy(&client.conn, &settings);
     settings.enable_push = 0;
     settings.max_concurrent_streams = 1024;
-    cno_settings_apply(&client, &settings);
+    cno_settings_apply(&client.conn, &settings);
 
-    client.cb_data          = &fd;
-    client.on_write         = &write_to_fd;
-    client.on_frame         = &log_recv_frame;
-    client.on_frame_send    = &log_sent_frame;
-    client.on_message_start = &log_recv_message;
-    client.on_message_data  = &log_recv_message_data;
-    client.on_message_end   = &disconnect;
+    client.conn.cb_data          = &client;
+    client.conn.on_write         = &write_to_fd;
+    client.conn.on_frame         = &log_recv_frame;
+    client.conn.on_frame_send    = &log_sent_frame;
+    client.conn.on_message_start = &log_recv_message;
+    client.conn.on_message_data  = &log_recv_message_data;
+    client.conn.on_message_end   = &disconnect;
 
     struct cno_header_t headers[] = {
         { CNO_BUFFER_CONST(":scheme"),    CNO_BUFFER_CONST("http") },
@@ -111,29 +112,29 @@ int main(int argc, char *argv[])
     };
 
     struct cno_message_t message = { 0, CNO_BUFFER_CONST("GET"), CNO_BUFFER_STRING(path), headers, 2 };
-    size_t stream = cno_stream_next_id(&client);
+    size_t stream = cno_stream_next_id(&client.conn);
 
-    if (cno_connection_made(&client, CNO_HTTP2)
-    ||  cno_write_message(&client, stream, &message, 1))
+    if (cno_connection_made(&client.conn, CNO_HTTP2)
+    ||  cno_write_message(&client.conn, stream, &message, 1))
             goto error;
 
     char buf[8196];
     ssize_t ln;
 
     while ((ln = recv(fd, buf, 8196, 0)) > 0)
-        if (cno_connection_data_received(&client, buf, ln))
+        if (cno_connection_data_received(&client.conn, buf, ln))
             goto error;
 
-    if (cno_connection_lost(&client))
+    if (cno_connection_lost(&client.conn))
         goto error;
 
     close(fd);
-    cno_connection_reset(&client);
+    cno_connection_reset(&client.conn);
     return 0;
 
 error:
-    close(fd);
     print_traceback();
-    cno_connection_reset(&client);
+    close(fd);
+    cno_connection_reset(&client.conn);
     return 1;
 }
