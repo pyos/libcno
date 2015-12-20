@@ -11,15 +11,16 @@
  *
  */
 #include <stdio.h>
-#include <string.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
-#include <pthread.h>
-#include <unistd.h>
 
-#include <cno/core.h>
 // See this file for callbacks:
 #include "examples/simple_common.h"
 
@@ -27,27 +28,26 @@
 static const int ONE = 1;  // Heh. See `setsockopt` below.
 
 
-static int respond_with_hello_world(cno_connection_t *conn, void *fd, size_t stream)
+static int respond_with_hello_world(void *data, size_t stream)
 {
-    log_recv_message_end(conn, fd, stream);
+    log_recv_message_end(data, stream);
 
-    cno_header_t headers[3] = {
-        // io vector = { char *, size_t }
-        { CNO_IO_VECTOR_CONST("server"),         CNO_IO_VECTOR_CONST("hello-world/1.0") },
-        { CNO_IO_VECTOR_CONST("content-length"), CNO_IO_VECTOR_CONST("14") },
-        { CNO_IO_VECTOR_CONST("cache-control"),  CNO_IO_VECTOR_CONST("no-cache") },
+    struct cno_connection_t *conn = &((struct cbdata_t *) data)->conn;
+    struct cno_header_t headers[3] = {
+        { CNO_BUFFER_CONST("server"),         CNO_BUFFER_CONST("hello-world/1.0") },
+        { CNO_BUFFER_CONST("content-length"), CNO_BUFFER_CONST("14") },
+        { CNO_BUFFER_CONST("cache-control"),  CNO_BUFFER_CONST("no-cache") },
     };
 
-    cno_message_t message = { 200, CNO_IO_VECTOR_EMPTY, CNO_IO_VECTOR_EMPTY, headers, 3 };
+    struct cno_message_t message = { 200, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, 3 };
 
     if (cno_write_message(conn, stream, &message, 0)
-     || cno_write_data(conn, stream, "Hello, World!\n", 14, 1)) {
-        // CNO_ERRNO_WOULD_BLOCK in cno_write_data can be handled by waiting for
-        // a flow control update and retrying, but we don't have an event loop so we'll abort.
-        return CNO_PROPAGATE;
-    }
+    ||  cno_write_data(conn, stream, "Hello, World!\n", 14, 1))
+            // CNO_ERRNO_WOULD_BLOCK in cno_write_data can be handled by waiting for
+            // a flow control update and retrying, but we don't have an event loop so we'll abort.
+            return CNO_ERROR_UP();
 
-    log_message(*(int *) fd, &message, 0);
+    log_sent_message(data, stream, &message);
     return CNO_OK;
 }
 
@@ -62,19 +62,18 @@ static void *handle(fd) ssize_t fd;
         return NULL;
     }
 
-    cno_connection_t *conn = cno_connection_new(CNO_SERVER);
+    struct cbdata_t data;
+    struct cno_connection_t *conn = &data.conn;
+    cno_connection_init(conn, CNO_SERVER);
+    data.fd = fd;
 
-    if (conn == NULL) {
-        goto error;
-    }
-
-    cno_settings_t settings;
+    struct cno_settings_t settings;
     cno_settings_copy(conn, &settings);
     settings.enable_push = 0;
     settings.max_concurrent_streams = 1024;
     cno_settings_apply(conn, &settings);
 
-    conn->cb_data          = &fd;
+    conn->cb_data          = &data;
     conn->on_write         = &write_to_fd;
     conn->on_frame         = &log_recv_frame;
     conn->on_frame_send    = &log_sent_frame;
@@ -82,29 +81,25 @@ static void *handle(fd) ssize_t fd;
     conn->on_message_data  = &log_recv_message_data;
     conn->on_message_end   = &respond_with_hello_world;
 
-    if (cno_connection_made(conn, CNO_HTTP1)) {
+    if (cno_connection_made(conn, CNO_HTTP1))
         goto error;
-    }
 
-    while ((read = recv(fd, message, 8192, 0)) > 0) {
-        if (cno_connection_data_received(conn, message, read)) {
+    while ((read = recv(fd, message, 8192, 0)) > 0)
+        if (cno_connection_data_received(conn, message, read))
             goto error;
-        }
-    }
 
-    if (cno_connection_lost(conn)) {
+    if (cno_connection_lost(conn))
         goto error;
-    }
 
-    cno_connection_destroy(conn);
+    cno_connection_reset(conn);
     close(fd);
     return NULL;
 
 error:
-    cno_connection_lost(conn);
-    cno_connection_destroy(conn);
     close(fd);
     print_traceback();
+    cno_connection_lost(conn);
+    cno_connection_reset(conn);
     return NULL;
 }
 

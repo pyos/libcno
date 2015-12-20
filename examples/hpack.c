@@ -16,10 +16,12 @@
  *
  */
 #include <stdio.h>
-#include <string.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
-#include <cno/hpack.h>
 #include "examples/simple_common.h"
 
 
@@ -38,18 +40,16 @@ static inline char to_hex(int i)
 }
 
 
-int hex_to_bytes(cno_io_vector_t *source, cno_io_vector_t *target)
+int hex_to_bytes(struct cno_buffer_t *source, struct cno_buffer_t *target)
 {
-    if (source->size % 2) {
+    if (source->size % 2)
         return CNO_ERROR(ASSERTION, "2 hex digits = 1 byte; 1 hex digit = nothing");
-    }
 
     target->size = source->size / 2;
     target->data = malloc(source->size / 2);
 
-    if (target->data == NULL) {
-        return CNO_ERROR(NO_MEMORY, "--");
-    }
+    if (target->data == NULL)
+        return CNO_ERROR(NO_MEMORY, "%zu bytes", source->size / 2);
 
     unsigned char *out = (unsigned char *) target->data;
     char *ptr = source->data;
@@ -71,18 +71,17 @@ int hex_to_bytes(cno_io_vector_t *source, cno_io_vector_t *target)
 }
 
 
-int bytes_to_hex(cno_io_vector_t *source, cno_io_vector_t *target)
+int bytes_to_hex(struct cno_buffer_t *source, struct cno_buffer_t *target)
 {
     target->size = source->size * 2;
     target->data = malloc(target->size);
 
-    if (target->data == NULL) {
-        return CNO_ERROR(NO_MEMORY, "--");
-    }
+    if (target->data == NULL)
+        return CNO_ERROR(NO_MEMORY, "%zu bytes", target->size);
 
-    unsigned char *out = (unsigned char *) target->data;
-    unsigned char *ptr = (unsigned char *) source->data;
-    unsigned char *end = ptr + source->size;
+    uint8_t *out = (uint8_t *) target->data;
+    uint8_t *ptr = (uint8_t *) source->data;
+    uint8_t *end = ptr + source->size;
 
     while (ptr != end) {
         *out++ = to_hex(*ptr >> 4);
@@ -94,16 +93,16 @@ int bytes_to_hex(cno_io_vector_t *source, cno_io_vector_t *target)
 }
 
 
-void clear_headers(cno_header_t *h, cno_header_t *end)
+void clear_headers(struct cno_header_t *h, struct cno_header_t *end)
 {
     for (; h != end; ++h) {
-        cno_io_vector_clear(&h->name);
-        cno_io_vector_clear(&h->value);
+        cno_buffer_clear(&h->name);
+        cno_buffer_clear(&h->value);
     }
 }
 
 
-void print_header(cno_header_t *h)
+void print_header(struct cno_header_t *h)
 {
     printf("    "); fwrite(h->name.data,  h->name.size,  1, stdout);
     printf(": ");   fwrite(h->value.data, h->value.size, 1, stdout);
@@ -111,15 +110,14 @@ void print_header(cno_header_t *h)
 }
 
 
-void print_table(cno_hpack_t *state)
+void print_table(struct cno_hpack_t *state)
 {
     printf("dynamic table =\n");
-    cno_header_table_t *table = state->first;
+    struct cno_header_table_t *table = state->first;
 
-    while (table != (cno_header_table_t *) state) {
+    for (; table != cno_list_end(state); table = table->next)
         print_header(&table->data);
-        table = table->next;
-    }
+
     printf(" -- [size: %zu, limit: %zu]\n\n", state->size, state->limit);
 }
 
@@ -138,40 +136,37 @@ int main(int argc, char *argv[])
         return 2;
     }
 
-    cno_hpack_t decoder;
-    cno_hpack_t encoder;
+    struct cno_hpack_t decoder;
+    struct cno_hpack_t encoder;
+    struct cno_header_t result[20];
     cno_hpack_init(&encoder, size);
     cno_hpack_init(&decoder, size);
-
-    cno_header_t result[20];
     int i;
 
     for (i = 0; i < argc - 2; ++i) {
         size_t k;
         size_t limit = sizeof(result) / sizeof(result[0]);
 
-        cno_io_vector_t source;
-        cno_io_vector_t hexdata = { argv[i + 2], strlen(argv[i + 2]) };
+        struct cno_buffer_t source;
+        struct cno_buffer_t hexdata = { argv[i + 2], strlen(argv[i + 2]) };
 
-        if (hex_to_bytes(&hexdata, &source)) {
+        if (hex_to_bytes(&hexdata, &source))
             goto error;
-        }
 
         if (cno_hpack_decode(&decoder, &source, result, &limit)) {
-            cno_io_vector_clear(&source);
+            cno_buffer_clear(&source);
             goto error;
         }
 
         printf("decode(#%d) =\n", i + 1);
 
-        for (k = 0; k < limit; ++k) {
+        for (k = 0; k < limit; ++k)
             print_header(result + k);
-        }
 
         printf(" -- with ");
         print_table(&decoder);
 
-        cno_io_vector_clear(&source);
+        cno_buffer_clear(&source);
 
         if (cno_hpack_encode(&encoder, &source, result, limit)) {
             clear_headers(result, result + limit);
@@ -184,14 +179,14 @@ int main(int argc, char *argv[])
         printf("\n");
 
         if (bytes_to_hex(&source, &hexdata)) {
-            cno_io_vector_clear(&source);
+            cno_buffer_clear(&source);
             goto error;
         }
 
         printf("encode(#%d) = ", i + 1); fwrite(hexdata.data, hexdata.size, 1, stdout);
         printf(" with ");
-        cno_io_vector_clear(&source);
-        cno_io_vector_clear(&hexdata);
+        cno_buffer_clear(&source);
+        cno_buffer_clear(&hexdata);
         print_table(&encoder);
     }
 

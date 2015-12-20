@@ -1,38 +1,45 @@
-#ifndef _CNO_COMMON_H_
-#define _CNO_COMMON_H_
-#include <stddef.h>  // size_t
-#include <string.h>  // strlen
+// #include <stddef.h>
+// #include <stdlib.h>
+// #include <string.h>
+#ifndef CNO_COMMON_H
+#define CNO_COMMON_H
 
 
-/* Emit an event on a given object. The object must have an "event data" field (cb_data).
- * No-op if nothing handles the event.
- */
-#define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob, ob->cb_data, ## __VA_ARGS__))
-
-/* Mark a structure as public by typedef-ing it. Structures should be named
- * `struct cno_st_something_t`; the typedef-ed name will be `cno_something_t`.
- */
-#define CNO_STRUCT_EXPORT(name) typedef struct cno_st_ ## name ## _t cno_ ## name ## _t
-
-
-/* Error signaling.
+/* ----- Error handling -----
  *
- * Functions that can fail should return either an int or a pointer; obviously, a NULL
- * pointer means an error. In int-returning functions, `CNO_OK` (0) is returned
- * when all is good, and `CNO_PROPAGATE` (-1) otherwise.
+ * A function that can return an error must return either an int or a pointer.
+ * 0 or a non-NULL pointer means OK; -1 or a NULL pointer means there's an error.
  *
- * If an error has occurred, some debug information may be obtained by calling various
- * `cno_error_*` functions (see below).
+ * Call CNO_ERROR with the name of an error (there should be an appropriate CNO_ERRNO_*
+ * constant) and the error message (printf-formatted) to signal a new error. CNO_ERROR
+ * always returns -1, so that's all you need to do in int-returning functions.
+ * CNO_ERROR_NULL is like CNO_ERROR but returns NULL.
  *
- */
-#define CNO_OK              0
-#define CNO_PROPAGATE       cno_error_upd(__FILE__, __LINE__, __func__)
-#define CNO_ERROR_SET(...)  cno_error_set(__FILE__, __LINE__, __func__, ##__VA_ARGS__)
-#define CNO_ERROR(...)      CNO_ERROR_SET(CNO_ERRNO_ ## __VA_ARGS__)
-#define CNO_ERROR_NUL(...) (CNO_ERROR(__VA_ARGS__), NULL)
+ * Call CNO_ERROR_UP to add a line to the traceback when exiting due to an error
+ * in a nested function. CNO_ERROR_UP returns -1, just like CNO_ERROR.
+ * CNO_ERROR_UP_NULL returns NULL instead, duh. */
+
+#define CNO_OK 0
+
+#define CNO_ERROR_SET(...)   cno_error_set(__FILE__, __LINE__, __func__, ##__VA_ARGS__)
+#define CNO_ERROR(...)       CNO_ERROR_SET(CNO_ERRNO_ ## __VA_ARGS__)
+#define CNO_ERROR_NULL(...) (CNO_ERROR(__VA_ARGS__), NULL)
+
+#if CNO_ERROR_DISABLE_TRACEBACKS
+    #define CNO_ERROR_UP()      -1
+    #define CNO_ERROR_UP_NULL() NULL
+#else
+    #define CNO_ERROR_UP()       cno_error_upd(__FILE__, __LINE__, __func__)
+    #define CNO_ERROR_UP_NULL() (CNO_ERROR_UP(), NULL)
+#endif
+
+/* Maximum number of lines in a traceback. Note that the space to hold them
+ * is statically allocated. (Do not redefine this in different compilation units!) */
+#define CNO_ERROR_TRACEBACK_DEPTH 128
 
 
-enum CNO_ERRNO {
+enum CNO_ERRNO
+{
     CNO_ERRNO_GENERIC,
     CNO_ERRNO_ASSERTION,
     CNO_ERRNO_NO_MEMORY,
@@ -40,208 +47,319 @@ enum CNO_ERRNO {
     CNO_ERRNO_TRANSPORT,
     CNO_ERRNO_INVALID_STATE,
     CNO_ERRNO_INVALID_STREAM,
-    CNO_ERRNO_WOULD_BLOCK,  // frame too big to send with current flow control window
+    CNO_ERRNO_WOULD_BLOCK,
     CNO_ERRNO_COMPRESSION,
 };
 
 
-struct cno_st_traceback_t {
+struct cno_traceback_t
+{
     const char * file;
     const char * func;
-    int          line;
+    int line;
 };
 
 
-CNO_STRUCT_EXPORT(traceback);
+struct cno_error_t
+{
+    int  code;
+    char text[512];
+    struct cno_traceback_t  traceback[CNO_ERROR_TRACEBACK_DEPTH];
+    struct cno_traceback_t *traceback_end;
+};
 
 
-int cno_error     (void);
-int cno_error_set (const char *file, int line, const char *func, int code, const char *fmt, ...) __attribute__ ((format(printf, 5, 6)));
-int cno_error_upd (const char *file, int line, const char *func);
-const char * cno_error_name (void);
-const char * cno_error_text (void);
-const cno_traceback_t * cno_error_tb_head (void);
-const cno_traceback_t * cno_error_tb_next (const cno_traceback_t *tb);
+/* Return some information about the last error in the current thread. */
+struct cno_error_t const * cno_error(void);
 
 
-/* String ops.
- *
- * The basic transmission unit is an "io vector", which is a string tagged with its length.
- * A "temporary io vector" can additionally move the pointer over the string to mask
- * a part of the buffer that has already been handled.
- *
- */
-struct cno_st_io_vector_t {
+/* Reset the error information and construct a new traceback starting at a given point.
+ * Should not be called directly; use CNO_ERROR instead. */
+int cno_error_set (const char *file, int line,
+                   const char *func, int code,
+                   const char *fmt, ...) __attribute__ ((format(printf, 5, 6)));
+
+
+/* Append a line to the traceback, if there is space left. */
+int cno_error_upd (const char *file, int line,
+                   const char *func);
+
+
+/* ----- String views ----- */
+
+struct cno_buffer_t
+{
+    // depending on where this thing is used, it may hold either binary octets
+    // or human-readable data (http headers). casting the buffer to uint8_t
+    // where necessary is easy, converting all string literals to uint8_t is not.
     char  *data;
     size_t size;
 };
 
 
-struct cno_st_io_vector_tmp_t {
+/* Initialize an empty dynamic buffer. */
+#define CNO_BUFFER_EMPTY { NULL, 0 }
+
+/* Initialize a static buffer from an array. None of the below functions work
+ * with static buffers! Do not write to them either. */
+#define CNO_BUFFER_ARRAY(arr)  { (char *) arr, sizeof(arr) }
+
+/* Initialize a static buffer from a string constant. */
+#define CNO_BUFFER_CONST(str)  { (char *) str, sizeof(str) - 1 }
+
+/* Initialize a static buffer from a null-terminated string. */
+#define CNO_BUFFER_STRING(str) { (char *) str, strlen(str) }
+
+
+/* Release the contents of a dynamic buffer. */
+static inline void cno_buffer_clear(struct cno_buffer_t * x)
+{
+    free(x->data);
+    x->data = NULL;
+    x->size = 0;
+}
+
+
+/* Check whether two buffers are equal. */
+static inline int cno_buffer_equals(const struct cno_buffer_t *a, const struct cno_buffer_t *b)
+{
+    return a->size == b->size && 0 == memcmp(a->data, b->data, b->size);
+}
+
+
+/* Append new data to the end of a dynamic buffer. */
+static inline int cno_buffer_append(struct cno_buffer_t *a, const char *b, size_t b_size)
+{
+    char *m = realloc(a->data, a->size + b_size);
+
+    if (m == NULL)
+        return CNO_ERROR(NO_MEMORY, "%zu bytes", a->size + b_size);
+
+    memcpy(m + a->size, b, b_size);
+    a->data  = m;
+    a->size += b_size;
+    return CNO_OK;
+}
+
+
+/* Append the contents of one buffer to another. */
+static inline int cno_buffer_concat(struct cno_buffer_t *a, const struct cno_buffer_t *b)
+{
+    return cno_buffer_append(a, b->data, b->size);
+}
+
+
+/* Construct a buffer from an existing one. */
+static inline int cno_buffer_copy(struct cno_buffer_t *a, const struct cno_buffer_t *b)
+{
+    a->data = NULL;
+    a->size = 0;
+    return cno_buffer_concat(a, b);
+}
+
+
+/* ----- Shiftable string views ----- */
+
+struct cno_buffer_off_t
+{
     char  *data;
     size_t size;
     size_t offset;
 };
 
 
-CNO_STRUCT_EXPORT(io_vector);
-CNO_STRUCT_EXPORT(io_vector_tmp);
-
-#define CNO_IO_VECTOR_STRING(str) { str, strlen(str) }
-#define CNO_IO_VECTOR_CONST(str)  { str, sizeof(str) - 1 }
-#define CNO_IO_VECTOR_ARRAY(arr)  { (char *) arr, sizeof(arr) }
-#define CNO_IO_VECTOR_EMPTY       { NULL, 0 }
-void   cno_io_vector_clear      (cno_io_vector_t *vec);
-int    cno_io_vector_extend     (cno_io_vector_t *vec, const char *data, size_t length);
-int    cno_io_vector_copy       (cno_io_vector_t *vec, const cno_io_vector_t *src);
-
-void   cno_io_vector_reset      (cno_io_vector_tmp_t *vec);
-int    cno_io_vector_shift      (cno_io_vector_tmp_t *vec, size_t offset);
-int    cno_io_vector_strip      (cno_io_vector_tmp_t *vec);
-int    cno_io_vector_extend_tmp (cno_io_vector_tmp_t *vec, const char *data, size_t length);
-
-
-/* Generic circular doubly-linked list.
- *
- * A `struct T` that contains a `CNO_LIST_LINK(struct T)` can form a doubly linked list
- * with other objects of same type. The `CNO_LIST_LINK` is not required to have a name;
- * if it does not, `struct T` is extended with members `next` and `prev`.
- *
- * Optionally, another `struct R` may start with `CNO_LIST_ROOT(struct T)`.
- * The `struct R` is then also a part of the cycle; it's basically the beginning,
- * and also the end, of the list. If `struct R` is the root, `first` and `last`
- * point into the list proper; compare them to `cno_list_end(root)` to determine
- * whether they point to valid `struct T`s or you have gone full circle to the root.
- *
- * NOTE: `first`/`last`/`next`/`prev` point to `CNO_LIST_LINK`/`CNO_LIST_ROOT` of
- *       another element, not to the beginning. Either put `CNO_LIST_LINK` as
- *       the first member of the struct, or do some pointer arithmetic manually.
- *
- */
-typedef struct cno_st_list_link_t { struct cno_st_list_link_t *prev, *next; } cno_list_link_t;
-
-
-#define CNO_LIST_LINK(T) union { struct { T *prev, *next;  }; cno_list_link_t __list_handle[1]; }
-#define CNO_LIST_ROOT(T) union { struct { T *last, *first; }; cno_list_link_t __list_handle[1]; }
-
-
-#define cno_list_end(x)  (void *) (x)->__list_handle
-#define cno_list_init(x)       __cno_list_init((x)->__list_handle)
-#define cno_list_prepend(x, y) __cno_list_prepend((x)->__list_handle, (y)->__list_handle)
-#define cno_list_remove(x)     __cno_list_remove((x)->__list_handle)
-
-
-static inline void __cno_list_init(cno_list_link_t *node)
+/* Release the contents of a shifted dynamic buffer. */
+static inline void cno_buffer_off_clear(struct cno_buffer_off_t *x)
 {
-    node->next = node;
-    node->prev = node;
+    free(x->data - x->offset);
+    x->data   = NULL;
+    x->size   = 0;
+    x->offset = 0;
 }
 
 
-static inline void __cno_list_prepend(cno_list_link_t *node, cno_list_link_t *next)
+/* Consume first few bytes of a buffer. */
+static inline void cno_buffer_off_shift(struct cno_buffer_off_t *x, size_t off)
 {
-    next->next = node->next;
-    next->prev = node;
-    node->next = next->next->prev = next;
+    x->data   += off;
+    x->size   -= off;
+    x->offset += off;
 }
 
 
-static inline void __cno_list_remove(cno_list_link_t *node)
+/* Move back to the beginning of a buffer. */
+static inline void cno_buffer_off_reset(struct cno_buffer_off_t *x)
 {
-    node->next->prev = node->prev;
-    node->prev->next = node->next;
-    __cno_list_init(node);
+    x->data  -= x->offset;
+    x->size  += x->offset;
+    x->offset = 0;
 }
 
 
-/* A generic hash map-based set.
- *
- * A set is simply something of a type `CNO_SET(s)` where `s` is the number of buckets.
- * Yes, it's constant. If you want to change it, reallocate and repopulate the whole map.
- * It's not like there's a better way to do that anyway.
- *
- * A `struct T` can only be used as a value in a set if it has an unnamed `CNO_SET_VALUE`
- * as the first member:
- *
- *     struct something {
- *         CNO_SET_VALUE;
- *     }
- *
- * Note that even though this is a set, meaning all values can only appear once,
- * the insertion function requires a size_t key; that key should be some sort of a hash
- * computed from the object. Meaning, one object should have its key constant.
- * Don't insert a single copy of an object with different keys. Don't insert a single
- * object into many different sets, either, as metadata is stored on the object itself.
- *
- */
-struct cno_st_set_handle_t { CNO_LIST_LINK(struct cno_st_set_handle_t); size_t key; };
-struct cno_st_set_bucket_t { CNO_LIST_ROOT(struct cno_st_set_handle_t); };
+/* Append the contents of a buffer to a shifted buffer. */
+static inline int cno_buffer_off_append(struct cno_buffer_off_t *a, const char *b, size_t b_size)
+{
+    char *m = realloc(a->data - a->offset, a->size + a->offset + b_size);
+
+    if (m == NULL)
+        return CNO_ERROR(NO_MEMORY, "%zu bytes", a->size + a->offset + b_size);
+
+    memcpy(m + a->size + a->offset, b, b_size);
+    a->data  = m + a->offset;
+    a->size += b_size;
+    return CNO_OK;
+}
 
 
-#define CNO_SET(size) struct { struct cno_st_set_bucket_t __set_bucket[size]; }
-#define CNO_SET_VALUE struct { struct cno_st_set_handle_t __set_handle[1]; }
+/* Release the consumed part of a buffer. */
+static inline void cno_buffer_off_trim(struct cno_buffer_off_t *x)
+{
+    char *m = malloc(x->size);
+
+    if (m == NULL)
+        // ok, maybe later.
+        return;
+
+    memcpy(m, x->data, x->size);
+    free(x->data - x->offset);
+    x->data   = m;
+    x->offset = 0;
+}
+
+
+/* ----- Generic intrusive doubly-linked circular list ----- */
+
+
+struct cno_list_t
+{
+    struct cno_list_t *prev;
+    struct cno_list_t *next;
+};
+
+
+#define cno_list_link_t(T)                  \
+  {                                         \
+      struct cno_list_t cno_list_handle[0]; \
+      T *prev;                              \
+      T *next;                              \
+  }
+
+
+#define cno_list_root_t(T)                  \
+  {                                         \
+      struct cno_list_t cno_list_handle[0]; \
+      T *last;                              \
+      T *first;                             \
+  }
+
+
+#define cno_list_end(x)       ((void *) (x)->cno_list_handle)
+#define cno_list_init(x)      cno_list_gen_init((x)->cno_list_handle)
+#define cno_list_append(x, y) cno_list_gen_append((x)->cno_list_handle, (y)->cno_list_handle)
+#define cno_list_remove(x)    cno_list_gen_remove((x)->cno_list_handle)
+
+
+static inline void cno_list_gen_init(struct cno_list_t *x)
+{
+    x->next = x;
+    x->prev = x;
+}
+
+
+static inline void cno_list_gen_append(struct cno_list_t *x, struct cno_list_t *y)
+{
+    y->next = x->next;
+    y->prev = x;
+    x->next = y->next->prev = y;
+}
+
+
+static inline void cno_list_gen_remove(struct cno_list_t *x)
+{
+    x->next->prev = x->prev;
+    x->prev->next = x->next;
+}
+
+
+/* ----- size_t-keyed intrusive hashmap (with closed hashing.) ----- */
+
+
+struct cno_hmap_handle_t
+{
+    struct cno_list_link_t(struct cno_hmap_handle_t);
+    size_t key;
+};
+
+
+struct cno_hmap_bucket_t
+{
+    struct cno_list_root_t(struct cno_hmap_handle_t);
+};
+
+
+#define cno_hmap(size) { struct cno_hmap_bucket_t cno_hmap_buckets[size]; }
+#define cno_hmap_value { struct cno_hmap_handle_t cno_hmap_handle[1];     }
 
 
 /* Yay, pointer magic! */
-#define cno_set_size(m) sizeof((m)->__set_bucket) / sizeof((m)->__set_bucket[0])
-#define cno_set_init(m)            __cno_set_init(  cno_set_size(m), (m)->__set_bucket)
-#define cno_set_insert(m, k, x)    __cno_set_insert(cno_set_size(m), (m)->__set_bucket, k, (x)->__set_handle)
-#define cno_set_find(m, k)         __cno_set_find(  cno_set_size(m), (m)->__set_bucket, k)
-#define cno_set_key(x)             (x)->__set_handle->key;
+#define cno_hmap_size(m) sizeof((m)->cno_hmap_buckets) / sizeof(struct cno_hmap_bucket_t)
+#define cno_hmap_init(m)            cno_hmap_gen_init(  cno_hmap_size(m), (m)->cno_hmap_buckets)
+#define cno_hmap_insert(m, k, x)    cno_hmap_gen_insert(cno_hmap_size(m), (m)->cno_hmap_buckets, k, (x)->cno_hmap_handle)
+#define cno_hmap_find(m, k)         cno_hmap_gen_find(  cno_hmap_size(m), (m)->cno_hmap_buckets, k)
+#define cno_hmap_key(x)             (x)->cno_hmap_handle->key;
 /* Buckets are circular doubly linked lists, so this works fine.
-   The set should still be passed as the first argument just in case. */
-#define cno_set_remove(m, x)       cno_list_remove((x)->__set_handle)
-#define cno_set_clear(m)           cno_set_iterate(m, i, struct cno_st_set_handle_t *, x, cno_list_remove(x))
+   The map should still be passed as the first argument just in case. */
+#define cno_hmap_remove(m, x)       cno_list_remove((x)->cno_hmap_handle)
+#define cno_hmap_clear(m)           cno_hmap_iterate(m, i, struct cno_st_set_handle_t *, x, cno_list_remove(x))
 
-/* Iterate over all values in a set, assuming they are of same type T:
+/* Iterate over all values in a map, assuming they are of same type T:
  *
- *    CNO_SET(256) set;
+ *    struct cno_hmap(256) set;
  *    ...
- *    cno_set_iterate(&set, something_t *, value, {
- *        printf("%zu -> %s\n", cno_set_key(value), value->some_field_of_something_t);
+ *    cno_hmap_iterate(&set, something_t *, value, {
+ *        printf("%zu -> %s\n", cno_hmap_key(value), value->some_field_of_something_t);
  *    });
  */
-#define cno_set_iterate(m, T, value, block) do {                                                  \
+#define cno_hmap_iterate(m, T, value, block) do {                                                 \
     T value;                                                                                      \
-    size_t __s = cno_set_size(m);                                                                 \
-    struct cno_st_set_bucket_t *__m;                                                              \
-    struct cno_st_set_handle_t *__n, *__i;                                                        \
-    for (__m = (m)->__set_bucket; __s--; ++__m)                                                   \
+    size_t __s = cno_hmap_size(m);                                                                \
+    struct cno_hmap_bucket_t *__m;                                                                \
+    struct cno_hmap_handle_t *__n, *__i;                                                          \
+    for (__m = &(m)->cno_hmap_buckets[0]; __s--; ++__m)                                           \
     for (__i = __m->first, __n = __i->next; __i != cno_list_end(__m); __i = __n, __n = __i->next) \
     { value = (T) __i; block; }                                                                   \
 } while (0)
 
 
-static inline void __cno_set_init(size_t size, struct cno_st_set_bucket_t *buckets)
+static inline void cno_hmap_gen_init(size_t size, struct cno_hmap_bucket_t *buckets)
 {
     while (size--) cno_list_init(buckets++);
 }
 
 
-static inline size_t __cno_set_hash(size_t key, size_t size)
+static inline size_t cno_hmap_gen_hash(size_t key, size_t size)
 {
-    key ^= (key >> 20) ^ (key >> 12);
+    key ^= (key >> 20) ^ (key >> 12);  // not sure where I got this weird hash function...
     key ^= (key >>  7) ^ (key >>  4);
     return key & (size - 1);
 }
 
 
-static inline void __cno_set_insert(size_t size, struct cno_st_set_bucket_t *set,
-                                    size_t key,  struct cno_st_set_handle_t *ob)
+static inline void cno_hmap_gen_insert(size_t size, struct cno_hmap_bucket_t *set,
+                                       size_t key,  struct cno_hmap_handle_t *ob)
 {
-    cno_list_prepend(set + __cno_set_hash(ob->key = key, size), ob);
+    cno_list_append(&set[cno_hmap_gen_hash(ob->key = key, size)], ob);
 }
 
 
-static inline void *__cno_set_find(size_t size, struct cno_st_set_bucket_t *set, size_t key)
+static inline void *cno_hmap_gen_find(size_t size, struct cno_hmap_bucket_t *set, size_t key)
 {
-    struct cno_st_set_bucket_t *root = set + __cno_set_hash(key, size);
-    struct cno_st_set_handle_t *it   = root->first;
+    struct cno_hmap_bucket_t *root = &set[cno_hmap_gen_hash(key, size)];
+    struct cno_hmap_handle_t *it   = root->first;
 
-    for (; it != cno_list_end(root); it = it->next) if (key == it->key) {
-        return it;
-    }
-
+    for (; it != cno_list_end(root); it = it->next)
+        if (key == it->key)
+            return it;
     return NULL;
 }
 

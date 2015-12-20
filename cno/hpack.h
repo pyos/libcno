@@ -1,23 +1,25 @@
-#ifndef _CNO_HPACK_H_
-#define _CNO_HPACK_H_
+// #include <cno/common.h>
+#ifndef CNO_HPACK_H
+#define CNO_HPACK_H
 
-#include <cno/common.h>
 
-
-struct cno_st_header_t {
-    struct cno_st_io_vector_t name;
-    struct cno_st_io_vector_t value;
+struct cno_header_t
+{
+    struct cno_buffer_t name;
+    struct cno_buffer_t value;
 };
 
 
-struct cno_st_header_table_t {
-    CNO_LIST_LINK(struct cno_st_header_table_t);
-    struct cno_st_header_t data;
+struct cno_header_table_t
+{
+    struct cno_list_link_t(struct cno_header_table_t);
+    struct cno_header_t data;
 };
 
 
-struct cno_st_hpack_t {
-    CNO_LIST_ROOT(struct cno_st_header_table_t);
+struct cno_hpack_t
+{
+    struct cno_list_root_t(struct cno_header_table_t);
     size_t size;
     size_t limit;
     size_t limit_upper;
@@ -26,16 +28,17 @@ struct cno_st_hpack_t {
 };
 
 
-CNO_STRUCT_EXPORT(header_table);
-CNO_STRUCT_EXPORT(header);
-CNO_STRUCT_EXPORT(hpack);
+void cno_hpack_init     (struct cno_hpack_t *, size_t limit);
+void cno_hpack_setlimit (struct cno_hpack_t *, size_t limit);
+void cno_hpack_clear    (struct cno_hpack_t *);
 
+/* Decode at most `*n` headers from a buffer into a provided array.
+ * `*n` is set to the actual number of headers decoded afterwards. */
+int cno_hpack_decode(struct cno_hpack_t *, const struct cno_buffer_t *, struct cno_header_t *, size_t *n);
 
-void cno_hpack_init     (cno_hpack_t *state, size_t limit);
-void cno_hpack_clear    (cno_hpack_t *state);
-void cno_hpack_setlimit (cno_hpack_t *state, size_t limit);
-int  cno_hpack_decode   (cno_hpack_t *state, cno_io_vector_t *source, cno_header_t *array, size_t *limit);
-int  cno_hpack_encode   (cno_hpack_t *state, cno_io_vector_t *target, cno_header_t *array, size_t amount);
+/* Encode exactly `n` headers into a dynamic buffer. Note: if it errors,
+ * the buffer may contain partially encoded data. Clear it yourself. */
+int cno_hpack_encode(struct cno_hpack_t *, struct cno_buffer_t *, const struct cno_header_t *, size_t  n);
 
 
 #endif

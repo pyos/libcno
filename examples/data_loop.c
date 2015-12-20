@@ -9,30 +9,39 @@
  *
  */
 #include <stdio.h>
-#include <string.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
-#include <cno/core.h>
 #include "examples/simple_common.h"
 
 
-static int pass(cno_connection_t *conn, void *other, const char *data, size_t length)
+struct conn_pair_t
 {
-    return cno_connection_data_received(other, data, length);
+    int pad;
+    struct cno_connection_t  a;
+    struct cno_connection_t *b;
+};
+
+
+static int pass(void *data, const char *buf, size_t length)
+{
+    return cno_connection_data_received(((struct conn_pair_t *) data)->b, buf, length);
 }
 
 
-static int respond(cno_connection_t *conn, void *_, size_t stream)
+static int respond(void *data, size_t stream)
 {
-    cno_header_t headers[3] = {
-        // io vector = { char *, size_t }
-        { CNO_IO_VECTOR_CONST("server"),         CNO_IO_VECTOR_CONST("echo-chamber/1.0") },
-        { CNO_IO_VECTOR_CONST("content-length"), CNO_IO_VECTOR_CONST("14") },
-        { CNO_IO_VECTOR_CONST("cache-control"),  CNO_IO_VECTOR_CONST("no-cache") },
+    struct cno_header_t headers[3] = {
+        { CNO_BUFFER_CONST("server"),         CNO_BUFFER_CONST("echo-chamber/1.0") },
+        { CNO_BUFFER_CONST("content-length"), CNO_BUFFER_CONST("14") },
+        { CNO_BUFFER_CONST("cache-control"),  CNO_BUFFER_CONST("no-cache") },
     };
 
-    cno_message_t message = { 200, CNO_IO_VECTOR_EMPTY, CNO_IO_VECTOR_EMPTY, headers, 3 };
+    struct cno_message_t message = { 200, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, 3 };
+    struct cno_connection_t *conn = &((struct conn_pair_t *) data)->a;
 
     return cno_write_message(conn, stream, &message, 0)
         || cno_write_data(conn, stream, "Hello, World!\n", 14, 1);
@@ -41,46 +50,47 @@ static int respond(cno_connection_t *conn, void *_, size_t stream)
 
 int main(int argc, char *argv[])
 {
-    cno_connection_t *client = cno_connection_new(CNO_CLIENT);
-    cno_connection_t *server = cno_connection_new(CNO_SERVER);
+    struct conn_pair_t server;
+    struct conn_pair_t client;
+    cno_connection_init(&server.a, CNO_SERVER);
+    cno_connection_init(&client.a, CNO_CLIENT);
+    server.pad = client.pad = 0;
+    server.b = &client.a;
+    client.b = &server.a;
 
-    if (client == NULL || server == NULL) {
-        goto error;
-    }
+    server.a.cb_data          = &server;
+    server.a.on_write         = &pass;
+    server.a.on_message_end   = &respond;
 
-    client->cb_data          = server;
-    client->on_write         = &pass;
-    client->on_message_start = &log_recv_message;
-    client->on_message_data  = &log_recv_message_data;
-    client->on_message_end   = &log_recv_message_end;
-    client->on_frame         = &log_recv_frame;
-    client->on_frame_send    = &log_sent_frame;
+    client.a.cb_data          = &client;
+    client.a.on_write         = &pass;
+    client.a.on_message_start = &log_recv_message;
+    client.a.on_message_data  = &log_recv_message_data;
+    client.a.on_message_end   = &log_recv_message_end;
+    client.a.on_frame         = &log_recv_frame;
+    client.a.on_frame_send    = &log_sent_frame;
 
-    server->cb_data          = client;
-    server->on_write         = &pass;
-    server->on_message_end   = &respond;
-
-    cno_header_t headers[1] = {
-        { CNO_IO_VECTOR_CONST(":authority"), CNO_IO_VECTOR_CONST("localhost") },
+    struct cno_header_t headers[1] = {
+        { CNO_BUFFER_CONST(":authority"), CNO_BUFFER_CONST("localhost") },
     };
 
-    cno_message_t message = { 0, CNO_IO_VECTOR_CONST("GET"), CNO_IO_VECTOR_CONST("/"), headers, 1};
+    struct cno_message_t message = { 0, CNO_BUFFER_CONST("GET"), CNO_BUFFER_CONST("/"), headers, 1};
 
-    if (cno_connection_made(client, CNO_HTTP2)
-     || cno_connection_made(server, CNO_HTTP2)
-     || cno_write_message(client, cno_stream_next_id(client), &message, 1)
-     || cno_connection_stop(client)
-     || cno_connection_lost(client)
-     || cno_connection_lost(server)
-    ) goto error;
+    if (cno_connection_made(&client.a, CNO_HTTP2)
+     || cno_connection_made(&server.a, CNO_HTTP2)
+     || cno_write_message(&client.a, cno_stream_next_id(&client.a), &message, 1)
+     || cno_connection_stop(&client.a)
+     || cno_connection_lost(&client.a)
+     || cno_connection_lost(&server.a))
+            goto error;
 
-    cno_connection_destroy(client);
-    cno_connection_destroy(server);
+    cno_connection_reset(&client.a);
+    cno_connection_reset(&server.a);
     return 0;
 
 error:
-    if (client) cno_connection_destroy(client);
-    if (server) cno_connection_destroy(server);
     print_traceback();
+    cno_connection_reset(&client.a);
+    cno_connection_reset(&server.a);
     return 1;
 }

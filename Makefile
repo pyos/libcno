@@ -9,16 +9,16 @@ ARCHIVE = ar rcs
 
 _require_headers = \
 	cno/core.h \
-	cno/common.h \
 	cno/hpack.h \
 	cno/hpack-data.h \
+	cno/common.h \
 	picohttpparser/picohttpparser.h
 
 
 _require_objects = \
-	obj/core.o \
 	obj/common.o \
 	obj/hpack.o \
+	obj/core.o \
 	obj/../picohttpparser/picohttpparser.o \
 
 

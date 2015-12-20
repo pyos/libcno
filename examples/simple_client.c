@@ -10,32 +10,33 @@
  *  prior knowledge. So don't try to connect to Twitter or Google -- these require TLS.)
  *
  */
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <unistd.h>
 #include <ctype.h>
-
 #include <errno.h>
 #include <netdb.h>
-#include <netinet/ip.h>
+#include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 #include <sys/socket.h>
+#include <netinet/ip.h>
 
-#include <cno/core.h>
 #include "examples/urlparse.h"
 // See this file for callbacks:
 #include "examples/simple_common.h"
 
 
-int disconnect(cno_connection_t *conn, void *fd, size_t stream)
+int disconnect(void *data, size_t stream)
 {
-    log_recv_message_end(conn, (int *) fd, stream);
+    log_recv_message_end(data, stream);
 
-    if (cno_connection_stop(conn)) {
-        return CNO_PROPAGATE;
-    }
+    struct cbdata_t *cbdata = data;
 
-    close(*(int *) fd);
+    if (cno_connection_stop(&cbdata->conn))
+        return CNO_ERROR_UP();
+
+    close(cbdata->fd);
     return CNO_OK;
 }
 
@@ -87,57 +88,52 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    cno_connection_t *client = cno_connection_new(CNO_CLIENT);
+    struct cno_connection_t client;
+    cno_connection_init(&client, CNO_CLIENT);
 
-    if (client == NULL) {
-        goto error;
-    }
-
-    cno_settings_t settings;
-    cno_settings_copy(client, &settings);
+    struct cno_settings_t settings;
+    cno_settings_copy(&client, &settings);
     settings.enable_push = 0;
     settings.max_concurrent_streams = 1024;
-    cno_settings_apply(client, &settings);
+    cno_settings_apply(&client, &settings);
 
-    client->cb_data          = &fd;
-    client->on_write         = &write_to_fd;
-    client->on_frame         = &log_recv_frame;
-    client->on_frame_send    = &log_sent_frame;
-    client->on_message_start = &log_recv_message;
-    client->on_message_data  = &log_recv_message_data;
-    client->on_message_end   = &disconnect;
+    client.cb_data          = &fd;
+    client.on_write         = &write_to_fd;
+    client.on_frame         = &log_recv_frame;
+    client.on_frame_send    = &log_sent_frame;
+    client.on_message_start = &log_recv_message;
+    client.on_message_data  = &log_recv_message_data;
+    client.on_message_end   = &disconnect;
 
-    cno_header_t headers[] = {
-        { CNO_IO_VECTOR_CONST(":scheme"),    CNO_IO_VECTOR_CONST("http") },
-        { CNO_IO_VECTOR_CONST(":authority"), CNO_IO_VECTOR_STRING(url->host) },
+    struct cno_header_t headers[] = {
+        { CNO_BUFFER_CONST(":scheme"),    CNO_BUFFER_CONST("http") },
+        { CNO_BUFFER_CONST(":authority"), CNO_BUFFER_STRING(url->host) },
     };
 
-    cno_message_t message = { 0, CNO_IO_VECTOR_CONST("GET"), CNO_IO_VECTOR_STRING(path), headers, 2 };
-    size_t stream = cno_stream_next_id(client);
+    struct cno_message_t message = { 0, CNO_BUFFER_CONST("GET"), CNO_BUFFER_STRING(path), headers, 2 };
+    size_t stream = cno_stream_next_id(&client);
 
-    if (cno_connection_made(client, CNO_HTTP2)
-     || cno_write_message(client, stream, &message, 1)) goto error;
+    if (cno_connection_made(&client, CNO_HTTP2)
+    ||  cno_write_message(&client, stream, &message, 1))
+            goto error;
 
     char buf[8196];
     ssize_t ln;
 
-    while ((ln = recv(fd, buf, 8196, 0)) > 0) {
-        if (cno_connection_data_received(client, buf, ln)) {
+    while ((ln = recv(fd, buf, 8196, 0)) > 0)
+        if (cno_connection_data_received(&client, buf, ln))
             goto error;
-        }
-    }
 
-    if (cno_connection_lost(client)) {
+    if (cno_connection_lost(&client))
         goto error;
-    }
 
     close(fd);
-    cno_connection_destroy(client);
+    cno_connection_reset(&client);
     return 0;
 
 error:
     close(fd);
     print_traceback();
-    if (client) cno_connection_destroy(client);
+    cno_connection_reset(&client);
     return 1;
 }
