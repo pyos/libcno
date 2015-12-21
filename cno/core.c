@@ -929,8 +929,6 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 return CNO_ERROR_UP();
 
             conn->state = CNO_CONNECTION_HTTP1_READY;
-            // the on_stream_start callback might have closed the connection.
-            // you never know...
             break;
 
         case CNO_CONNECTION_HTTP1_READY: {
@@ -944,7 +942,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             if (!conn->buffer.size)
                 return CNO_OK;
 
-            // Should be exactly one stream right now.
+            // should be exactly one stream right now.
             struct cno_stream_t *stream = cno_hmap_find(&conn->streams, 1);
 
             // the http 2 client preface looks like an http 1 request, but is not.
@@ -1067,10 +1065,9 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             struct cno_stream_t *stream = cno_hmap_find(&conn->streams, 1);
 
             if (!conn->http1_remaining) {
-                if (conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE)
-                    conn->state = CNO_CONNECTION_PREFACE;
-                else
-                    conn->state = CNO_CONNECTION_HTTP1_READY;
+                conn->state = conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE
+                    ? CNO_CONNECTION_PREFACE
+                    : CNO_CONNECTION_HTTP1_READY;
 
                 if (CNO_FIRE(conn, on_message_end, stream->id))
                     return CNO_ERROR_UP();
@@ -1082,47 +1079,38 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 return CNO_OK;
 
             if (conn->http1_remaining == (size_t) -1) {
-                char *it  = conn->buffer.data;
-                char *end = conn->buffer.size + it;
-                char *eol = it; while (eol != end && *eol++ != '\n');
-                char *lim = it; while (lim != eol && *lim++ != ';');
+                char *eol = memchr(conn->buffer.data, '\n', conn->buffer.size);
 
-                if (eol == end)
+                if (eol++ == NULL)
                     return CNO_OK;
 
-                size_t data_len = 0;
-                size_t head_len = (eol - it) + 2;  // + \r\n
+                size_t length = strtoul(conn->buffer.data, NULL, 16);
+                size_t total  = length + (eol - conn->buffer.data) + 2;  // + crlf after data
 
-                for (; it != lim; ++it) data_len =
-                    '0' <= *it && *it <= '9' ? (data_len << 4) | (*it - '0'     ) :
-                    'A' <= *it && *it <= 'F' ? (data_len << 4) | (*it - 'A' + 10) :
-                    'a' <= *it && *it <= 'f' ? (data_len << 4) | (*it - 'a' + 10) : data_len;
-
-                if (conn->buffer.size < data_len + head_len)
+                if (conn->buffer.size < total)
                     return CNO_OK;
 
-                if (!data_len)
-                    // last chunk
+                cno_buffer_off_shift(&conn->buffer, total);
+
+                if (!total)
                     conn->http1_remaining = 0;
-                else if (CNO_FIRE(conn, on_message_data, stream->id, eol, data_len))
+                else if (CNO_FIRE(conn, on_message_data, stream->id, eol, length))
                     return CNO_ERROR_UP();
 
-                cno_buffer_off_shift(&conn->buffer, data_len + head_len);
-                break;
-            } else {
-                size_t data_len = conn->http1_remaining;
-                char * data_buf = conn->buffer.data;
-
-                if (data_len > conn->buffer.size)
-                    data_len = conn->buffer.size;
-
-                if (CNO_FIRE(conn, on_message_data, stream->id, data_buf, data_len))
-                    return CNO_ERROR_UP();
-
-                conn->http1_remaining -= data_len;
-                cno_buffer_off_shift(&conn->buffer, data_len);
                 break;
             }
+
+            struct cno_buffer_t b = { conn->buffer.data, conn->buffer.size };
+
+            if (b.size > conn->http1_remaining)
+                b.size = conn->http1_remaining;
+
+            conn->http1_remaining -= b.size;
+            cno_buffer_off_shift(&conn->buffer, b.size);
+
+            if (CNO_FIRE(conn, on_message_data, stream->id, b.data, b.size))
+                return CNO_ERROR_UP();
+            break;
         }
 
         case CNO_CONNECTION_INIT:
