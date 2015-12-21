@@ -4,5 +4,5 @@
 *.o
 *.a
 *.dll
-/build
 /obj
+/cno/hpack-data.h

@@ -8,24 +8,24 @@ ARCHIVE = ar rcs
 
 
 _require_headers = \
-	cno/core.h \
-	cno/hpack.h \
+	cno/core.h       \
+	cno/hpack.h      \
 	cno/hpack-data.h \
-	cno/common.h \
+	cno/common.h     \
 	picohttpparser/picohttpparser.h
 
 
 _require_objects = \
-	obj/common.o \
-	obj/hpack.o \
-	obj/core.o \
-	obj/../picohttpparser/picohttpparser.o \
+	obj/common.o   \
+	obj/hpack.o    \
+	obj/core.o     \
+	obj/../picohttpparser/picohttpparser.o
 
 
 _require_examples = \
 	obj/examples/simple_server \
 	obj/examples/simple_client \
-	obj/examples/data_loop \
+	obj/examples/data_loop     \
 	obj/examples/hpack
 
 
@@ -50,7 +50,7 @@ obj/examples/%: examples/%.c obj/libcno.a
 	$(COMPILE) $@ $< -L./obj -lcno -pthread
 
 cno/hpack-data.h: cno/hpack-data.py
-	$(PYTHON) cno/hpack-data.py > cno/hpack-data.h
+	$(PYTHON) cno/hpack-data.py
 
 clean:
 	rm -rf obj build

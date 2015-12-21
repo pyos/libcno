@@ -193,30 +193,22 @@ static int cno_hpack_decode_string(struct cno_buffer_off_t *source, struct cno_b
         if (!buf)
             return CNO_ERROR(NO_MEMORY, "%zu bytes", length * 2);
 
-        struct cno_huffman_leaf_t ref = { CNO_HUFFMAN_LEAF_EOS, 0, 0 };
+        struct cno_huffman_leaf_t state = { CNO_HUFFMAN_LEAF_OK, 0, 0 };
 
-        while (src != end) {
-            uint8_t part = *src++;
-            uint8_t iter = 3;
+        for (; src != end; src++) {
+            uint8_t chr = *src;
 
-            while (--iter) {
-                ref = CNO_HUFFMAN_TREES[ref.tree | (part >> 4)];
+            int i; for (i = 0; i < 2; i++, chr <<= 4) {
+                state = CNO_HUFFMAN_TREES[state.tree | (chr >> 4)];
 
-                if (ref.type & CNO_HUFFMAN_LEAF_ERROR) {
-                    free(buf);
-                    return CNO_ERROR(COMPRESSION, "invalid Huffman code");
-                }
-
-                if (ref.type & CNO_HUFFMAN_LEAF_CHAR)
-                    *ptr++ = ref.data;
-
-                part <<= 4;
+                if (state.type & CNO_HUFFMAN_LEAF_CHAR)
+                    *ptr++ = state.data;
             }
         }
 
-        if (!(ref.type & CNO_HUFFMAN_LEAF_EOS)) {
+        if (!(state.type & CNO_HUFFMAN_LEAF_OK)) {
             free(buf);
-            return CNO_ERROR(COMPRESSION, "truncated Huffman code");
+            return CNO_ERROR(COMPRESSION, "invalid or truncated Huffman code");
         }
 
         out->data = (char *) buf;
