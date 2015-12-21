@@ -37,6 +37,9 @@
  * is statically allocated. (Do not redefine this in different compilation units!) */
 #define CNO_ERROR_TRACEBACK_DEPTH 128
 
+/* Don't waste time reallocating the buffer it that would free at most this many bytes. */
+#define CNO_BUFFER_TRIM_THRESHOLD 4096
+
 
 enum CNO_ERRNO
 {
@@ -220,6 +223,9 @@ static inline int cno_buffer_off_append(struct cno_buffer_off_t *a, const char *
 /* Release the consumed part of a buffer. */
 static inline void cno_buffer_off_trim(struct cno_buffer_off_t *x)
 {
+    if (x->offset <= CNO_BUFFER_TRIM_THRESHOLD)
+        return;
+
     char *m = (char *) malloc(x->size);
 
     if (m == NULL)
