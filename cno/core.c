@@ -1137,7 +1137,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
 
         case CNO_CONNECTION_READY_NO_SETTINGS:
         case CNO_CONNECTION_READY: {
-            if (conn->buffer.size < 3)
+            if (conn->buffer.size < 9)
                 return CNO_OK;
 
             uint8_t *base = (uint8_t *) conn->buffer.data;
