@@ -42,10 +42,10 @@ static int respond_with_hello_world(void *data, size_t stream)
     struct cno_message_t message = { 200, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, 3 };
 
     if (cno_write_message(conn, stream, &message, 0)
-    ||  cno_write_data(conn, stream, "Hello, World!\n", 14, 1))
-            // CNO_ERRNO_WOULD_BLOCK in cno_write_data can be handled by waiting for
-            // a flow control update and retrying, but we don't have an event loop so we'll abort.
-            return CNO_ERROR_UP();
+    ||  cno_write_data(conn, stream, "Hello, World!\n", 14, 1) < 0)
+        // cno_write_data may return less than 14, in which case we should
+        // wait for on_flow_increase and resend the rest of the data. but that's hard.
+        return CNO_ERROR_UP();
 
     log_sent_message(data, stream, &message);
     return CNO_OK;

@@ -44,7 +44,7 @@ static int respond(void *data, size_t stream)
     struct cno_connection_t *conn = &((struct conn_pair_t *) data)->a;
 
     return cno_write_message(conn, stream, &message, 0)
-        || cno_write_data(conn, stream, "Hello, World!\n", 14, 1);
+        || cno_write_data(conn, stream, "Hello, World!\n", 14, 1) < 0;
 }
 
 
