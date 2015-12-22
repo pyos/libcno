@@ -316,11 +316,13 @@ int      cno_settings_apply           (struct cno_connection_t *conn, const stru
  *  1. call cno_write_reset if you do not wish to receive a pushed resource,
  *     or decide against sending a request/response in between calls to cno_write_data.
  *
+ * cno_write_data, if it does not error, returns the number of bytes it has sent.
+ * if it returns 0, you should wait for an `on_flow_increase` event.
  */
 uint32_t cno_stream_next_id (struct cno_connection_t *conn);
 int      cno_write_reset    (struct cno_connection_t *conn, size_t stream);
 int      cno_write_push     (struct cno_connection_t *conn, size_t stream, const struct cno_message_t *msg);
 int      cno_write_message  (struct cno_connection_t *conn, size_t stream, const struct cno_message_t *msg, int final);
-int      cno_write_data     (struct cno_connection_t *conn, size_t stream, const char *data, size_t length, int final);
+int32_t  cno_write_data     (struct cno_connection_t *conn, size_t stream, const char *data, size_t length, int final);
 
 #endif

@@ -112,8 +112,8 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
         return CNO_ERROR_NULL(NO_MEMORY, "%zu bytes", sizeof(struct cno_stream_t));
 
     stream->id = id;
-    stream->window_recv = conn->settings[local].initial_window_size;
-    stream->window_send = conn->settings[local].initial_window_size;
+    stream->window_recv = conn->settings[CNO_PEER_LOCAL].initial_window_size;
+    stream->window_send = conn->settings[CNO_PEER_REMOTE].initial_window_size;
     cno_hmap_insert(&conn->streams, id, stream);
     conn->last_stream[local] = id;
     conn->stream_count[local]++;
@@ -127,11 +127,10 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
 }
 
 
-/* send a single frame.
+/* send a single frame. it should fit in the flow control window, though!
  *
  * fires: on_write, on_frame_send.
  * throws:
- *   WOULD_BLOCK if a DATA frame is bigger than the peer can accept
  *   ASSERTION   if a non-DATA frame exceeds the size limit (how)
  *   ASSERTION   if a padded frame exceeds the size limit (FIXME)
  */
@@ -141,14 +140,6 @@ static int cno_frame_write(struct cno_connection_t *conn,
 {
     size_t length = frame->payload.size;
     size_t limit  = conn->settings[CNO_PEER_REMOTE].max_frame_size;
-
-    if (frame->type == CNO_FRAME_DATA) {
-        if (length > conn->window_send)
-            return CNO_ERROR(WOULD_BLOCK, "wait for on_flow_increase(0)");
-
-        if (stream && length > stream->window_send)
-            return CNO_ERROR(WOULD_BLOCK, "wait for on_flow_increase(%u)", stream->id);
-    }
 
     if (length <= limit) {
         if (frame->type == CNO_FRAME_DATA) {
@@ -1412,7 +1403,7 @@ int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct
 }
 
 
-int cno_write_data(struct cno_connection_t *conn, size_t stream, const char *data, size_t length, int final)
+int32_t cno_write_data(struct cno_connection_t *conn, size_t stream, const char *data, size_t length, int final)
 {
     if (conn->closed)
         return CNO_ERROR(INVALID_STATE, "connection closed");
@@ -1421,10 +1412,10 @@ int cno_write_data(struct cno_connection_t *conn, size_t stream, const char *dat
         if (stream != 1)
             return CNO_ERROR(INVALID_STREAM, "can only write to stream 1 in HTTP 1 mode, not %zu", stream);
 
-        if (!length)
-            return CNO_OK;
+        if (length && CNO_FIRE(conn, on_write, data, length))
+            return CNO_ERROR_UP();
 
-        return CNO_FIRE(conn, on_write, data, length);
+        return length;
     }
 
     struct cno_stream_t *streamobj = cno_hmap_find(&conn->streams, stream);
@@ -1435,10 +1426,26 @@ int cno_write_data(struct cno_connection_t *conn, size_t stream, const char *dat
     if (!(streamobj->accept & CNO_ACCEPT_WRITE_DATA))
         return CNO_ERROR(INVALID_STREAM, "can't carry data over stream %zu", stream);
 
+    if (length > conn->window_send) {
+        length = conn->window_send;
+        final  = 0;
+    }
+
+    if (length > streamobj->window_send) {
+        length = streamobj->window_send;
+        final  = 0;
+    }
+
+    if (!length && !final)
+        return 0;
+
     struct cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, 0, stream, { (char *) data, length } };
 
     if (cno_frame_write(conn, streamobj, &frame))
         return CNO_ERROR_UP();
 
-    return final ? cno_stream_close(conn, streamobj) : CNO_OK;
+    if (final && cno_stream_close(conn, streamobj))
+        return CNO_ERROR_UP();
+
+    return length;
 }
