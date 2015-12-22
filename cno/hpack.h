@@ -13,7 +13,9 @@ struct cno_header_t
 struct cno_header_table_t
 {
     struct cno_list_link_t(struct cno_header_table_t);
-    struct cno_header_t data;
+    size_t k_size;
+    size_t v_size;
+    char data[];
 };
 
 

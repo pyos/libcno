@@ -114,7 +114,6 @@ struct cno_buffer_t
 #define CNO_BUFFER_STRING(str) { (char *) str, strlen(str) }
 
 
-/* Release the contents of a dynamic buffer. */
 static inline void cno_buffer_clear(struct cno_buffer_t * x)
 {
     free(x->data);
@@ -123,10 +122,9 @@ static inline void cno_buffer_clear(struct cno_buffer_t * x)
 }
 
 
-/* Check whether two buffers are equal. */
-static inline int cno_buffer_equals(const struct cno_buffer_t *a, const struct cno_buffer_t *b)
+static inline int cno_buffer_eq(const struct cno_buffer_t *a, const struct cno_buffer_t b)
 {
-    return a->size == b->size && 0 == memcmp(a->data, b->data, b->size);
+    return a->size == b.size && 0 == memcmp(a->data, b.data, b.size);
 }
 
 
@@ -136,7 +134,6 @@ static inline int cno_buffer_eq_const(const struct cno_buffer_t *a, const char *
 }
 
 
-/* Append new data to the end of a dynamic buffer. */
 static inline int cno_buffer_append(struct cno_buffer_t *a, const char *b, size_t b_size)
 {
     char *m = (char *) realloc(a->data, a->size + b_size);
@@ -151,14 +148,12 @@ static inline int cno_buffer_append(struct cno_buffer_t *a, const char *b, size_
 }
 
 
-/* Append the contents of one buffer to another. */
 static inline int cno_buffer_concat(struct cno_buffer_t *a, const struct cno_buffer_t *b)
 {
     return cno_buffer_append(a, b->data, b->size);
 }
 
 
-/* Construct a buffer from an existing one. */
 static inline int cno_buffer_copy(struct cno_buffer_t *a, const struct cno_buffer_t *b)
 {
     a->data = NULL;
@@ -177,7 +172,6 @@ struct cno_buffer_off_t
 };
 
 
-/* Release the contents of a shifted dynamic buffer. */
 static inline void cno_buffer_off_clear(struct cno_buffer_off_t *x)
 {
     free(x->data - x->offset);
@@ -205,7 +199,6 @@ static inline void cno_buffer_off_reset(struct cno_buffer_off_t *x)
 }
 
 
-/* Append the contents of a buffer to a shifted buffer. */
 static inline int cno_buffer_off_append(struct cno_buffer_off_t *a, const char *b, size_t b_size)
 {
     char *m = (char *) realloc(a->data - a->offset, a->size + a->offset + b_size);

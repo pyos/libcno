@@ -115,8 +115,11 @@ void print_table(struct cno_hpack_t *state)
     printf("dynamic table =\n");
     struct cno_header_table_t *table = state->first;
 
-    for (; table != cno_list_end(state); table = table->next)
-        print_header(&table->data);
+    for (; table != cno_list_end(state); table = table->next) {
+        struct cno_header_t header = { { &table->data[0],             table->k_size },
+                                       { &table->data[table->k_size], table->v_size } };
+        print_header(&header);
+    }
 
     printf(" -- [size: %zu, limit: %zu]\n\n", state->size, state->limit);
 }
