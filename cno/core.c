@@ -224,7 +224,8 @@ static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
 
     // a stream in closed state can still accept headers/data.
     // headers will be decompressed; other than that, everything is ignored.
-    obj->closed = 1;
+    obj->closed  = 1;
+    obj->accept &= ~CNO_ACCEPT_OUTBOUND;
 
     if (!(obj->accept & (CNO_ACCEPT_HEADERS | CNO_ACCEPT_HEADCNT)))
         // since headers were already handled, this stream can be safely destroyed.
@@ -265,34 +266,17 @@ static int cno_frame_write_goaway(struct cno_connection_t *conn, uint32_t /* enu
     cno_frame_write_error(conn, CNO_STATE_PROTOCOL_ERROR, __VA_ARGS__)
 
 
-/* handle a frame that carries an END_HEADERS flag.
- *
- * fires:
- *   on_message_push   if the frame is PUSH_PROMISE.
- *   on_message_start  if the frame is HEADERS and the stream was not reset.
- *
- * throws: TRANSPORT if header block is corrupt.
- */
-static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
-                                        struct cno_stream_t     *stream, int is_push)
+static int cno_frame_parse_headers(struct cno_connection_t *conn,
+                                   struct cno_message_t    *msg, int is_push)
 {
-    struct cno_header_t  headers[CNO_MAX_HEADERS];
-    struct cno_header_t *it;
-    struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, CNO_MAX_HEADERS };
-
-    if (cno_hpack_decode(&conn->decoder, &stream->continued, headers, &msg.headers_len)) {
-        cno_buffer_clear(&stream->continued);
-        cno_frame_write_goaway(conn, CNO_STATE_COMPRESSION_ERROR);
-        return CNO_ERROR_UP();
-    }
-
-    cno_buffer_clear(&stream->continued);
+    struct cno_header_t *it  = msg->headers;
+    struct cno_header_t *end = msg->headers + msg->headers_len;
 
     #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
         int seen_normal = 0;
     #endif
 
-    for (it = headers; it != headers + msg.headers_len; ++it) {
+    for (; it != end; ++it) {
         #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
             if (!it->name.size || it->name.data[0] != ':')
                 seen_normal = 1;
@@ -302,10 +286,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
 
         if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":status"))) {
             #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
-                if (!conn->client)
-                    return cno_protocol_error(conn, ":status in a request");
-
-                if (msg.code)
+                if (msg->code)
                     return cno_protocol_error(conn, "two :status-es");
             #endif
 
@@ -314,35 +295,29 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
 
             while (ptr != end)
                 if ('0' <= *ptr && *ptr <= '9')
-                    msg.code = msg.code * 10 + (*ptr++ - '0');
+                    msg->code = msg->code * 10 + (*ptr++ - '0');
                 else
                     return cno_protocol_error(conn, "bad :status");
         } else
 
         if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":path"))) {
             #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
-                if (conn->client && !is_push)
-                    return cno_protocol_error(conn, ":path in a response");
-
-                if (msg.path.data)
+                if (msg->path.data)
                     return cno_protocol_error(conn, "two :path-s");
             #endif
 
-            msg.path.data = it->value.data;
-            msg.path.size = it->value.size;
+            msg->path.data = it->value.data;
+            msg->path.size = it->value.size;
         } else
 
         if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":method"))) {
             #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
-                if (conn->client && !is_push)
-                    return cno_protocol_error(conn, ":method in a response");
-
-                if (msg.method.data)
+                if (msg->method.data)
                     return cno_protocol_error(conn, "two :method-s");
             #endif
 
-            msg.method.data = it->value.data;
-            msg.method.size = it->value.size;
+            msg->method.data = it->value.data;
+            msg->method.size = it->value.size;
         }
 
         #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
@@ -363,39 +338,19 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
     }
 
     #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
-        if (conn->client && !is_push) {
-            if (msg.code == 0)
-                return cno_protocol_error(conn, "no :status in a response");
-        } else {
-            if (msg.method.data == NULL)
-                return cno_protocol_error(conn, "no :method in a request");
+        int is_response = conn->client && !is_push;
 
-            if (msg.path.data == NULL)
-                return cno_protocol_error(conn, "no :path in a request");
-        }
+        if ((msg->code != 0) ^ is_response)
+            return cno_protocol_error(conn, "no/unexpected :status");
+
+        if ((msg->method.data == NULL) ^ is_response)
+            return cno_protocol_error(conn, "no/unexpected :method");
+
+        if ((msg->path.data == NULL) ^ is_response)
+            return cno_protocol_error(conn, "no/unexpected :path");
     #endif
 
-    int failed;
-
-    if (is_push) {
-        // accept pushes even on reset streams.
-        stream->accept &= ~CNO_ACCEPT_PUSHCNT;
-        failed = CNO_FIRE(conn, on_message_push, stream->continued_promise, &msg, stream->id);
-    } else if (stream->closed) {
-        // can finally destroy the thing.
-        failed = cno_stream_destroy_clean(conn, stream);
-    } else {
-        stream->accept &= ~(CNO_ACCEPT_HEADERS | CNO_ACCEPT_HEADCNT);
-        stream->accept |=   CNO_ACCEPT_DATA;
-        failed = CNO_FIRE(conn, on_message_start, stream->id, &msg);
-    }
-
-    for (it = headers; it != headers + msg.headers_len; ++it) {
-        cno_buffer_clear(&it->name);
-        cno_buffer_clear(&it->value);
-    }
-
-    return failed;
+    return CNO_OK;
 }
 
 
@@ -420,6 +375,58 @@ static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
 }
 
 
+/* handle a frame that carries an END_HEADERS flag.
+ *
+ * fires:
+ *   on_message_push   if the frame is PUSH_PROMISE.
+ *   on_message_start  if the frame is HEADERS and the stream was not reset.
+ *
+ * throws: TRANSPORT if header block is corrupt.
+ */
+static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
+                                        struct cno_stream_t     *stream,
+                                        struct cno_frame_t      *frame, int is_push)
+{
+    struct cno_header_t  headers[CNO_MAX_HEADERS];
+    struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, CNO_MAX_HEADERS };
+
+    if (cno_hpack_decode(&conn->decoder, &stream->continued, headers, &msg.headers_len)) {
+        cno_buffer_clear(&stream->continued);
+        cno_frame_write_goaway(conn, CNO_STATE_COMPRESSION_ERROR);
+        return CNO_ERROR_UP();
+    }
+
+    cno_buffer_clear(&stream->continued);
+
+    int failed = cno_frame_parse_headers(conn, &msg, is_push);
+
+    if (!failed) {
+        if (is_push) {
+            // accept pushes even on reset streams.
+            stream->accept &= ~CNO_ACCEPT_PUSHCNT;
+            failed = CNO_FIRE(conn, on_message_push, stream->continued_promise, &msg, stream->id);
+        } else {
+            stream->accept &= ~CNO_ACCEPT_HEADCNT;
+            stream->accept |=  CNO_ACCEPT_DATA;
+
+            if (stream->closed)
+                failed = cno_stream_destroy_clean(conn, stream);
+            else if (CNO_FIRE(conn, on_message_start, stream->id, &msg))
+                failed = -1;
+            else if (frame->flags & CNO_FLAG_END_STREAM)
+                failed = cno_frame_handle_end_stream(conn, stream);
+        }
+    }
+
+    for (; msg.headers_len; msg.headers++, msg.headers_len--) {
+        cno_buffer_clear(&msg.headers->name);
+        cno_buffer_clear(&msg.headers->value);
+    }
+
+    return failed;
+}
+
+
 /* handle a HEADERS frame (or a CONTINUATION to one.)
  *
  * fires:
@@ -440,7 +447,7 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
         stream->accept = CNO_ACCEPT_HEADERS | CNO_ACCEPT_WRITE_HEADERS | CNO_ACCEPT_WRITE_PUSH;
     }
 
-    if (!(stream->accept & (CNO_ACCEPT_HEADERS | CNO_ACCEPT_HEADCNT)))
+    if (!(stream->accept & CNO_ACCEPT_HEADERS))
         return CNO_ERROR(TRANSPORT, "got HEADERS when expected none");
 
     stream->continued_flags = frame->flags & CNO_FLAG_END_STREAM;
@@ -453,13 +460,8 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
         // will handle things.
         return CNO_ERROR_UP();
 
-    if (frame->flags & CNO_FLAG_END_HEADERS) {
-        if (cno_frame_handle_end_headers(conn, stream, 0))
-            return CNO_ERROR_UP();
-
-        if (frame->flags & CNO_FLAG_END_STREAM)
-            return cno_frame_handle_end_stream(conn, stream);
-    }
+    if (frame->flags & CNO_FLAG_END_HEADERS)
+        return cno_frame_handle_end_headers(conn, stream, frame, 0);
 
     return CNO_OK;
 }
@@ -473,31 +475,29 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
                                          struct cno_stream_t     *stream,
                                          struct cno_frame_t      *frame, int rstd)
 {
-    if (!stream || !(stream->accept & (CNO_ACCEPT_PUSH | CNO_ACCEPT_PUSHCNT)))
+    if (!stream || !(stream->accept & CNO_ACCEPT_PUSH))
         // also triggers if the other side is not a server
         return CNO_ERROR(TRANSPORT, "unexpected PUSH_PROMISE");
 
     if (!conn->settings[CNO_PEER_LOCAL].enable_push)
         return CNO_ERROR(TRANSPORT, "forbidden PUSH_PROMISE");
 
-    if (frame->type != CNO_FRAME_CONTINUATION) {
-        if (frame->payload.size < 4)
-            return cno_frame_write_error(conn, CNO_STATE_FRAME_SIZE_ERROR, "PUSH_PROMISE too short");
+    if (frame->payload.size < 4)
+        return cno_frame_write_error(conn, CNO_STATE_FRAME_SIZE_ERROR, "PUSH_PROMISE too short");
 
-        uint32_t promised = read4((uint8_t *) frame->payload.data);
-        frame->payload.data += 4;
-        frame->payload.size -= 4;
+    uint32_t promised = read4((uint8_t *) frame->payload.data);
+    frame->payload.data += 4;
+    frame->payload.size -= 4;
 
-        struct cno_stream_t *pushed = cno_stream_new(conn, promised, CNO_PEER_REMOTE);
+    struct cno_stream_t *pushed = cno_stream_new(conn, promised, CNO_PEER_REMOTE);
 
-        if (pushed == NULL)
-            return CNO_ERROR_UP();
+    if (pushed == NULL)
+        return CNO_ERROR_UP();
 
-        pushed->accept = CNO_ACCEPT_HEADERS;
-        stream->continued_promise = promised;
-    }
-
+    pushed->accept  = CNO_ACCEPT_HEADERS;
+    stream->accept |= CNO_ACCEPT_PUSHCNT;
     stream->continued_flags = 0;  // PUSH_PROMISE cannot have END_STREAM
+    stream->continued_promise = promised;
 
     if (cno_buffer_concat(&stream->continued, frame->payload))
         // same as headers -- this error affects the state of the decoder and will
@@ -505,7 +505,7 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
 
     if (frame->flags & CNO_FLAG_END_HEADERS)
-        return cno_frame_handle_end_headers(conn, stream, 1);
+        return cno_frame_handle_end_headers(conn, stream, frame, 1);
 
     return CNO_OK;
 }
@@ -522,15 +522,18 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
     if (!stream)
         return CNO_ERROR(TRANSPORT, "CONTINUATION on a non-existent stream");
 
+    if (!(stream->accept & (CNO_ACCEPT_PUSHCNT | CNO_ACCEPT_HEADCNT)))
+        return CNO_ERROR(TRANSPORT, "CONTINUATION not after HEADERS/PUSH_PROMISE");
+
     frame->flags |= stream->continued_flags;
 
-    if (stream->accept & CNO_ACCEPT_PUSHCNT)
-        return cno_frame_handle_push_promise(conn, stream, frame, rstd);
+    if (cno_buffer_concat(&stream->continued, frame->payload))
+        return CNO_ERROR_UP();
 
-    if (stream->accept & CNO_ACCEPT_HEADCNT)
-        return cno_frame_handle_headers(conn, stream, frame, rstd);
+    if (frame->flags & CNO_FLAG_END_HEADERS)
+        return cno_frame_handle_end_headers(conn, stream, frame, stream->accept & CNO_ACCEPT_PUSHCNT);
 
-    return CNO_ERROR(TRANSPORT, "CONTINUATION not after HEADERS/PUSH_PROMISE");
+    return CNO_OK;
 }
 
 
@@ -570,17 +573,14 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
     if (CNO_FIRE(conn, on_message_data, frame->stream, frame->payload.data, frame->payload.size))
         return CNO_ERROR_UP();
 
-    if (frame->flags & CNO_FLAG_END_STREAM) {
-        if (cno_frame_handle_end_stream(conn, stream))
-            return CNO_ERROR_UP();
-    } else if (length) {
-        struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, stream->id, { PACK(I32(length)) } };
+    if (frame->flags & CNO_FLAG_END_STREAM)
+        return cno_frame_handle_end_stream(conn, stream);
 
-        if (cno_frame_write(conn, stream, &update))
-            return CNO_ERROR_UP();
-    }
+    if (!length)
+        return CNO_OK;
 
-    return CNO_OK;
+    struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, stream->id, { PACK(I32(length)) } };
+    return cno_frame_write(conn, stream, &update);
 }
 
 
