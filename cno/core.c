@@ -31,7 +31,7 @@ static const struct cno_settings_t CNO_SETTINGS_INITIAL  = {{{ 4096, 1, 1024, 65
 
 /* check whether a stream is initiated by us, not our peer.
  *
- * even-numbered streams are initiated by the client.
+ * even-numbered streams are initiated by the server.
  */
 static int cno_stream_is_local(struct cno_connection_t *conn, uint32_t id)
 {
