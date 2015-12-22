@@ -433,10 +433,12 @@ static PyObject * pycno_write_data(PyCNO *self, PyObject *args, PyObject *kwargs
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ny#|p", kwds, &stream, &data, &length, &eof))
         return NULL;
 
-    if (cno_write_data(&self->conn, stream, data, length, eof))
+    ssize_t i = cno_write_data(&self->conn, stream, data, length, eof);
+
+    if (i < 0)
         return pycno_handle_cno_error(self);
 
-    Py_RETURN_NONE;
+    return PyLong_FromSsize_t(i);
 }
 
 

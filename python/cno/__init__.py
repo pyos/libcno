@@ -50,13 +50,13 @@ class Request:
 
     async def respond(self, code, headers, data):
         self.connection.write_message(self.stream, code, "", "", headers, not data)
+
         while data:
-            try:
-                self.connection.write_data(self.stream, data, True)
-            except BlockingIOError:
+            i = self.connection.write_data(self.stream, data, True)
+            if i == 0:
                 await self.connection._wait_for_flow_increase(self.stream)
             else:
-                break
+                data = data[i:]
 
 
 class Response:
