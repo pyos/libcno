@@ -943,12 +943,12 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 if (conn->buffer.size < CNO_PREFACE.size)
                     return CNO_OK;
 
-                if (cno_stream_destroy_clean(conn, stream))
-                    return CNO_ERROR_UP();
-
+                conn->state = CNO_CONNECTION_INIT;
                 conn->last_stream[0] = 0;
                 conn->last_stream[1] = 0;
-                conn->state = CNO_CONNECTION_INIT;
+
+                if (cno_stream_destroy_clean(conn, stream))
+                    return CNO_ERROR_UP();
                 break;
             }
 
@@ -1229,9 +1229,9 @@ uint32_t cno_stream_next_id(struct cno_connection_t *conn)
 int cno_write_reset(struct cno_connection_t *conn, size_t stream)
 {
     if (!cno_connection_is_http2(conn))
-        return CNO_OK;
+        return CNO_ERROR(DISCONNECT, "HTTP/1.x connection rejected");
 
-    return cno_frame_write_rst_stream(conn, stream, CNO_STATE_NO_ERROR);
+    return cno_frame_write_rst_stream(conn, stream, CNO_STATE_CANCEL);
 }
 
 

@@ -318,6 +318,9 @@ int      cno_settings_apply           (struct cno_connection_t *conn, const stru
  *
  * cno_write_data, if it does not error, returns the number of bytes it has sent.
  * if it returns 0, you should wait for an `on_flow_increase` event.
+ *
+ * cno_write_reset may return an error of type DISCONNECT if dropping the stream
+ * is only possible by bringing down the whole connection.
  */
 uint32_t cno_stream_next_id (struct cno_connection_t *conn);
 int      cno_write_reset    (struct cno_connection_t *conn, size_t stream);
