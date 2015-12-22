@@ -418,7 +418,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
 }
 
 
-/* handle a HEADERS frame (or a CONTINUATION to one.)
+/* handle a HEADERS frame.
  *
  * fires:
  *   on_message_start  if the frame has END_HEADERS set.
@@ -441,6 +441,15 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
     if (!(stream->accept & CNO_ACCEPT_HEADERS))
         return CNO_ERROR(TRANSPORT, "got HEADERS when expected none");
 
+    if (frame->flags & CNO_FLAG_PRIORITY) {
+        if (frame->payload.size < 5)
+            return cno_frame_write_error(conn, CNO_STATE_FRAME_SIZE_ERROR, "no priority spec");
+
+        // can do nothing with this data without access to the transport layer :((
+        frame->payload.data += 5;
+        frame->payload.size -= 5;
+    }
+
     conn->continued_flags = frame->flags & CNO_FLAG_END_STREAM;
     conn->continued_stream = stream->id;
     stream->accept &= ~CNO_ACCEPT_HEADERS;
@@ -459,7 +468,7 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
 }
 
 
-/* handle a PUSH_PROMISE frame, or a CONTINUATION.
+/* handle a PUSH_PROMISE frame.
  *
  * fires: on_message_push if the frame has END_HEADERS set.
  */
@@ -504,9 +513,9 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
 }
 
 
-/* handle a CONTINUATION (by dispatching it as either HEADERS or PUSH_PROMISE.)
+/* handle a CONTINUATION.
  *
- * fires: see *_headers or *_push_promise.
+ * fires: same as *_headers or *_push_promise, depending on what is continued.
  */
 static int cno_frame_handle_continuation(struct cno_connection_t *conn,
                                          struct cno_stream_t     *stream,
@@ -783,16 +792,6 @@ static int cno_frame_handle(struct cno_connection_t *conn, struct cno_frame_t *f
 
         frame->payload.data += 1;  // padding follows the data.
         frame->payload.size -= frame->padding;
-    }
-
-    if (frame->type == CNO_FRAME_HEADERS && frame->flags & CNO_FLAG_PRIORITY) {
-        if (frame->payload.size < 5)
-            return cno_frame_write_error(conn, CNO_STATE_FRAME_SIZE_ERROR, "no priority spec");
-
-        // can do nothing with this data without access to the transport layer :((
-        frame->payload.data += 5;
-        frame->payload.size -= 5;
-        frame->padding += 5;
     }
 
     if (frame->type >= CNO_FRAME_UNKNOWN)
