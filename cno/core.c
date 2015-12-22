@@ -1143,7 +1143,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             size_t m = read3(base);
 
             if (m > conn->settings[CNO_PEER_LOCAL].max_frame_size)
-                return CNO_ERROR(TRANSPORT, "recv'd a frame that is too big");
+                return cno_frame_write_error(conn, CNO_STATE_FRAME_SIZE_ERROR, "frame too big");
 
             if (conn->buffer.size < 9 + m)
                 return CNO_OK;
