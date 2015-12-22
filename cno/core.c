@@ -705,7 +705,8 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
         return cno_protocol_error(conn, "invalid enable_push value %u", cfg->enable_push);
 
     if (cfg->initial_window_size >= 0x80000000u)
-        return cno_protocol_error(conn, "initial flow window out of bounds [0..2^31)");
+        return cno_frame_write_error(conn, CNO_STATE_FLOW_CONTROL_ERROR,
+                                     "initial flow window out of bounds [0..2^31)");
 
     if (cfg->max_frame_size < 16384 || cfg->max_frame_size > 16777215)
         return cno_protocol_error(conn, "maximum frame size out of bounds (2^14..2^24)");
