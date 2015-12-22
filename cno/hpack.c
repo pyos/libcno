@@ -227,9 +227,9 @@ static int cno_hpack_decode_string(struct cno_buffer_off_t *source, struct cno_b
 }
 
 
-static int cno_hpack_decode_one(struct cno_hpack_t *state,
+static int cno_hpack_decode_one(struct cno_hpack_t      *state,
                                 struct cno_buffer_off_t *source,
-                                struct cno_header_t *target)
+                                struct cno_header_t     *target, int first)
 {
     if (!source->size)
         return CNO_ERROR(COMPRESSION, "expected header, got EOF");
@@ -262,6 +262,9 @@ static int cno_hpack_decode_one(struct cno_hpack_t *state,
         mask = 0x30;
 
     else if (head & 0x20 /* dynamic table size update */) {
+        if (!first)
+            return CNO_ERROR(COMPRESSION, "table size update should be the first item");
+
         if (cno_hpack_decode_uint(source, 0x1F, &index))
             return CNO_ERROR_UP();
 
@@ -269,6 +272,8 @@ static int cno_hpack_decode_one(struct cno_hpack_t *state,
             return CNO_ERROR(COMPRESSION, "requested table size is too big");
 
         cno_hpack_evict(state, state->limit = index);
+        target->name.data  = NULL;
+        target->value.data = NULL;
         return CNO_OK;
     }
 
@@ -313,7 +318,7 @@ int cno_hpack_decode(struct cno_hpack_t *state, const struct cno_buffer_t *s,
     struct cno_header_t *end = &rs[*n];
 
     while (ptr != end && buf.size) {
-        if (cno_hpack_decode_one(state, &buf, ptr)) {
+        if (cno_hpack_decode_one(state, &buf, ptr, ptr == rs)) {
             while (ptr-- != rs) {
                 cno_buffer_clear(&ptr->name);
                 cno_buffer_clear(&ptr->value);
