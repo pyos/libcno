@@ -1373,10 +1373,12 @@ int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct
             { CNO_BUFFER_CONST(":path"),   msg->path   },
         };
 
-        if (cno_hpack_encode(&conn->encoder, &frame.payload, head, 2))
+        if (cno_hpack_encode(&conn->encoder, &frame.payload, head, 2)) {
+            cno_buffer_clear(&frame.payload);
             // non-recoverable error, so no point in destroying the stream
             // even if we just created it.
             return CNO_ERROR_UP();
+        }
     } else {
         char code[10] = { 0 };
         snprintf(code, 10, "%d", msg->code);
@@ -1385,8 +1387,10 @@ int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct
             { CNO_BUFFER_CONST(":status"), CNO_BUFFER_STRING(code) }
         };
 
-        if (cno_hpack_encode(&conn->encoder, &frame.payload, head, 1))
+        if (cno_hpack_encode(&conn->encoder, &frame.payload, head, 1)) {
+            cno_buffer_clear(&frame.payload);
             return CNO_ERROR_UP();
+        }
     }
 
     if (cno_hpack_encode(&conn->encoder, &frame.payload, msg->headers, msg->headers_len)
