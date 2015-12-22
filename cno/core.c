@@ -217,7 +217,7 @@ static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
     obj->closed  = 1;
     obj->accept &= ~CNO_ACCEPT_OUTBOUND;
 
-    if (!(obj->accept & (CNO_ACCEPT_HEADERS | CNO_ACCEPT_HEADCNT)))
+    if (!(obj->accept & CNO_ACCEPT_HEADERS))
         // since headers were already handled, this stream can be safely destroyed.
         return cno_stream_destroy_clean(conn, obj);
 
@@ -375,7 +375,7 @@ static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
  */
 static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
                                         struct cno_stream_t     *stream,
-                                        struct cno_frame_t      *frame, int is_push)
+                                        struct cno_frame_t      *frame, uint32_t promise)
 {
     struct cno_header_t  headers[CNO_MAX_HEADERS];
     struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, CNO_MAX_HEADERS };
@@ -387,17 +387,17 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
     }
 
     cno_buffer_clear(&conn->continued);
-    conn->continued_stream = 0;
+    conn->continued_stream  = 0;
+    conn->continued_promise = 0;
 
-    int failed = cno_frame_parse_headers(conn, &msg, is_push);
+    int failed = cno_frame_parse_headers(conn, &msg, promise != 0);
 
     if (!failed) {
-        if (is_push) {
+        if (promise)
             // accept pushes even on reset streams.
-            stream->accept &= ~CNO_ACCEPT_PUSHCNT;
-            failed = CNO_FIRE(conn, on_message_push, conn->continued_promise, &msg, stream->id);
-        } else {
-            stream->accept &= ~CNO_ACCEPT_HEADCNT;
+            failed = CNO_FIRE(conn, on_message_push, promise, &msg, stream->id);
+        else {
+            stream->accept &= ~CNO_ACCEPT_HEADERS;
             stream->accept |=  CNO_ACCEPT_DATA;
 
             if (stream->closed)
@@ -452,8 +452,6 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
 
     conn->continued_flags = frame->flags & CNO_FLAG_END_STREAM;
     conn->continued_stream = stream->id;
-    stream->accept &= ~CNO_ACCEPT_HEADERS;
-    stream->accept |=  CNO_ACCEPT_HEADCNT;
 
     if (cno_buffer_concat(&conn->continued, frame->payload))
         // note that we could've created the stream, but we don't need to bother
@@ -495,8 +493,7 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
     if (pushed == NULL)
         return CNO_ERROR_UP();
 
-    pushed->accept  = CNO_ACCEPT_HEADERS;
-    stream->accept |= CNO_ACCEPT_PUSHCNT;
+    pushed->accept = CNO_ACCEPT_HEADERS;
     conn->continued_flags = 0;  // PUSH_PROMISE cannot have END_STREAM
     conn->continued_stream = stream->id;
     conn->continued_promise = promised;
@@ -507,7 +504,7 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
 
     if (frame->flags & CNO_FLAG_END_HEADERS)
-        return cno_frame_handle_end_headers(conn, stream, frame, 1);
+        return cno_frame_handle_end_headers(conn, stream, frame, promised);
 
     return CNO_OK;
 }
@@ -524,7 +521,7 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
     if (!stream)
         return CNO_ERROR(TRANSPORT, "CONTINUATION on a non-existent stream");
 
-    if (!(stream->accept & (CNO_ACCEPT_PUSHCNT | CNO_ACCEPT_HEADCNT)))
+    if (!conn->continued_stream)
         return CNO_ERROR(TRANSPORT, "CONTINUATION not after HEADERS/PUSH_PROMISE");
 
     frame->flags |= conn->continued_flags;
@@ -533,7 +530,7 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
 
     if (frame->flags & CNO_FLAG_END_HEADERS)
-        return cno_frame_handle_end_headers(conn, stream, frame, stream->accept & CNO_ACCEPT_PUSHCNT);
+        return cno_frame_handle_end_headers(conn, stream, frame, conn->continued_promise);
 
     return CNO_OK;
 }

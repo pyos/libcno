@@ -71,13 +71,11 @@ enum CNO_CONNECTION_STATE
 
 enum CNO_STREAM_ACCEPT
 {
-    CNO_ACCEPT_NOTHING       = 0x00,  // bitwise fields marking acceptable input on said stream.
-    CNO_ACCEPT_HEADERS       = 0x01,  // stream can receive a HEADERS frame.
-    CNO_ACCEPT_HEADCNT       = 0x02,  // stream can receive a CONTINUATION to HEADERS.
-    CNO_ACCEPT_DATA          = 0x04,  // stream can receive a DATA frame.
-    CNO_ACCEPT_PUSH          = 0x08,  // stream can receive a PUSH_PROMISE frame.
-    CNO_ACCEPT_PUSHCNT       = 0x10,  // stream can receive a CONTINUATION to a PUSH_PROMISE.
-    CNO_ACCEPT_INBOUND       = 0x1f,
+    CNO_ACCEPT_NOTHING       = 0x00,  // bitwise fields marking acceptable operations on a stream.
+    CNO_ACCEPT_HEADERS       = 0x01,
+    CNO_ACCEPT_DATA          = 0x02,
+    CNO_ACCEPT_PUSH          = 0x04,
+    CNO_ACCEPT_INBOUND       = 0x07,
     CNO_ACCEPT_WRITE_PUSH    = 0x20,
     CNO_ACCEPT_WRITE_HEADERS = 0x40,  // this time continuations are handled automatically
     CNO_ACCEPT_WRITE_DATA    = 0x80,
