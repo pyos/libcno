@@ -1228,6 +1228,9 @@ uint32_t cno_stream_next_id(struct cno_connection_t *conn)
 
 int cno_write_reset(struct cno_connection_t *conn, size_t stream)
 {
+    if (!cno_connection_is_http2(conn))
+        return CNO_OK;
+
     return cno_frame_write_rst_stream(conn, stream, CNO_STATE_NO_ERROR);
 }
 
