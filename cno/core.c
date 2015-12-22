@@ -47,7 +47,6 @@ static int cno_stream_is_local(struct cno_connection_t *conn, uint32_t id)
 static void cno_stream_destroy(struct cno_connection_t *conn, struct cno_stream_t *stream)
 {
     conn->stream_count[cno_stream_is_local(conn, stream->id)]--;
-    cno_buffer_clear(&stream->continued);
     cno_hmap_remove(&conn->streams, stream);
     free(stream);
 }
@@ -381,13 +380,14 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
     struct cno_header_t  headers[CNO_MAX_HEADERS];
     struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, CNO_MAX_HEADERS };
 
-    if (cno_hpack_decode(&conn->decoder, &stream->continued, headers, &msg.headers_len)) {
-        cno_buffer_clear(&stream->continued);
+    if (cno_hpack_decode(&conn->decoder, &conn->continued, headers, &msg.headers_len)) {
+        cno_buffer_clear(&conn->continued);
         cno_frame_write_goaway(conn, CNO_STATE_COMPRESSION_ERROR);
         return CNO_ERROR_UP();
     }
 
-    cno_buffer_clear(&stream->continued);
+    cno_buffer_clear(&conn->continued);
+    conn->continued_stream = 0;
 
     int failed = cno_frame_parse_headers(conn, &msg, is_push);
 
@@ -395,7 +395,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
         if (is_push) {
             // accept pushes even on reset streams.
             stream->accept &= ~CNO_ACCEPT_PUSHCNT;
-            failed = CNO_FIRE(conn, on_message_push, stream->continued_promise, &msg, stream->id);
+            failed = CNO_FIRE(conn, on_message_push, conn->continued_promise, &msg, stream->id);
         } else {
             stream->accept &= ~CNO_ACCEPT_HEADCNT;
             stream->accept |=  CNO_ACCEPT_DATA;
@@ -441,11 +441,12 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
     if (!(stream->accept & CNO_ACCEPT_HEADERS))
         return CNO_ERROR(TRANSPORT, "got HEADERS when expected none");
 
-    stream->continued_flags = frame->flags & CNO_FLAG_END_STREAM;
+    conn->continued_flags = frame->flags & CNO_FLAG_END_STREAM;
+    conn->continued_stream = stream->id;
     stream->accept &= ~CNO_ACCEPT_HEADERS;
     stream->accept |=  CNO_ACCEPT_HEADCNT;
 
-    if (cno_buffer_concat(&stream->continued, frame->payload))
+    if (cno_buffer_concat(&conn->continued, frame->payload))
         // note that we could've created the stream, but we don't need to bother
         // destroying it. this error is non-recoverable; cno_connection_destroy
         // will handle things.
@@ -487,10 +488,11 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
 
     pushed->accept  = CNO_ACCEPT_HEADERS;
     stream->accept |= CNO_ACCEPT_PUSHCNT;
-    stream->continued_flags = 0;  // PUSH_PROMISE cannot have END_STREAM
-    stream->continued_promise = promised;
+    conn->continued_flags = 0;  // PUSH_PROMISE cannot have END_STREAM
+    conn->continued_stream = stream->id;
+    conn->continued_promise = promised;
 
-    if (cno_buffer_concat(&stream->continued, frame->payload))
+    if (cno_buffer_concat(&conn->continued, frame->payload))
         // same as headers -- this error affects the state of the decoder and will
         // completely screw the connection. no need to destroy the stream.
         return CNO_ERROR_UP();
@@ -516,9 +518,9 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
     if (!(stream->accept & (CNO_ACCEPT_PUSHCNT | CNO_ACCEPT_HEADCNT)))
         return CNO_ERROR(TRANSPORT, "CONTINUATION not after HEADERS/PUSH_PROMISE");
 
-    frame->flags |= stream->continued_flags;
+    frame->flags |= conn->continued_flags;
 
-    if (cno_buffer_concat(&stream->continued, frame->payload))
+    if (cno_buffer_concat(&conn->continued, frame->payload))
         return CNO_ERROR_UP();
 
     if (frame->flags & CNO_FLAG_END_HEADERS)
@@ -766,6 +768,10 @@ static cno_frame_handler_t *CNO_FRAME_HANDLERS[] = {
 
 static int cno_frame_handle(struct cno_connection_t *conn, struct cno_frame_t *frame)
 {
+    if (conn->continued_stream)
+        if (frame->type != CNO_FRAME_CONTINUATION || frame->stream != conn->continued_stream)
+            return cno_protocol_error(conn, "expected a CONTINUATION");
+
     if (frame->flags & CNO_FLAG_PADDED) {
         if (frame->payload.size == 0)
             return cno_frame_write_error(conn, CNO_STATE_FRAME_SIZE_ERROR, "no padding");
@@ -880,6 +886,7 @@ void cno_connection_init(struct cno_connection_t *conn, enum CNO_CONNECTION_KIND
 void cno_connection_reset(struct cno_connection_t *conn)
 {
     cno_buffer_off_clear(&conn->buffer);
+    cno_buffer_clear(&conn->continued);
     cno_hpack_clear(&conn->encoder);
     cno_hpack_clear(&conn->decoder);
     cno_hmap_iterate(&conn->streams, struct cno_stream_t *, st, cno_stream_destroy(conn, st));
@@ -1035,7 +1042,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     if (conn->http1_remaining)
                         return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: chunked encoding w/ fixed length");
 
-                    conn->http1_remaining = (size_t) -1;
+                    conn->http1_remaining = (uint32_t) -1;
                 }
             }
 
@@ -1070,7 +1077,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             if (!conn->buffer.size)
                 return CNO_OK;
 
-            if (conn->http1_remaining == (size_t) -1) {
+            if (conn->http1_remaining == (uint32_t) -1) {
                 char *eol = memchr(conn->buffer.data, '\n', conn->buffer.size);
 
                 if (eol++ == NULL)

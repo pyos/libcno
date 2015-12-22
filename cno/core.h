@@ -168,11 +168,8 @@ struct cno_stream_t
     uint32_t id;
     uint32_t window_recv;
     uint32_t window_send;
-    uint32_t continued_promise;
     uint8_t closed;
     uint8_t /* enum CNO_STREAM_ACCEPT */ accept;
-    uint8_t /* enum CNO_FRAME_FLAGS   */ continued_flags;
-    struct cno_buffer_t continued;
 };
 
 
@@ -200,13 +197,17 @@ struct cno_connection_t
     };
     uint8_t /* enum CNO_CONNECTION_STATE */ state;
     uint8_t closed;
+    uint8_t  continued_flags;    // OR the flags of the next CONTINUATION with this.
+    uint32_t continued_stream;   // if nonzero, expect a CONTINUATION on that stream.
+    uint32_t continued_promise;  // if prev. frame was a PUSH_PROMISE, this is the stream it created.
     uint32_t window_recv;
     uint32_t window_send;
     uint32_t last_stream[2];  // dereferencable with CNO_PEER_REMOTE/CNO_PEER_LOCAL
     uint32_t stream_count[2];
-    size_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
+    uint32_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
     struct cno_settings_t settings[2];
     struct cno_buffer_off_t buffer;
+    struct cno_buffer_t continued;  // concat CONTINUATIONs with this
     struct cno_hpack_t decoder;
     struct cno_hpack_t encoder;
     struct cno_hmap(64) streams;
