@@ -37,9 +37,6 @@
  * is statically allocated. (Do not redefine this in different compilation units!) */
 #define CNO_ERROR_TRACEBACK_DEPTH 128
 
-/* Don't waste time reallocating the buffer it that would free at most this many bytes. */
-#define CNO_BUFFER_TRIM_THRESHOLD 4096
-
 
 enum CNO_ERRNO
 {
@@ -101,20 +98,20 @@ struct cno_buffer_t
 
 
 /* Initialize an empty dynamic buffer. */
-#define CNO_BUFFER_EMPTY { NULL, 0 }
+#define CNO_BUFFER_EMPTY ((struct cno_buffer_t) { NULL, 0 })
 
 /* Initialize a static buffer from an array. None of the below functions work
  * with static buffers! Do not write to them either. */
-#define CNO_BUFFER_ARRAY(arr)  { (char *) arr, sizeof(arr) }
+#define CNO_BUFFER_ARRAY(arr) ((struct cno_buffer_t) { (char *) arr, sizeof(arr) })
 
 /* Initialize a static buffer from a string constant. */
-#define CNO_BUFFER_CONST(str)  { (char *) str, sizeof(str) - 1 }
+#define CNO_BUFFER_CONST(str) ((struct cno_buffer_t) { (char *) str, sizeof(str) - 1 })
 
 /* Initialize a static buffer from a null-terminated string. */
-#define CNO_BUFFER_STRING(str) { (char *) str, strlen(str) }
+#define CNO_BUFFER_STRING(str) ((struct cno_buffer_t) { (char *) str, strlen(str) })
 
 
-static inline void cno_buffer_clear(struct cno_buffer_t * x)
+static inline void cno_buffer_clear(struct cno_buffer_t *x)
 {
     free(x->data);
     x->data = NULL;
@@ -128,33 +125,21 @@ static inline int cno_buffer_eq(const struct cno_buffer_t *a, const struct cno_b
 }
 
 
-static inline int cno_buffer_eq_const(const struct cno_buffer_t *a, const char *b, size_t s)
+static inline int cno_buffer_concat(struct cno_buffer_t *a, const struct cno_buffer_t b)
 {
-    return a->size == s && 0 == memcmp(a->data, b, s);
-}
-
-
-static inline int cno_buffer_append(struct cno_buffer_t *a, const char *b, size_t b_size)
-{
-    char *m = (char *) realloc(a->data, a->size + b_size);
+    char *m = (char *) realloc(a->data, a->size + b.size);
 
     if (m == NULL)
-        return CNO_ERROR(NO_MEMORY, "%zu bytes", a->size + b_size);
+        return CNO_ERROR(NO_MEMORY, "%zu bytes", a->size + b.size);
 
-    memcpy(m + a->size, b, b_size);
+    memcpy(m + a->size, b.data, b.size);
     a->data  = m;
-    a->size += b_size;
+    a->size += b.size;
     return CNO_OK;
 }
 
 
-static inline int cno_buffer_concat(struct cno_buffer_t *a, const struct cno_buffer_t *b)
-{
-    return cno_buffer_append(a, b->data, b->size);
-}
-
-
-static inline int cno_buffer_copy(struct cno_buffer_t *a, const struct cno_buffer_t *b)
+static inline int cno_buffer_copy(struct cno_buffer_t *a, const struct cno_buffer_t b)
 {
     a->data = NULL;
     a->size = 0;
@@ -163,6 +148,10 @@ static inline int cno_buffer_copy(struct cno_buffer_t *a, const struct cno_buffe
 
 
 /* ----- Shiftable string views ----- */
+
+/* Don't waste time reallocating the buffer it that would free at most this many bytes. */
+#define CNO_BUFFER_TRIM_THRESHOLD 4096
+
 
 struct cno_buffer_off_t
 {
@@ -199,16 +188,16 @@ static inline void cno_buffer_off_reset(struct cno_buffer_off_t *x)
 }
 
 
-static inline int cno_buffer_off_append(struct cno_buffer_off_t *a, const char *b, size_t b_size)
+static inline int cno_buffer_off_concat(struct cno_buffer_off_t *a, const struct cno_buffer_t b)
 {
-    char *m = (char *) realloc(a->data - a->offset, a->size + a->offset + b_size);
+    char *m = (char *) realloc(a->data - a->offset, a->size + a->offset + b.size);
 
     if (m == NULL)
-        return CNO_ERROR(NO_MEMORY, "%zu bytes", a->size + a->offset + b_size);
+        return CNO_ERROR(NO_MEMORY, "%zu bytes", a->size + a->offset + b.size);
 
-    memcpy(m + a->size + a->offset, b, b_size);
+    memcpy(m + a->size + a->offset, b.data, b.size);
     a->data  = m + a->offset;
-    a->size += b_size;
+    a->size += b.size;
     return CNO_OK;
 }
 

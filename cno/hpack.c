@@ -218,10 +218,7 @@ static int cno_hpack_decode_string(struct cno_buffer_off_t *source, struct cno_b
         out->data = (char *) buf;
         out->size = ptr - buf;
     } else {
-        out->data = NULL;
-        out->size = 0;
-
-        if (cno_buffer_append(out, source->data, length))
+        if (cno_buffer_copy(out, (struct cno_buffer_t) { source->data, length }))
             return CNO_ERROR_UP();
     }
 
@@ -249,10 +246,10 @@ static int cno_hpack_decode_one(struct cno_hpack_t *state,
         if (cno_hpack_lookup(state, index, &header))
             return CNO_ERROR_UP();
 
-        if (cno_buffer_copy(&target->name, &header.name))
+        if (cno_buffer_copy(&target->name, header.name))
             return CNO_ERROR_UP();
 
-        if (cno_buffer_copy(&target->value, &header.value))
+        if (cno_buffer_copy(&target->value, header.value))
         {
             cno_buffer_clear(&target->name);
             return CNO_ERROR_UP();
@@ -285,7 +282,7 @@ static int cno_hpack_decode_one(struct cno_hpack_t *state,
     if (index) {
         if (cno_hpack_lookup(state, index, &header))
             return CNO_ERROR_UP();
-        if (cno_buffer_copy(&target->name, &header.name))
+        if (cno_buffer_copy(&target->name, header.name))
             return CNO_ERROR_UP();
     } else
         if (cno_hpack_decode_string(source, &target->name))
@@ -339,7 +336,7 @@ static int cno_hpack_encode_uint(struct cno_buffer_t *buf, uint8_t prefix, uint8
 {
     if (num < mask) {
         prefix |= num;
-        return cno_buffer_append(buf, (char *) &prefix, 1);
+        return cno_buffer_concat(buf, (struct cno_buffer_t) { (char *) &prefix, 1 });
     }
 
     uint8_t  tmp[sizeof(num) * 2] = { prefix | mask };
@@ -349,7 +346,7 @@ static int cno_hpack_encode_uint(struct cno_buffer_t *buf, uint8_t prefix, uint8
         *++ptr = (num & 0x7F) | 0x80;
 
     *ptr &= 0x7F;
-    return cno_buffer_append(buf, (char *) tmp, ptr - tmp + 1);
+    return cno_buffer_concat(buf, (struct cno_buffer_t) { (char *) tmp, ptr - tmp + 1 });
 }
 
 
@@ -391,7 +388,7 @@ static int cno_hpack_encode_string(struct cno_buffer_t *buf, const struct cno_bu
         }
 
         int err = cno_hpack_encode_uint(buf, 0x80, 0x7F, ptr - data)
-               || cno_buffer_append(buf, (char *) data, ptr - data);
+               || cno_buffer_concat(buf, (struct cno_buffer_t) { (char *) data, ptr - data });
 
         free(data);
         return err;
@@ -401,7 +398,7 @@ static int cno_hpack_encode_string(struct cno_buffer_t *buf, const struct cno_bu
     }
 
     return cno_hpack_encode_uint(buf, 0, 0x7F, s->size)
-        || cno_buffer_append(buf, s->data, s->size);
+        || cno_buffer_concat(buf, *s);
 }
 
 

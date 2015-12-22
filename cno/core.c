@@ -300,7 +300,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
                 return cno_protocol_error(conn, "pseudo-header after normal header");
         #endif
 
-        if (cno_buffer_eq_const(&it->name, ":status", 7)) {
+        if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":status"))) {
             #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
                 if (!conn->client)
                     return cno_protocol_error(conn, ":status in a request");
@@ -319,7 +319,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
                     return cno_protocol_error(conn, "bad :status");
         } else
 
-        if (cno_buffer_eq_const(&it->name, ":path", 5)) {
+        if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":path"))) {
             #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
                 if (conn->client && !is_push)
                     return cno_protocol_error(conn, ":path in a response");
@@ -332,7 +332,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
             msg.path.size = it->value.size;
         } else
 
-        if (cno_buffer_eq_const(&it->name, ":method", 7)) {
+        if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":method"))) {
             #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
                 if (conn->client && !is_push)
                     return cno_protocol_error(conn, ":method in a response");
@@ -347,8 +347,8 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
 
         #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
             else if (it->name.size && it->name.data[0] == ':'
-                 && !cno_buffer_eq_const(&it->name, ":authority", 10)
-                 && !cno_buffer_eq_const(&it->name, ":scheme",    7))
+                 && !cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":authority"))
+                 && !cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":scheme")))
                 return cno_protocol_error(conn, "invalid pseudo-header");
 
             else {
@@ -447,7 +447,7 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
     stream->accept &= ~CNO_ACCEPT_HEADERS;
     stream->accept |=  CNO_ACCEPT_HEADCNT;
 
-    if (cno_buffer_concat(&stream->continued, &frame->payload))
+    if (cno_buffer_concat(&stream->continued, frame->payload))
         // note that we could've created the stream, but we don't need to bother
         // destroying it. this error is non-recoverable; cno_connection_destroy
         // will handle things.
@@ -499,7 +499,7 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
 
     stream->continued_flags = 0;  // PUSH_PROMISE cannot have END_STREAM
 
-    if (cno_buffer_concat(&stream->continued, &frame->payload))
+    if (cno_buffer_concat(&stream->continued, frame->payload))
         // same as headers -- this error affects the state of the decoder and will
         // completely screw the connection. no need to destroy the stream.
         return CNO_ERROR_UP();
@@ -993,12 +993,12 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     for (; s--; n++) *n = tolower(*n);
                 }
 
-                if (cno_buffer_eq_const(&it->name, "http2-settings", 14)) {
+                if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST("http2-settings"))) {
                     // TODO decode & emit on_frame
                 } else
 
-                if (!conn->client && cno_buffer_eq_const(&it->name,  "upgrade", 7)
-                                  && cno_buffer_eq_const(&it->value, "h2c",     3)) {
+                if (!conn->client && cno_buffer_eq(&it->name,  CNO_BUFFER_CONST("upgrade"))
+                                  && cno_buffer_eq(&it->value, CNO_BUFFER_CONST("h2c"))) {
                     if (conn->state != CNO_CONNECTION_HTTP1_READY)
                         return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: multiple upgrade headers");
 
@@ -1022,7 +1022,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     conn->state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
                 } else
 
-                if (cno_buffer_eq_const(&it->name, "content-length", 14)) {
+                if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST("content-length"))) {
                     if (conn->http1_remaining)
                         return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: multiple content-lengths");
 
@@ -1036,8 +1036,8 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                             return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: non-int length");
                 } else
 
-                if (cno_buffer_eq_const(&it->name, "transfer-encoding", 17)) {
-                    if (!cno_buffer_eq_const(&it->value, "chunked", 7))
+                if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST("transfer-encoding"))) {
+                    if (!cno_buffer_eq(&it->value, CNO_BUFFER_CONST("chunked")))
                         return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: unknown transfer-encoding");
 
                     if (conn->http1_remaining)
@@ -1193,7 +1193,7 @@ int cno_connection_data_received(struct cno_connection_t *conn, const char *data
     if (conn->closed)
         return CNO_ERROR(INVALID_STATE, "already closed");
 
-    if (cno_buffer_off_append(&conn->buffer, data, length))
+    if (cno_buffer_off_concat(&conn->buffer, (struct cno_buffer_t) { (char *) data, length }))
         return CNO_ERROR_UP();
 
     return cno_connection_proceed(conn);
@@ -1273,7 +1273,7 @@ int cno_write_push(struct cno_connection_t *conn, size_t stream, const struct cn
         { CNO_BUFFER_CONST(":path"),   msg->path   },
     };
 
-    if (cno_buffer_append(&frame.payload, PACK(I32(child)))
+    if (cno_buffer_concat(&frame.payload, (struct cno_buffer_t) { PACK(I32(child)) })
     ||  cno_hpack_encode(&conn->encoder, &frame.payload, head, 2)
     ||  cno_hpack_encode(&conn->encoder, &frame.payload, msg->headers, msg->headers_len)
     ||  cno_frame_write(conn, streamobj, &frame))
