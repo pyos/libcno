@@ -10,7 +10,7 @@
 #include <cno/hpack-data.h>
 
 
-void cno_hpack_init(struct cno_hpack_t *state, size_t limit)
+void cno_hpack_init(struct cno_hpack_t *state, uint32_t limit)
 {
     cno_list_init(state);
     state->size = 0;
@@ -21,7 +21,7 @@ void cno_hpack_init(struct cno_hpack_t *state, size_t limit)
 }
 
 
-void cno_hpack_setlimit(struct cno_hpack_t *state, size_t limit)
+void cno_hpack_setlimit(struct cno_hpack_t *state, uint32_t limit)
 {
     if (state->limit_update_min > limit)
         state->limit_update_min = limit;
@@ -44,7 +44,7 @@ static struct cno_buffer_t cno_header_table_v(const struct cno_header_table_t *t
 }
 
 
-static size_t cno_header_size(const struct cno_header_table_t *h)
+static uint32_t cno_header_size(const struct cno_header_table_t *h)
 {
     return h->k_size + h->v_size + 32;  // NOT sizeof -- this value is fixed in the RFC
 }
@@ -59,7 +59,7 @@ static int cno_header_is_indexed(const struct cno_header_t *h)
 }
 
 
-static void cno_hpack_evict(struct cno_hpack_t *state, size_t limit)
+static void cno_hpack_evict(struct cno_hpack_t *state, uint32_t limit)
 {
     while (state->size > limit) {
         struct cno_header_table_t *entry = state->last;
@@ -407,7 +407,7 @@ static int cno_hpack_encode_string(struct cno_buffer_t *buf, const struct cno_bu
 }
 
 
-static int cno_hpack_encode_size_update(struct cno_hpack_t *state, struct cno_buffer_t *buf, size_t size)
+static int cno_hpack_encode_size_update(struct cno_hpack_t *state, struct cno_buffer_t *buf, uint32_t size)
 {
     return cno_hpack_encode_uint(buf, 0x20, 0x1F, state->limit = size);
 }

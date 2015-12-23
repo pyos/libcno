@@ -22,16 +22,16 @@ struct cno_header_table_t
 struct cno_hpack_t
 {
     struct cno_list_root_t(struct cno_header_table_t);
-    size_t size;
-    size_t limit;
-    size_t limit_upper;
-    size_t limit_update_min;
-    size_t limit_update_end;
+    uint32_t size;
+    uint32_t limit;
+    uint32_t limit_upper;
+    uint32_t limit_update_min;
+    uint32_t limit_update_end;
 };
 
 
-void cno_hpack_init     (struct cno_hpack_t *, size_t limit);
-void cno_hpack_setlimit (struct cno_hpack_t *, size_t limit);
+void cno_hpack_init     (struct cno_hpack_t *, uint32_t limit);
+void cno_hpack_setlimit (struct cno_hpack_t *, uint32_t limit);
 void cno_hpack_clear    (struct cno_hpack_t *);
 
 /* Decode at most `*n` headers from a buffer into a provided array.
