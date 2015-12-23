@@ -275,88 +275,58 @@ static int cno_frame_write_goaway(struct cno_connection_t *conn, uint32_t /* enu
 
 
 static int cno_frame_parse_headers(struct cno_connection_t *conn,
-                                   struct cno_message_t    *msg, int is_push)
+                                   struct cno_message_t    *msg, int is_response)
 {
-    struct cno_header_t *it  = msg->headers;
-    struct cno_header_t *end = msg->headers + msg->headers_len;
+    const char *p;
+    const struct cno_header_t *it = msg->headers;
+    int seen_normal = 0;
 
-    #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
-        int seen_normal = 0;
-    #endif
+    for (; it != msg->headers + msg->headers_len; ++it)
+        if (!cno_buffer_startswith(&it->name, CNO_BUFFER_CONST(":"))) {
+            seen_normal = 1;
 
-    for (; it != end; ++it) {
-        #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
-            if (!it->name.size || it->name.data[0] != ':')
-                seen_normal = 1;
-            else if (seen_normal)
-                return cno_protocol_error(conn, "pseudo-header after normal header");
-        #endif
+            // TODO reject connection-specific headers
+            for (p = it->name.data; p != it->name.data + it->name.size; p++)
+                if ('A' <= *p && *p <= 'Z')
+                    return cno_protocol_error(conn, "non-lowercase header name");
+        }
+        else if (seen_normal)
+            return cno_protocol_error(conn, "pseudo-header after normal header");
 
-        if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":status"))) {
-            #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
-                if (msg->code)
-                    return cno_protocol_error(conn, "two :status-es");
-            #endif
-
-            char *ptr = it->value.data;
-            char *end = it->value.data + it->value.size;
-
-            while (ptr != end)
-                if ('0' <= *ptr && *ptr <= '9')
-                    msg->code = msg->code * 10 + (*ptr++ - '0');
-                else
-                    return cno_protocol_error(conn, "bad :status");
-        } else
-
-        if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":path"))) {
-            #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
-                if (msg->path.data)
-                    return cno_protocol_error(conn, "two :path-s");
-            #endif
+        else if (!is_response && cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":path"))) {
+            if (msg->path.data)
+                return cno_protocol_error(conn, "two :path-s");
 
             msg->path.data = it->value.data;
             msg->path.size = it->value.size;
-        } else
-
-        if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":method"))) {
-            #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
-                if (msg->method.data)
-                    return cno_protocol_error(conn, "two :method-s");
-            #endif
+        }
+        else if (!is_response && cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":method"))) {
+            if (msg->method.data)
+                return cno_protocol_error(conn, "two :method-s");
 
             msg->method.data = it->value.data;
             msg->method.size = it->value.size;
         }
+        else if (!is_response && cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":authority")))
+            {}  // nop
+        else if (!is_response && cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":scheme")))
+            {}  // nop
 
-        #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
-            else if (it->name.size && it->name.data[0] == ':'
-                 && !cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":authority"))
-                 && !cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":scheme")))
-                return cno_protocol_error(conn, "invalid pseudo-header");
+        else if (is_response && cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":status"))) {
+            if (msg->code)
+                return cno_protocol_error(conn, "two :status-es");
 
-            else {
-                char *p = it->name.data;
-                char *e = it->name.size + p;
-
-                while (p != e)
-                    if (isupper(*p++))
-                        return cno_protocol_error(conn, "non-lowercase header name");
+            for (p = it->value.data; p != it->value.data + it->value.size; p++) {
+                if (*p < '0' || '9' < *p)
+                    return cno_protocol_error(conn, "bad :status");
+                msg->code = msg->code * 10 + (*p - '0');
             }
-        #endif
-    }
+        }
+        else return cno_protocol_error(conn, "invalid pseudo-header");
 
-    #if CNO_HTTP2_ENFORCE_MESSAGING_RULES
-        int is_response = conn->client && !is_push;
-
-        if ((msg->code != 0) ^ is_response)
-            return cno_protocol_error(conn, "no/unexpected :status");
-
-        if ((msg->method.data == NULL) ^ is_response)
-            return cno_protocol_error(conn, "no/unexpected :method");
-
-        if ((msg->path.data == NULL) ^ is_response)
-            return cno_protocol_error(conn, "no/unexpected :path");
-    #endif
+    if (is_response ? !msg->code
+                    : !msg->path.data || !msg->method.data)
+        return cno_protocol_error(conn, "a required header is missing");
 
     return CNO_OK;
 }
@@ -408,7 +378,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
     conn->continued_stream  = 0;
     conn->continued_promise = 0;
 
-    int failed = cno_frame_parse_headers(conn, &msg, promise != 0);
+    int failed = cno_frame_parse_headers(conn, &msg, conn->client && promise == 0);
 
     if (!failed) {
         if (promise)

@@ -126,6 +126,12 @@ static inline int cno_buffer_eq(const struct cno_buffer_t *a, const struct cno_b
 }
 
 
+static inline int cno_buffer_startswith(const struct cno_buffer_t *a, const struct cno_buffer_t b)
+{
+    return a->size >= b.size && 0 == memcmp(a->data, b.data, b.size);
+}
+
+
 static inline int cno_buffer_concat(struct cno_buffer_t *a, const struct cno_buffer_t b)
 {
     char *m = (char *) realloc(a->data, a->size + b.size);
