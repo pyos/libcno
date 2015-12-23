@@ -3,12 +3,16 @@
 // #include <stdint.h>
 // #include <stdlib.h>
 // #include <string.h>
-#include <cno/common.h>
-#include <cno/hpack.h>
-// skip to struct cno_connection_t for useful stuff.
 #ifndef CNO_CORE_H
 #define CNO_CORE_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// skip to struct cno_connection_t for useful stuff.
+#include <cno/common.h>
+#include <cno/hpack.h>
 
 #ifndef CNO_HTTP2_ENFORCE_MESSAGING_RULES
 /* Enable additional checks, which include ensuring only standard-defined pseudo-headers
@@ -326,5 +330,9 @@ int      cno_write_reset    (struct cno_connection_t *conn, size_t stream);
 int      cno_write_push     (struct cno_connection_t *conn, size_t stream, const struct cno_message_t *msg);
 int      cno_write_message  (struct cno_connection_t *conn, size_t stream, const struct cno_message_t *msg, int final);
 int32_t  cno_write_data     (struct cno_connection_t *conn, size_t stream, const char *data, size_t length, int final);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif
 
 #endif
