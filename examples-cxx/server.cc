@@ -3,9 +3,13 @@
  * Requests with more than 10 MB of data are rejected with error 400.
  *
  *   $ make obj/examples-cxx/server STRICT=1
- *   $ server -t 2
+ *   $ server
  *   [0] ready
  *   [1] ready
+ *   ^Z
+ *   $ bg
+ *   $ nghttp http://127.0.0.1:8000/ -d - <<< 'test'
+ *   Hello, World! (5 bytes)
  *
  */
 #include <stdio.h>
@@ -15,32 +19,45 @@
 
 #include "cno.h"
 
+#define PORT    8000
+#define THREADS 2
+
 
 struct stream : cno::stream
 {
+    bool is_201   = false;
     bool is_head  = false;
     bool rejected = false;
     size_t payload_size = 0;
 
     using cno::stream::stream;
 
-    int on_message(const struct cno_message_t *msg)
+    int on_message(const cno::message msg)
     {
-        is_head = cno_buffer_eq(&msg->method, CNO_BUFFER_CONST("HEAD"));
+        is_201   = false;
+        is_head  = msg.method == "HEAD";
+        rejected = false;
+        payload_size = 0;
+
+        for (const cno::header &h : msg)
+            if (h.name == "x-respond-with-201")
+                is_201 = true;
+
         return CNO_OK;
     }
 
-    int on_data(const struct cno_buffer_t *buf)
+    int on_data(const aio::stringview buf)
     {
         if (rejected)
             return CNO_OK;
 
-        if ((payload_size += buf->size) > 9999999) {
+        if ((payload_size += buf.size) > 9999999) {
             rejected = true;
 
-            struct cno_header_t  h = { CNO_BUFFER_CONST("content-length"), CNO_BUFFER_CONST("0") };
-            struct cno_message_t m = { 400, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, &h, 1 };
-            if (write_message(m) || write_eof())
+            if (write_message(400, { { "content-length", "0" } }))
+                return CNO_ERROR_UP();
+
+            if (write_eof())
                 return CNO_ERROR_UP();
         }
 
@@ -57,31 +74,19 @@ struct stream : cno::stream
         snprintf(len, sizeof(len), "%d",
             snprintf(buf, sizeof(buf), "Hello, World! (%zu bytes)\n", payload_size));
 
-        struct cno_header_t headers[] = {
-            { CNO_BUFFER_CONST("server"),         CNO_BUFFER_CONST("hello-world-cxx/1.0") },
-            { CNO_BUFFER_CONST("cache-control"),  CNO_BUFFER_CONST("no-cache") },
-            { CNO_BUFFER_CONST("content-length"), CNO_BUFFER_STRING(len) },
-        };
-
-        struct cno_message_t message = { 200, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers,
-                                         sizeof(headers) / sizeof(struct cno_header_t) };
-
-        if (write_message(message))
+        if (write_message(is_201 ? 201 : 200,
+              { { "server",         "hello-world-cxx/1.0" },
+                { "cache-control",  "no-cache"            },
+                { "content-length", len                   } }))
             return CNO_ERROR_UP();
 
         if (!is_head)
-            if (write_data(CNO_BUFFER_STRING(buf)))
+            if (write_data(buf))
                 return CNO_ERROR_UP();
 
         return write_eof();
     }
 };
-
-
-template <typename T, T f(const char *, char **, int)> static bool parse_int(const char *c, T *x)
-{
-    return *c && ((*x = f(c, (char **) &c, 10)), !*c);
-}
 
 
 static void run(int thread, int socket, aio::evloop *loop, aio::protocol::factory pf)
@@ -100,63 +105,21 @@ static void sigcatch(int signum)
 }
 
 
-int main(int argc, char *const *argv)
+int main(void)
 {
-    unsigned long parallel = 1  /* thread */;
-    unsigned long port     = 8000;
+    aio::socket socket = aio::socket::ipv4_server(0, PORT);
+    aio::evloop evloops[THREADS];
+    std::thread threads[THREADS];
 
-    for (int ch; (ch = getopt(argc, argv, "-:hp:t:")) != -1; ) switch (ch) {
-        default:
-            fprintf(stderr, "fatal: unknown option -%c\n", optopt);
-            return 2;
-
-        case 1:
-            fprintf(stderr, "fatal: stray argument %s\n", optarg);
-            return 2;
-
-        case ':':
-            fprintf(stderr, "fatal: missing argument to -%c\n", optopt);
-            return 2;
-
-        case 'h':
-            fprintf(stdout,
-                "usage: %s [options]\n"
-                "    -h         display this message\n"
-                "    -t <num>   run in <num> parallel threads [default: 1]\n"
-                "    -p <port>  listen on this TCP port [default: 8000]\n", argv[0]);
-            return 0;
-
-        case 'p':
-            if (parse_int<unsigned long, strtoul>(optarg, &port) && port) break;
-            goto non_integer_argument;
-
-        case 't':
-            if (parse_int<unsigned long, strtoul>(optarg, &parallel) && parallel) break;
-
-        non_integer_argument:
-            fprintf(stderr, "fatal: -%c expected a positive integer\n", ch);
-            return 2;
-    }
-
-    aio::socket socket = aio::socket::ipv4_server(0, port);
-    aio::evloop * const evloops = new aio::evloop[parallel];
-    std::thread * const threads = new std::thread[parallel];
-
-    for (unsigned long i = 0; i < parallel; i++)
+    for (unsigned long i = 0; i < THREADS; i++)
         threads[i] = std::thread(&run, i, int(socket), &evloops[i],
             [](aio::transport *t) { return new cno::protocol<stream, CNO_SERVER>(t); });
 
     signal(SIGINT, &sigcatch);
     signal(SIGPIPE, SIG_IGN);
-    signal(SIGCHLD, SIG_IGN);
     pause();
 
-    for (unsigned long i = 0; i < parallel; i++) {
-        evloops[i].stop();
-        threads[i].join();
-    }
-
-    delete[] threads;
-    delete[] evloops;
+    for (auto &e : evloops) e.stop();
+    for (auto &t : threads) t.join();
     return 0;
 }

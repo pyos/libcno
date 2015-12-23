@@ -29,6 +29,14 @@ namespace aio
         stringview(const char *b, size_t s) : base(b), size(s) {}
         stringview(const std::string& s) : stringview(s.data(), s.size()) {}
 
+        bool operator == (const char *a) const
+        {
+            const char  *b = base;
+            for (size_t s = size; s; s--)
+                if (*a++ != *b++) return false;
+            return *a == 0;
+        }
+
         std::string as_string() const
         {
             return std::string(base, base + size);

@@ -1,19 +1,38 @@
 #ifndef CNO_CXX_H
 #define CNO_CXX_H
 
-extern "C" {
-    #include <stddef.h>
-    #include <stdint.h>
-    #include <stdlib.h>
-    #include <string.h>
-    #include <cno/core.h>
-}
-
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <cno/core.h>
 #include "aio.h"
 
 
 namespace cno
 {
+    struct header
+    {
+        // same layout as cno_header_t
+        const aio::stringview name;
+        const aio::stringview value;
+        header(const aio::stringview k, const aio::stringview v) : name(k), value(v) {}
+    };
+
+    struct message
+    {
+        // same layout as cno_message_t
+        const int code;
+        const aio::stringview method;
+        const aio::stringview path;
+        const header *headers;
+        const size_t  headers_len;
+
+        typedef const header * iterator;
+        iterator begin () const { return headers; }
+        iterator end   () const { return headers + headers_len; }
+    };
+
     struct stream
     {
         size_t id;
@@ -29,24 +48,34 @@ namespace cno
         stream& operator = (stream const &)  = delete;
         stream& operator = (stream const &&) = delete;
 
-        int on_message (const struct cno_message_t *);
-        int on_data    (const struct cno_buffer_t  *);
+        int on_message (const message &);
+        int on_data    (const aio::stringview);
         int on_end     ();
 
-        virtual ~stream()
+        int reset()
         {
-            // TODO log errors or something
-            cno_write_reset(connection, id);
+            return cno_write_reset(connection, id);
         }
 
-        int write_message(const struct cno_message_t msg)
+        int write_message(int code, const std::vector<header> &hs)
         {
-            return cno_write_message(connection, id, &msg, 0);
+            struct cno_header_t  *h = (struct cno_header_t *) &hs[0];
+            struct cno_message_t cm = { code, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, h, hs.size() };
+            return cno_write_message(connection, id, &cm, 0);
         }
 
-        int write_data(const struct cno_buffer_t buf)
+        int write_message(const aio::stringview method,
+                          const aio::stringview path, const std::vector<header> &hs)
         {
-            if (buffer.append(buf.data, buf.size).size() == buf.size)
+            struct cno_header_t  *h = (struct cno_header_t *) &hs[0];
+            struct cno_message_t cm = { 0, { (char *) method.base, method.size },
+                                           { (char *) path.base,   path.size   }, h, hs.size() };
+            return cno_write_message(connection, id, &cm, sent_all = false);
+        }
+
+        int write_data(const aio::stringview buf)
+        {
+            if (buffer.append(buf.base, buf.size).size() == buf.size)
                 return on_flow();
 
             return CNO_OK;
@@ -132,9 +161,6 @@ namespace cno
 
         static int on_stream(protocol *p, size_t id)
         {
-            if (p->streams.find(id) != p->streams.end())
-                return CNO_ERROR(ASSERTION, "duplicate stream %zu", id);
-
             p->streams[id] = new stream_t{&p->conn, id};
             return CNO_OK;
         }
@@ -142,10 +168,6 @@ namespace cno
         static int on_stream_end(protocol *p, size_t id)
         {
             auto it = p->streams.find(id);
-
-            if (it == p->streams.end())
-                return CNO_OK;
-
             delete it->second;
             p->streams.erase(it);
             return CNO_OK;
@@ -153,50 +175,29 @@ namespace cno
 
         static int on_message(protocol *p, size_t id, const struct cno_message_t *msg)
         {
-            auto it = p->streams.find(id);
-
-            if (it == p->streams.end())
-                return CNO_ERROR(ASSERTION, "message on unknown stream %zu", id);
-
-            return it->second->on_message(msg);
+            return p->streams[id]->on_message(*(const message *) msg);
         }
 
         static int on_message_data(protocol *p, size_t id, const char *data, size_t size)
         {
-            auto it = p->streams.find(id);
-
-            if (it == p->streams.end())
-                return CNO_ERROR(ASSERTION, "message on unknown stream %zu", id);
-
-            const cno_buffer_t buf = { (char *) data, size };
-            return it->second->on_data(&buf);
+            return p->streams[id]->on_data({ data, size });
         }
 
         static int on_message_end(protocol *p, size_t id)
         {
-            auto it = p->streams.find(id);
-
-            if (it == p->streams.end())
-                return CNO_ERROR(ASSERTION, "message on unknown stream %zu", id);
-
-            return it->second->on_end();
+            return p->streams[id]->on_end();
         }
 
         static int on_flow(protocol *p, size_t id)
         {
-            if (!id) {
-                for (auto &it : p->streams)
-                    if (it.second->on_flow())
-                        return CNO_ERROR_UP();
-                return CNO_OK;
-            }
+            if (id)
+                return p->streams[id]->on_flow();
 
-            auto it = p->streams.find(id);
+            for (auto &it : p->streams)
+                if (it.second->on_flow())
+                    return CNO_ERROR_UP();
 
-            if (it == p->streams.end())
-                return CNO_OK;  // whatever.
-
-            return it->second->on_flow();
+            return CNO_OK;
         }
     };
 };
