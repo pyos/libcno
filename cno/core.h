@@ -193,20 +193,17 @@ struct cno_settings_t
 
 struct cno_connection_t
 {
-    union {
-        uint8_t /*enum CNO_CONNECTION_KIND */ kind;
-        uint8_t /*enum CNO_PEER_KIND       */ client;  // == CNO_PEER_LOCAL iff we are the client
-    };
+    uint8_t /* enum CNO_CONNECTION_KIND  */ kind;
+    uint8_t /* enum CNO_PEER_KIND        */ client;
     uint8_t /* enum CNO_CONNECTION_STATE */ state;
-    uint8_t closed;
     uint8_t  continued_flags;    // OR the flags of the next CONTINUATION with this.
     uint32_t continued_stream;   // if nonzero, expect a CONTINUATION on that stream.
     uint32_t continued_promise;  // if prev. frame was a PUSH_PROMISE, this is the stream it created.
+    uint32_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
     uint32_t window_recv;
     uint32_t window_send;
-    uint32_t last_stream[2];  // dereferencable with CNO_PEER_REMOTE/CNO_PEER_LOCAL
-    uint32_t stream_count[2];
-    uint32_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
+    uint32_t last_stream  [2];  // dereferencable with CNO_PEER_REMOTE/CNO_PEER_LOCAL
+    uint32_t stream_count [2];
     struct cno_settings_t settings[2];
     struct cno_buffer_off_t buffer;
     struct cno_buffer_t continued;  // concat CONTINUATIONs with this
@@ -250,7 +247,7 @@ struct cno_connection_t
      *
      */
     void *cb_data;
-    #define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob->cb_data, ## __VA_ARGS__))
+    #define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob->cb_data, __VA_ARGS__))
     int (*on_write         )(void *, const char * /* data */, size_t /* length */);
     int (*on_stream_start  )(void *, size_t /* stream id */);
     int (*on_stream_end    )(void *, size_t);

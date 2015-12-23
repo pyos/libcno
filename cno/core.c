@@ -870,6 +870,7 @@ void cno_connection_init(struct cno_connection_t *conn, enum CNO_CONNECTION_KIND
     memcpy(&conn->settings[0], &CNO_SETTINGS_STANDARD, sizeof(struct cno_settings_t));
     memcpy(&conn->settings[1], &CNO_SETTINGS_INITIAL,  sizeof(struct cno_settings_t));
     conn->kind        = kind;
+    conn->client      = kind == CNO_CLIENT;
     conn->state       = CNO_CONNECTION_UNDEFINED;
     conn->window_recv = CNO_SETTINGS_STANDARD.initial_window_size;
     conn->window_send = CNO_SETTINGS_STANDARD.initial_window_size;
@@ -915,15 +916,16 @@ static int cno_connection_upgrade(struct cno_connection_t *conn)
  */
 static int cno_connection_proceed(struct cno_connection_t *conn)
 {
-    for (; !conn->closed; cno_buffer_off_trim(&conn->buffer)) switch (conn->state) {
+    for (;; cno_buffer_off_trim(&conn->buffer)) switch (conn->state) {
         case CNO_CONNECTION_UNDEFINED:
             return CNO_OK;  // wait until connection_made before processing data
 
         case CNO_CONNECTION_HTTP1_INIT:
+            conn->state = CNO_CONNECTION_HTTP1_READY;
+
             if (cno_stream_new(conn, 1, !!conn->client) == NULL)
                 return CNO_ERROR_UP();
 
-            conn->state = CNO_CONNECTION_HTTP1_READY;
             break;
 
         case CNO_CONNECTION_HTTP1_READY: {
@@ -1161,15 +1163,6 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             break;
         }
     }
-
-    cno_buffer_off_clear(&conn->buffer);
-
-    cno_hmap_iterate(&conn->streams, struct cno_stream_t *, stream, {
-        if (cno_stream_destroy_clean(conn, stream))
-            return CNO_ERROR_UP();
-    });
-
-    return CNO_OK;
 }
 
 
@@ -1185,8 +1178,8 @@ int cno_connection_made(struct cno_connection_t *conn, enum CNO_HTTP_VERSION ver
 
 int cno_connection_data_received(struct cno_connection_t *conn, const char *data, size_t length)
 {
-    if (conn->closed)
-        return CNO_ERROR(INVALID_STATE, "already closed");
+    if (conn->state == CNO_CONNECTION_UNDEFINED)
+        return CNO_ERROR(INVALID_STATE, "connection closed");
 
     if (cno_buffer_off_concat(&conn->buffer, (struct cno_buffer_t) { (char *) data, length }))
         return CNO_ERROR_UP();
@@ -1206,11 +1199,15 @@ int cno_connection_stop(struct cno_connection_t *conn)
 
 int cno_connection_lost(struct cno_connection_t *conn)
 {
-    if (conn->closed == 1)
-        return CNO_OK;
+    conn->state = CNO_CONNECTION_UNDEFINED;
 
-    conn->closed = 1;
-    return cno_connection_proceed(conn);
+    cno_buffer_off_clear(&conn->buffer);
+    cno_hmap_iterate(&conn->streams, struct cno_stream_t *, stream, {
+        if (cno_stream_destroy_clean(conn, stream))
+            return CNO_ERROR_UP();
+    });
+
+    return CNO_OK;
 }
 
 
@@ -1240,14 +1237,14 @@ int cno_write_reset(struct cno_connection_t *conn, size_t stream)
 
 int cno_write_push(struct cno_connection_t *conn, size_t stream, const struct cno_message_t *msg)
 {
+    if (conn->state == CNO_CONNECTION_UNDEFINED)
+        return CNO_ERROR(INVALID_STATE, "connection closed");
+
     if (conn->client)
         return CNO_ERROR(ASSERTION, "clients can't push");
 
-    if (conn->closed)
-        return CNO_ERROR(INVALID_STATE, "connection closed");
-
     if (!cno_connection_is_http2(conn) || !conn->settings[CNO_PEER_REMOTE].enable_push)
-        return CNO_OK;  // non-critical error
+        return CNO_OK;
 
     if (cno_stream_is_local(conn, stream))
         return CNO_OK;  // don't push in response to our own push
@@ -1293,7 +1290,7 @@ int cno_write_push(struct cno_connection_t *conn, size_t stream, const struct cn
 
 int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct cno_message_t *msg, int final)
 {
-    if (conn->closed)
+    if (conn->state == CNO_CONNECTION_UNDEFINED)
         return CNO_ERROR(INVALID_STATE, "connection closed");
 
     if (!cno_connection_is_http2(conn)) {
@@ -1411,7 +1408,7 @@ int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct
 
 int32_t cno_write_data(struct cno_connection_t *conn, size_t stream, const char *data, size_t length, int final)
 {
-    if (conn->closed)
+    if (conn->state == CNO_CONNECTION_UNDEFINED)
         return CNO_ERROR(INVALID_STATE, "connection closed");
 
     if (!cno_connection_is_http2(conn)) {
