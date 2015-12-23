@@ -275,6 +275,7 @@ static int cno_frame_write_goaway(struct cno_connection_t *conn, uint32_t /* enu
 
 
 static int cno_frame_parse_headers(struct cno_connection_t *conn,
+                                   struct cno_stream_t     *stream,
                                    struct cno_message_t    *msg, int is_response)
 {
     const char *p;
@@ -288,21 +289,21 @@ static int cno_frame_parse_headers(struct cno_connection_t *conn,
             // TODO reject connection-specific headers
             for (p = it->name.data; p != it->name.data + it->name.size; p++)
                 if ('A' <= *p && *p <= 'Z')
-                    return cno_protocol_error(conn, "non-lowercase header name");
+                    goto invalid_message;
         }
         else if (seen_normal)
-            return cno_protocol_error(conn, "pseudo-header after normal header");
+            goto invalid_message;
 
         else if (!is_response && cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":path"))) {
             if (msg->path.data)
-                return cno_protocol_error(conn, "two :path-s");
+                goto invalid_message;
 
             msg->path.data = it->value.data;
             msg->path.size = it->value.size;
         }
         else if (!is_response && cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":method"))) {
             if (msg->method.data)
-                return cno_protocol_error(conn, "two :method-s");
+                goto invalid_message;
 
             msg->method.data = it->value.data;
             msg->method.size = it->value.size;
@@ -314,19 +315,23 @@ static int cno_frame_parse_headers(struct cno_connection_t *conn,
 
         else if (is_response && cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":status"))) {
             if (msg->code)
-                return cno_protocol_error(conn, "two :status-es");
+                goto invalid_message;
 
             for (p = it->value.data; p != it->value.data + it->value.size; p++) {
                 if (*p < '0' || '9' < *p)
-                    return cno_protocol_error(conn, "bad :status");
+                    goto invalid_message;
+
                 msg->code = msg->code * 10 + (*p - '0');
             }
         }
-        else return cno_protocol_error(conn, "invalid pseudo-header");
+        else invalid_message: {
+            msg->code = -1;
+            return cno_frame_write_rst_stream(conn, stream->id, CNO_STATE_PROTOCOL_ERROR);
+        }
 
     if (is_response ? !msg->code
                     : !msg->path.data || !msg->method.data)
-        return cno_protocol_error(conn, "a required header is missing");
+        goto invalid_message;
 
     return CNO_OK;
 }
@@ -378,9 +383,9 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
     conn->continued_stream  = 0;
     conn->continued_promise = 0;
 
-    int failed = cno_frame_parse_headers(conn, &msg, conn->client && promise == 0);
+    int failed = cno_frame_parse_headers(conn, stream, &msg, conn->client && promise == 0);
 
-    if (!failed) {
+    if (!failed && msg.code != -1) {
         if (promise)
             // accept pushes even on reset streams.
             failed = CNO_FIRE(conn, on_message_push, promise, &msg, stream->id);
