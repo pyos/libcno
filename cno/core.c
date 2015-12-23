@@ -9,10 +9,10 @@
 #include <picohttpparser/picohttpparser.h>
 
 
-static inline uint8_t  read1(uint8_t *p) { return p[0]; }
-static inline uint16_t read2(uint8_t *p) { return p[0] <<  8 | p[1]; }
-static inline uint32_t read4(uint8_t *p) { return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
-static inline uint32_t read3(uint8_t *p) { return read4(p) >> 8; }
+static inline uint8_t  read1(const uint8_t *p) { return p[0]; }
+static inline uint16_t read2(const uint8_t *p) { return p[0] <<  8 | p[1]; }
+static inline uint32_t read4(const uint8_t *p) { return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
+static inline uint32_t read3(const uint8_t *p) { return read4(p) >> 8; }
 
 
 // pack several bytes into an array, return it and its length.
@@ -593,14 +593,11 @@ static int cno_frame_handle_ping(struct cno_connection_t *conn,
 }
 
 
-/* handle a GOAWAY frame. actually, don't. it means that no more new streams
- * can be created, and no stream with id higher than the one in this frame was
- * or will be acted upon. however, the connection is not yet dead -- the streams with
- * ids lower or equal to the one given are still operational.
- *
- * in short, i have no idea what to do with this frame.
+/* handle a GOAWAY frame, at least when the error code is nonzero.
+ * when it is, i have no idea what to do.
  *
  * fires: nothing.
+ * throws: TRANSPORT if this frame is due to an error on our part.
  */
 static int cno_frame_handle_goaway(struct cno_connection_t *conn,
                                    struct cno_stream_t     *stream,
@@ -609,7 +606,14 @@ static int cno_frame_handle_goaway(struct cno_connection_t *conn,
     if (frame->stream)
         return cno_protocol_error(conn, "got GOAWAY on stream %u", frame->stream);
 
-    // TODO parse the error code? or do something at all?
+    if (frame->payload.size < 8)
+        return cno_frame_write_error(conn, CNO_STATE_FRAME_SIZE_ERROR, "bad GOAWAY");
+
+    uint32_t error = read4((uint8_t *) &frame->payload.data[4]);
+
+    if (error != CNO_STATE_NO_ERROR)
+        return CNO_ERROR(TRANSPORT, "disconnected with error %u", error);
+
     return CNO_OK;
 }
 
