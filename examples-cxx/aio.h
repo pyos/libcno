@@ -11,6 +11,7 @@
 #include <netinet/tcp.h>
 
 #include <vector>
+#include <stdexcept>
 #include <algorithm>
 #include <functional>
 #include <unordered_map>
@@ -292,7 +293,7 @@ namespace aio
             ||  -1 == listen     (fd, 127))
             {
                 if (fd != -1) ::close(fd);
-                throw errno;
+                throw std::runtime_error(strerror(errno));
             }
 
             return aio::socket { fd };
