@@ -47,7 +47,11 @@ static int cno_stream_is_local(struct cno_connection_t *conn, uint32_t id)
 static void cno_stream_destroy(struct cno_connection_t *conn, struct cno_stream_t *stream)
 {
     conn->stream_count[cno_stream_is_local(conn, stream->id)]--;
-    cno_hmap_remove(&conn->streams, stream);
+
+    struct cno_stream_t **s = &conn->streams[stream->id % CNO_STREAM_BUCKETS];
+    while (*s != stream) s = &(*s)->next;
+    *s = stream->next;
+
     free(stream);
 }
 
@@ -61,23 +65,6 @@ static int cno_stream_destroy_clean(struct cno_connection_t *conn, struct cno_st
     uint32_t id = stream->id;
     cno_stream_destroy(conn, stream);
     return CNO_FIRE(conn, on_stream_end, id);
-}
-
-
-/* forbid sending any more data over this stream.
- *
- * inbound data will still be accepted. abort the stream (see cno_write_reset)
- * if that data is undesired.
- *
- * fires: on_stream_end if the stream is closed in the other direction as well.
- */
-static int cno_stream_close(struct cno_connection_t *conn, struct cno_stream_t *stream)
-{
-    if (!(stream->accept & CNO_ACCEPT_INBOUND))
-        return cno_stream_destroy_clean(conn, stream);
-
-    stream->accept &= ~CNO_ACCEPT_OUTBOUND;
-    return CNO_OK;
 }
 
 
@@ -113,7 +100,9 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
     stream->id = id;
     stream->window_recv = conn->settings[CNO_PEER_LOCAL].initial_window_size;
     stream->window_send = conn->settings[CNO_PEER_REMOTE].initial_window_size;
-    cno_hmap_insert(&conn->streams, id, stream);
+    stream->next = conn->streams[id % CNO_STREAM_BUCKETS];
+
+    conn->streams[id % CNO_STREAM_BUCKETS] = stream;
     conn->last_stream[local] = id;
     conn->stream_count[local]++;
 
@@ -123,6 +112,35 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
     }
 
     return stream;
+}
+
+
+/* retrieve a stream object by id, or NULL if not found.
+ *
+ * (that's a simple closed-hash prime-order map with integer keys.)
+ */
+static struct cno_stream_t * cno_stream_find(struct cno_connection_t *conn, uint32_t id)
+{
+    struct cno_stream_t *s = conn->streams[id % CNO_STREAM_BUCKETS];
+    while (s && s->id != id) s = s->next;
+    return s;
+}
+
+
+/* forbid sending any more data over this stream.
+ *
+ * inbound data will still be accepted. abort the stream (see cno_write_reset)
+ * if that data is undesired.
+ *
+ * fires: on_stream_end if the stream is closed in the other direction as well.
+ */
+static int cno_stream_close(struct cno_connection_t *conn, struct cno_stream_t *stream)
+{
+    if (!(stream->accept & CNO_ACCEPT_INBOUND))
+        return cno_stream_destroy_clean(conn, stream);
+
+    stream->accept &= ~CNO_ACCEPT_OUTBOUND;
+    return CNO_OK;
 }
 
 
@@ -202,7 +220,7 @@ static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
     if (!stream)
         return CNO_ERROR(ASSERTION, "RST'd stream 0");
 
-    struct cno_stream_t *obj = cno_hmap_find(&conn->streams, stream);
+    struct cno_stream_t *obj = cno_stream_find(conn, stream);
 
     if (!obj)
         return CNO_OK;  // assume stream already ended naturally
@@ -799,7 +817,7 @@ static int cno_frame_handle(struct cno_connection_t *conn, struct cno_frame_t *f
     // on that stream is not an error.
     int local = cno_stream_is_local(conn, frame->stream);
     int reset = 0 < frame->stream && frame->stream <= conn->last_stream[local];
-    struct cno_stream_t *stream = cno_hmap_find(&conn->streams, frame->stream);
+    struct cno_stream_t *stream = cno_stream_find(conn, frame->stream);
     return CNO_FRAME_HANDLERS[frame->type](conn, stream, frame, reset);
 }
 
@@ -876,7 +894,6 @@ void cno_connection_init(struct cno_connection_t *conn, enum CNO_CONNECTION_KIND
     conn->window_send = CNO_SETTINGS_STANDARD.initial_window_size;
     cno_hpack_init(&conn->decoder, CNO_SETTINGS_INITIAL .header_table_size);
     cno_hpack_init(&conn->encoder, CNO_SETTINGS_STANDARD.header_table_size);
-    cno_hmap_init(&conn->streams);
 }
 
 
@@ -886,7 +903,12 @@ void cno_connection_reset(struct cno_connection_t *conn)
     cno_buffer_clear(&conn->continued);
     cno_hpack_clear(&conn->encoder);
     cno_hpack_clear(&conn->decoder);
-    cno_hmap_iterate(&conn->streams, struct cno_stream_t *, st, cno_stream_destroy(conn, st));
+
+    struct cno_stream_t **s;
+
+    for (s = &conn->streams[0]; s != &conn->streams[CNO_STREAM_BUCKETS]; s++)
+        while (*s)
+            cno_stream_destroy(conn, *s);
 }
 
 
@@ -940,7 +962,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 return CNO_OK;
 
             // should be exactly one stream right now.
-            struct cno_stream_t *stream = cno_hmap_find(&conn->streams, 1);
+            struct cno_stream_t *stream = cno_stream_find(conn, 1);
 
             // the http 2 client preface looks like an http 1 request, but is not.
             // picohttpparser will reject it. (note: CNO_PREFACE is null-terminated.)
@@ -1059,7 +1081,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
 
         case CNO_CONNECTION_HTTP1_READING:
         case CNO_CONNECTION_HTTP1_READING_UPGRADE: {
-            struct cno_stream_t *stream = cno_hmap_find(&conn->streams, 1);
+            struct cno_stream_t *stream = cno_stream_find(conn, 1);
 
             if (!conn->http1_remaining) {
                 conn->state = conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE
@@ -1201,12 +1223,14 @@ int cno_connection_lost(struct cno_connection_t *conn)
 {
     conn->state = CNO_CONNECTION_UNDEFINED;
 
-    cno_buffer_off_clear(&conn->buffer);
-    cno_hmap_iterate(&conn->streams, struct cno_stream_t *, stream, {
-        if (cno_stream_destroy_clean(conn, stream))
-            return CNO_ERROR_UP();
-    });
+    struct cno_stream_t **s;
 
+    for (s = &conn->streams[0]; s != &conn->streams[CNO_STREAM_BUCKETS]; s++)
+        while (*s)
+            if (cno_stream_destroy_clean(conn, *s))
+                return CNO_ERROR_UP();
+
+    cno_buffer_off_clear(&conn->buffer);
     return CNO_OK;
 }
 
@@ -1249,7 +1273,7 @@ int cno_write_push(struct cno_connection_t *conn, size_t stream, const struct cn
     if (cno_stream_is_local(conn, stream))
         return CNO_OK;  // don't push in response to our own push
 
-    struct cno_stream_t *streamobj = cno_hmap_find(&conn->streams, stream);
+    struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
 
     if (streamobj == NULL || !(streamobj->accept & CNO_ACCEPT_WRITE_PUSH))
         return CNO_ERROR(INVALID_STREAM, "stream %zu is not a response stream", stream);
@@ -1340,7 +1364,7 @@ int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct
         return CNO_FIRE(conn, on_write, head, ptr - head);
     }
 
-    struct cno_stream_t *streamobj = cno_hmap_find(&conn->streams, stream);
+    struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
 
     if (streamobj == NULL) {
         if (!conn->client)
@@ -1421,7 +1445,7 @@ int32_t cno_write_data(struct cno_connection_t *conn, size_t stream, const char 
         return length;
     }
 
-    struct cno_stream_t *streamobj = cno_hmap_find(&conn->streams, stream);
+    struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
 
     if (streamobj == NULL)
         return CNO_ERROR(INVALID_STREAM, "stream %zu does not exist", stream);

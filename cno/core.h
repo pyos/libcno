@@ -21,7 +21,6 @@ extern "C" {
 #define CNO_HTTP2_ENFORCE_MESSAGING_RULES 0
 #endif
 
-
 #ifndef CNO_MAX_HTTP1_HEADER_SIZE
 /* Max. length of a header, i.e. length of the name + length of the value + 4 bytes
  * (the ": " separator and the CRLF.) If a header longer than this is passed
@@ -29,13 +28,15 @@ extern "C" {
 #define CNO_MAX_HTTP1_HEADER_SIZE 4096
 #endif
 
-
 #ifndef CNO_MAX_HEADERS
 /* Max. number of entries in the header table of inbound messages. Applies to both HTTP 1
  * and HTTP 2. Since there's no way to know in advance how many headers a message has,
  * this option limits the stack space consumed. Does not affect outbound messages. */
 #define CNO_MAX_HEADERS 128
 #endif
+
+// no. of buckets in id-keyed stream hash map. should be prime for optimal hashing.
+#define CNO_STREAM_BUCKETS 61
 
 
 enum CNO_PEER_KIND
@@ -81,7 +82,7 @@ enum CNO_STREAM_ACCEPT
     CNO_ACCEPT_PUSH          = 0x04,
     CNO_ACCEPT_INBOUND       = 0x07,
     CNO_ACCEPT_WRITE_PUSH    = 0x20,
-    CNO_ACCEPT_WRITE_HEADERS = 0x40,  // this time continuations are handled automatically
+    CNO_ACCEPT_WRITE_HEADERS = 0x40,
     CNO_ACCEPT_WRITE_DATA    = 0x80,
     CNO_ACCEPT_OUTBOUND      = 0xe0,
 };
@@ -166,7 +167,7 @@ struct cno_message_t
 
 struct cno_stream_t
 {
-    struct cno_hmap_value;
+    struct cno_stream_t *next;  // in hashmap bucket
     uint32_t id;
     uint32_t window_recv;
     uint32_t window_send;
@@ -209,7 +210,7 @@ struct cno_connection_t
     struct cno_buffer_t continued;  // concat CONTINUATIONs with this
     struct cno_hpack_t decoder;
     struct cno_hpack_t encoder;
-    struct cno_hmap(64) streams;
+    struct cno_stream_t *streams[CNO_STREAM_BUCKETS];
 
     /* Events, yay!
      *

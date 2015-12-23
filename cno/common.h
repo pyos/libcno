@@ -235,16 +235,14 @@ struct cno_list_t
 #define cno_list_link_t(T)               \
   { union {                              \
       struct cno_list_t cno_list_handle; \
-      struct { T *prev;                  \
-               T *next; };               \
+      struct { T *prev, *next; };        \
   }; }
 
 
 #define cno_list_root_t(T)               \
   { union {                              \
       struct cno_list_t cno_list_handle; \
-      struct { T *last;                  \
-               T *first; };              \
+      struct { T *last, *first; };       \
   }; }
 
 
@@ -263,8 +261,8 @@ static inline void cno_list_gen_init(struct cno_list_t *x)
 
 static inline void cno_list_gen_append(struct cno_list_t *x, struct cno_list_t *y)
 {
-    y->next = x->next;
     y->prev = x;
+    y->next = x->next;
     x->next = y->next->prev = y;
 }
 
@@ -274,89 +272,5 @@ static inline void cno_list_gen_remove(struct cno_list_t *x)
     x->next->prev = x->prev;
     x->prev->next = x->next;
 }
-
-
-/* ----- size_t-keyed intrusive hashmap (with closed hashing.) ----- */
-
-
-struct cno_hmap_handle_t
-{
-    struct cno_list_link_t(struct cno_hmap_handle_t);
-    size_t key;
-};
-
-
-struct cno_hmap_bucket_t
-{
-    struct cno_list_root_t(struct cno_hmap_handle_t);
-};
-
-
-#define cno_hmap(size) { struct cno_hmap_bucket_t cno_hmap_buckets[size]; }
-#define cno_hmap_value { struct cno_hmap_handle_t cno_hmap_handle[1];     }
-
-
-/* Yay, pointer magic! */
-#define cno_hmap_size(m) sizeof((m)->cno_hmap_buckets) / sizeof(struct cno_hmap_bucket_t)
-#define cno_hmap_init(m)            cno_hmap_gen_init(  cno_hmap_size(m), (m)->cno_hmap_buckets)
-#define cno_hmap_insert(m, k, x)    cno_hmap_gen_insert(cno_hmap_size(m), (m)->cno_hmap_buckets, k, (x)->cno_hmap_handle)
-#define cno_hmap_find(m, k)         cno_hmap_gen_find(  cno_hmap_size(m), (m)->cno_hmap_buckets, k)
-#define cno_hmap_key(x)             (x)->cno_hmap_handle->key;
-/* Buckets are circular doubly linked lists, so this works fine.
-   The map should still be passed as the first argument just in case. */
-#define cno_hmap_remove(m, x)       cno_list_remove((x)->cno_hmap_handle)
-#define cno_hmap_clear(m)           cno_hmap_iterate(m, i, struct cno_st_set_handle_t *, x, cno_list_remove(x))
-
-/* Iterate over all values in a map, assuming they are of same type T:
- *
- *    struct cno_hmap(256) set;
- *    ...
- *    cno_hmap_iterate(&set, something_t *, value, {
- *        printf("%zu -> %s\n", cno_hmap_key(value), value->some_field_of_something_t);
- *    });
- */
-#define cno_hmap_iterate(m, T, value, block) do {                                                 \
-    T value;                                                                                      \
-    size_t __s = cno_hmap_size(m);                                                                \
-    struct cno_hmap_bucket_t *__m;                                                                \
-    struct cno_hmap_handle_t *__n, *__i;                                                          \
-    for (__m = &(m)->cno_hmap_buckets[0]; __s--; ++__m)                                           \
-    for (__i = __m->first, __n = __i->next; __i != cno_list_end(__m); __i = __n, __n = __i->next) \
-    { value = (T) __i; block; }                                                                   \
-} while (0)
-
-
-static inline void cno_hmap_gen_init(size_t size, struct cno_hmap_bucket_t *buckets)
-{
-    while (size--) cno_list_init(buckets++);
-}
-
-
-static inline size_t cno_hmap_gen_hash(size_t key, size_t size)
-{
-    key ^= (key >> 20) ^ (key >> 12);  // not sure where I got this weird hash function...
-    key ^= (key >>  7) ^ (key >>  4);
-    return key & (size - 1);
-}
-
-
-static inline void cno_hmap_gen_insert(size_t size, struct cno_hmap_bucket_t *set,
-                                       size_t key,  struct cno_hmap_handle_t *ob)
-{
-    cno_list_append(&set[cno_hmap_gen_hash(ob->key = key, size)], ob);
-}
-
-
-static inline void *cno_hmap_gen_find(size_t size, struct cno_hmap_bucket_t *set, size_t key)
-{
-    struct cno_hmap_bucket_t *root = &set[cno_hmap_gen_hash(key, size)];
-    struct cno_hmap_handle_t *it   = root->first;
-
-    for (; it != cno_list_end(root); it = it->next)
-        if (key == it->key)
-            return it;
-    return NULL;
-}
-
 
 #endif
