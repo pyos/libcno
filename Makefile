@@ -29,7 +29,6 @@ _require_examples = \
 	obj/examples-cpp/server    \
 	obj/examples/simple_server \
 	obj/examples/simple_client \
-	obj/examples/data_loop     \
 	obj/examples/hpack
 
 

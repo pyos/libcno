@@ -121,7 +121,7 @@ void print_table(struct cno_hpack_t *state)
         print_header(&header);
     }
 
-    printf(" -- [size: %zu, limit: %zu]\n\n", state->size, state->limit);
+    printf(" -- [size: %u, limit: %u]\n\n", state->size, state->limit);
 }
 
 
