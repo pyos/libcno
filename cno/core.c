@@ -1094,6 +1094,9 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 size_t length = strtoul(conn->buffer.data, NULL, 16);
                 size_t total  = length + (eol - conn->buffer.data) + 2;  // + crlf after data
 
+                if (total > conn->settings[CNO_PEER_LOCAL].max_frame_size)
+                    return CNO_ERROR(TRANSPORT, "HTTP/1.x chunk too big");
+
                 if (conn->buffer.size < total)
                     return CNO_OK;
 
