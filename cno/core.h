@@ -103,22 +103,22 @@ enum CNO_FRAME_TYPE
 };
 
 
-enum CNO_STATE_CODE
+enum CNO_RST_STREAM_CODE
 {
-    CNO_STATE_NO_ERROR            = 0x0,
-    CNO_STATE_PROTOCOL_ERROR      = 0x1,
-    CNO_STATE_INTERNAL_ERROR      = 0x2,
-    CNO_STATE_FLOW_CONTROL_ERROR  = 0x3,
-    CNO_STATE_SETTINGS_TIMEOUT    = 0x4,
-    CNO_STATE_STREAM_CLOSED       = 0x5,
-    CNO_STATE_FRAME_SIZE_ERROR    = 0x6,
-    CNO_STATE_REFUSED_STREAM      = 0x7,
-    CNO_STATE_CANCEL              = 0x8,
-    CNO_STATE_COMPRESSION_ERROR   = 0x9,
-    CNO_STATE_CONNECT_ERROR       = 0xa,
-    CNO_STATE_ENHANCE_YOUR_CALM   = 0xb,
-    CNO_STATE_INADEQUATE_SECURITY = 0xc,
-    CNO_STATE_HTTP_1_1_REQUIRED   = 0xd,
+    CNO_RST_NO_ERROR            = 0x0,
+    CNO_RST_PROTOCOL_ERROR      = 0x1,
+    CNO_RST_INTERNAL_ERROR      = 0x2,
+    CNO_RST_FLOW_CONTROL_ERROR  = 0x3,
+    CNO_RST_SETTINGS_TIMEOUT    = 0x4,
+    CNO_RST_STREAM_CLOSED       = 0x5,
+    CNO_RST_FRAME_SIZE_ERROR    = 0x6,
+    CNO_RST_REFUSED_STREAM      = 0x7,
+    CNO_RST_CANCEL              = 0x8,
+    CNO_RST_COMPRESSION_ERROR   = 0x9,
+    CNO_RST_CONNECT_ERROR       = 0xa,
+    CNO_RST_ENHANCE_YOUR_CALM   = 0xb,
+    CNO_RST_INADEQUATE_SECURITY = 0xc,
+    CNO_RST_HTTP_1_1_REQUIRED   = 0xd,
 };
 
 
@@ -196,8 +196,8 @@ struct cno_connection_t
     uint8_t /* enum CNO_CONNECTION_KIND  */ kind;
     uint8_t /* enum CNO_PEER_KIND        */ client;
     uint8_t /* enum CNO_CONNECTION_STATE */ state;
-    uint8_t  continued_flags;    // OR the flags of the next CONTINUATION with this.
-    uint32_t continued_stream;   // if nonzero, expect a CONTINUATION on that stream.
+    uint8_t  continued_flags;  // OR the flags of the next CONTINUATION with this.
+    uint32_t continued_stream;  // if nonzero, expect a CONTINUATION on that stream.
     uint32_t continued_promise;  // if prev. frame was a PUSH_PROMISE, this is the stream it created.
     uint32_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
     uint32_t window_recv;
@@ -317,7 +317,7 @@ int      cno_settings_apply           (struct cno_connection_t *conn, const stru
  *     or decide against sending a request/response in between calls to cno_write_data.
  *
  * cno_write_data, if it does not error, returns the number of bytes it has sent.
- * if it returns 0, you should wait for an `on_flow_increase` event.
+ * if it returns less than the actual size, you should wait for an `on_flow_increase` event.
  *
  * cno_write_reset may return an error of type DISCONNECT if dropping the stream
  * is only possible by bringing down the whole connection.
