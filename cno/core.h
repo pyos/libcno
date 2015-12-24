@@ -206,7 +206,7 @@ struct cno_connection_t
     uint32_t stream_count [2];
     struct cno_settings_t settings[2];
     struct cno_buffer_dyn_t buffer;
-    struct cno_buffer_t continued;  // concat CONTINUATIONs with this
+    struct cno_buffer_dyn_t continued;  // concat CONTINUATIONs with this
     struct cno_hpack_t decoder;
     struct cno_hpack_t encoder;
     struct cno_stream_t *streams[CNO_STREAM_BUCKETS];

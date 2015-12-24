@@ -373,13 +373,13 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
     struct cno_header_t  headers[CNO_MAX_HEADERS];
     struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, CNO_MAX_HEADERS };
 
-    if (cno_hpack_decode(&conn->decoder, &conn->continued, headers, &msg.headers_len)) {
-        cno_buffer_clear(&conn->continued);
+    if (cno_hpack_decode(&conn->decoder, &conn->continued.as_static, headers, &msg.headers_len)) {
+        cno_buffer_dyn_clear(&conn->continued);
         cno_frame_write_goaway(conn, CNO_RST_COMPRESSION_ERROR);
         return CNO_ERROR_UP();
     }
 
-    cno_buffer_clear(&conn->continued);
+    cno_buffer_dyn_clear(&conn->continued);
     conn->continued_stream  = 0;
     conn->continued_promise = 0;
 
@@ -446,7 +446,7 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
     conn->continued_flags = frame->flags & CNO_FLAG_END_STREAM;
     conn->continued_stream = stream->id;
 
-    if (cno_buffer_concat(&conn->continued, frame->payload))
+    if (cno_buffer_dyn_concat(&conn->continued, frame->payload))
         // note that we could've created the stream, but we don't need to bother
         // destroying it. this error is non-recoverable; cno_connection_destroy
         // will handle things.
@@ -491,7 +491,7 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
     conn->continued_stream = stream->id;
     conn->continued_promise = promised;
 
-    if (cno_buffer_concat(&conn->continued, frame->payload))
+    if (cno_buffer_dyn_concat(&conn->continued, frame->payload))
         // same as headers -- this error affects the state of the decoder and will
         // completely screw the connection. no need to destroy the stream.
         return CNO_ERROR_UP();
@@ -528,7 +528,7 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
         // finally a chance to use that error code.
         return cno_frame_write_error(conn, CNO_RST_ENHANCE_YOUR_CALM, "too many HEADERS");
 
-    if (cno_buffer_concat(&conn->continued, frame->payload))
+    if (cno_buffer_dyn_concat(&conn->continued, frame->payload))
         return CNO_ERROR_UP();
 
     if (frame->flags & CNO_FLAG_END_HEADERS)
@@ -888,7 +888,7 @@ void cno_connection_init(struct cno_connection_t *conn, enum CNO_CONNECTION_KIND
 void cno_connection_reset(struct cno_connection_t *conn)
 {
     cno_buffer_dyn_clear(&conn->buffer);
-    cno_buffer_clear(&conn->continued);
+    cno_buffer_dyn_clear(&conn->continued);
     cno_hpack_clear(&conn->encoder);
     cno_hpack_clear(&conn->decoder);
 
@@ -1266,7 +1266,27 @@ int cno_write_push(struct cno_connection_t *conn, size_t stream, const struct cn
     if (streamobj == NULL || !(streamobj->accept & CNO_ACCEPT_WRITE_PUSH))
         return CNO_ERROR(INVALID_STREAM, "stream %zu is not a response stream", stream);
 
+    struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_ALIAS(CNO_BUFFER_EMPTY);
+    struct cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, 0, stream, CNO_BUFFER_EMPTY };
+    struct cno_header_t head[2] = {
+        { CNO_BUFFER_CONST(":method"), msg->method },
+        { CNO_BUFFER_CONST(":path"),   msg->path   },
+    };
+
     uint32_t child = cno_stream_next_id(conn);
+
+    if (cno_buffer_dyn_concat(&payload, (struct cno_buffer_t) { PACK(I32(child)) })
+    ||  cno_hpack_encode(&conn->encoder, &payload, head, 2)
+    ||  cno_hpack_encode(&conn->encoder, &payload, msg->headers, msg->headers_len))
+        goto payload_generation_error;
+
+    frame.payload = payload.as_static;
+
+    if (cno_frame_write(conn, streamobj, &frame))
+        goto payload_generation_error;
+
+    cno_buffer_dyn_clear(&payload);
+
     struct cno_stream_t *childobj = cno_stream_new(conn, child, CNO_PEER_LOCAL);
 
     if (childobj == NULL)
@@ -1274,25 +1294,12 @@ int cno_write_push(struct cno_connection_t *conn, size_t stream, const struct cn
 
     childobj->accept = CNO_ACCEPT_WRITE_HEADERS;
 
-    struct cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, 0, stream, CNO_BUFFER_EMPTY };
-    struct cno_header_t head[2] = {
-        { CNO_BUFFER_CONST(":method"), msg->method },
-        { CNO_BUFFER_CONST(":path"),   msg->path   },
-    };
-
-    if (cno_buffer_concat(&frame.payload, (struct cno_buffer_t) { PACK(I32(child)) })
-    ||  cno_hpack_encode(&conn->encoder, &frame.payload, head, 2)
-    ||  cno_hpack_encode(&conn->encoder, &frame.payload, msg->headers, msg->headers_len)
-    ||  cno_frame_write(conn, streamobj, &frame))
-    {
-        cno_stream_destroy_clean(conn, childobj);
-        cno_buffer_clear(&frame.payload);
-        return CNO_ERROR_UP();
-    }
-
-    cno_buffer_clear(&frame.payload);
     return CNO_FIRE(conn, on_message_start, child, msg)
         || CNO_FIRE(conn, on_message_end,   child);
+
+payload_generation_error:
+    cno_buffer_dyn_clear(&payload);
+    return CNO_ERROR_UP();
 }
 
 
@@ -1369,6 +1376,7 @@ int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct
     if (!(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
         return CNO_ERROR(INVALID_STREAM, "stream %zu not writable", stream);
 
+    struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_ALIAS(CNO_BUFFER_EMPTY);
     struct cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, 0, stream, CNO_BUFFER_EMPTY };
 
     if (final)
@@ -1380,12 +1388,8 @@ int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct
             { CNO_BUFFER_CONST(":path"),   msg->path   },
         };
 
-        if (cno_hpack_encode(&conn->encoder, &frame.payload, head, 2)) {
-            cno_buffer_clear(&frame.payload);
-            // non-recoverable error, so no point in destroying the stream
-            // even if we just created it.
-            return CNO_ERROR_UP();
-        }
+        if (cno_hpack_encode(&conn->encoder, &payload, head, 2))
+            goto payload_generation_error;
     } else {
         char code[10] = { 0 };
         snprintf(code, 10, "%d", msg->code);
@@ -1394,20 +1398,20 @@ int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct
             { CNO_BUFFER_CONST(":status"), CNO_BUFFER_STRING(code) }
         };
 
-        if (cno_hpack_encode(&conn->encoder, &frame.payload, head, 1)) {
-            cno_buffer_clear(&frame.payload);
-            return CNO_ERROR_UP();
-        }
+        if (cno_hpack_encode(&conn->encoder, &payload, head, 1))
+            goto payload_generation_error;
     }
 
-    if (cno_hpack_encode(&conn->encoder, &frame.payload, msg->headers, msg->headers_len)
-    ||  cno_frame_write(conn, streamobj, &frame))
-    {
-        cno_buffer_clear(&frame.payload);
-        return CNO_ERROR_UP();
-    }
 
-    cno_buffer_clear(&frame.payload);
+    if (cno_hpack_encode(&conn->encoder, &payload, msg->headers, msg->headers_len))
+        goto payload_generation_error;
+
+    frame.payload = payload.as_static;
+
+    if (cno_frame_write(conn, streamobj, &frame))
+        goto payload_generation_error;
+
+    cno_buffer_dyn_clear(&payload);
 
     if (final)
         return cno_stream_close(conn, streamobj);
@@ -1415,6 +1419,10 @@ int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct
     streamobj->accept &= ~CNO_ACCEPT_WRITE_HEADERS;
     streamobj->accept |=  CNO_ACCEPT_WRITE_DATA;
     return CNO_OK;
+
+payload_generation_error:
+    cno_buffer_dyn_clear(&payload);
+    return CNO_ERROR_UP();
 }
 
 

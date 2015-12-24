@@ -40,7 +40,7 @@ int cno_hpack_decode(struct cno_hpack_t *, const struct cno_buffer_t *, struct c
 
 /* Encode exactly `n` headers into a dynamic buffer. Note: if it errors,
  * the buffer may contain partially encoded data. Clear it yourself. */
-int cno_hpack_encode(struct cno_hpack_t *, struct cno_buffer_t *, const struct cno_header_t *, size_t  n);
+int cno_hpack_encode(struct cno_hpack_t *, struct cno_buffer_dyn_t *, const struct cno_header_t *, size_t  n);
 
 
 #endif

@@ -152,6 +152,7 @@ int main(int argc, char *argv[])
 
         struct cno_buffer_t source  = CNO_BUFFER_EMPTY;
         struct cno_buffer_t hexdata = { argv[i + 2], strlen(argv[i + 2]) };
+        struct cno_buffer_dyn_t target = CNO_BUFFER_DYN_ALIAS(CNO_BUFFER_EMPTY);
 
         if (hex_to_bytes(&hexdata, &source))
             goto error;
@@ -171,7 +172,8 @@ int main(int argc, char *argv[])
 
         cno_buffer_clear(&source);
 
-        if (cno_hpack_encode(&encoder, &source, result, limit)) {
+        if (cno_hpack_encode(&encoder, &target, result, limit)) {
+            cno_buffer_dyn_clear(&target);
             clear_headers(result, result + limit);
             goto error;
         }
@@ -181,14 +183,14 @@ int main(int argc, char *argv[])
         printf("input (#%d) = ", i + 1); fwrite(hexdata.data, hexdata.size, 1, stdout);
         printf("\n");
 
-        if (bytes_to_hex(&source, &hexdata)) {
-            cno_buffer_clear(&source);
+        if (bytes_to_hex(&target.as_static, &hexdata)) {
+            cno_buffer_dyn_clear(&target);
             goto error;
         }
 
         printf("encode(#%d) = ", i + 1); fwrite(hexdata.data, hexdata.size, 1, stdout);
         printf(" with ");
-        cno_buffer_clear(&source);
+        cno_buffer_dyn_clear(&target);
         cno_buffer_clear(&hexdata);
         print_table(&encoder);
     }

@@ -132,40 +132,40 @@ static inline int cno_buffer_startswith(const struct cno_buffer_t *a, const stru
 }
 
 
-static inline int cno_buffer_concat(struct cno_buffer_t *a, const struct cno_buffer_t b)
-{
-    char *m = (char *) realloc(a->data, a->size + b.size);
-
-    if (m == NULL)
-        return CNO_ERROR(NO_MEMORY, "%zu bytes", a->size + b.size);
-
-    memcpy(m + a->size, b.data, b.size);
-    a->data  = m;
-    a->size += b.size;
-    return CNO_OK;
-}
-
-
 static inline int cno_buffer_copy(struct cno_buffer_t *a, const struct cno_buffer_t b)
 {
-    a->data = NULL;
-    a->size = 0;
-    return cno_buffer_concat(a, b);
+    char *m = (char *) malloc(b.size);
+
+    if (m == NULL)
+        return CNO_ERROR(NO_MEMORY, "%zu bytes", b.size);
+
+    memcpy(m, b.data, b.size);
+    a->data = m;
+    a->size = b.size;
+    return CNO_OK;
 }
 
 
 /* ----- Shiftable string views ----- */
 
+struct cno_buffer_dyn_t
+{
+    union {
+        struct cno_buffer_t as_static;
+        struct {
+            char  *data;
+            size_t size;
+        };
+    };
+    size_t offset;
+};
+
+
 /* Don't waste time reallocating the buffer it that would free at most this many bytes. */
 #define CNO_BUFFER_TRIM_THRESHOLD 4096
 
-
-struct cno_buffer_dyn_t
-{
-    char  *data;
-    size_t size;
-    size_t offset;
-};
+/* Construct a shiftable view sharing a buffer with a static one. */
+#define CNO_BUFFER_DYN_ALIAS(buf) (struct cno_buffer_dyn_t) { {buf}, 0 }
 
 
 static inline void cno_buffer_dyn_clear(struct cno_buffer_dyn_t *x)

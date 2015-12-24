@@ -217,10 +217,9 @@ static int cno_hpack_decode_string(struct cno_buffer_dyn_t *source, struct cno_b
 
         out->data = (char *) buf;
         out->size = ptr - buf;
-    } else {
+    } else
         if (cno_buffer_copy(out, (struct cno_buffer_t) { source->data, length }))
             return CNO_ERROR_UP();
-    }
 
     cno_buffer_dyn_shift(source, length);
     return CNO_OK;
@@ -313,7 +312,7 @@ static int cno_hpack_decode_one(struct cno_hpack_t      *state,
 int cno_hpack_decode(struct cno_hpack_t *state, const struct cno_buffer_t *s,
                      struct cno_header_t *rs, size_t *n)
 {
-    struct cno_buffer_dyn_t buf = { s->data, s->size, 0 };
+    struct cno_buffer_dyn_t buf = CNO_BUFFER_DYN_ALIAS(*s);
     struct cno_header_t *ptr =  rs;
     struct cno_header_t *end = &rs[*n];
 
@@ -337,11 +336,11 @@ int cno_hpack_decode(struct cno_hpack_t *state, const struct cno_buffer_t *s,
 }
 
 
-static int cno_hpack_encode_uint(struct cno_buffer_t *buf, uint8_t prefix, uint8_t mask, size_t num)
+static int cno_hpack_encode_uint(struct cno_buffer_dyn_t *buf, uint8_t prefix, uint8_t mask, size_t num)
 {
     if (num < mask) {
         prefix |= num;
-        return cno_buffer_concat(buf, (struct cno_buffer_t) { (char *) &prefix, 1 });
+        return cno_buffer_dyn_concat(buf, (struct cno_buffer_t) { (char *) &prefix, 1 });
     }
 
     uint8_t  tmp[sizeof(num) * 2] = { prefix | mask };
@@ -351,11 +350,11 @@ static int cno_hpack_encode_uint(struct cno_buffer_t *buf, uint8_t prefix, uint8
         *++ptr = (num & 0x7F) | 0x80;
 
     *ptr &= 0x7F;
-    return cno_buffer_concat(buf, (struct cno_buffer_t) { (char *) tmp, ptr - tmp + 1 });
+    return cno_buffer_dyn_concat(buf, (struct cno_buffer_t) { (char *) tmp, ptr - tmp + 1 });
 }
 
 
-static int cno_hpack_encode_string(struct cno_buffer_t *buf, const struct cno_buffer_t *s)
+static int cno_hpack_encode_string(struct cno_buffer_dyn_t *buf, const struct cno_buffer_t *s)
 {
     if (s->size) {
         uint8_t *data = malloc(s->size);
@@ -393,7 +392,7 @@ static int cno_hpack_encode_string(struct cno_buffer_t *buf, const struct cno_bu
         }
 
         int err = cno_hpack_encode_uint(buf, 0x80, 0x7F, ptr - data)
-               || cno_buffer_concat(buf, (struct cno_buffer_t) { (char *) data, ptr - data });
+               || cno_buffer_dyn_concat(buf, (struct cno_buffer_t) { (char *) data, ptr - data });
 
         free(data);
         return err;
@@ -403,17 +402,17 @@ static int cno_hpack_encode_string(struct cno_buffer_t *buf, const struct cno_bu
     }
 
     return cno_hpack_encode_uint(buf, 0, 0x7F, s->size)
-        || cno_buffer_concat(buf, *s);
+        || cno_buffer_dyn_concat(buf, *s);
 }
 
 
-static int cno_hpack_encode_size_update(struct cno_hpack_t *state, struct cno_buffer_t *buf, uint32_t size)
+static int cno_hpack_encode_size_update(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf, uint32_t size)
 {
     return cno_hpack_encode_uint(buf, 0x20, 0x1F, state->limit = size);
 }
 
 
-static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_t *buf, const struct cno_header_t *h)
+static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf, const struct cno_header_t *h)
 {
     int full = 0;
     size_t index = cno_hpack_index_of(state, h, &full);
@@ -438,7 +437,7 @@ static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_t *
 }
 
 
-int cno_hpack_encode(struct cno_hpack_t *state, struct cno_buffer_t *buf,
+int cno_hpack_encode(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf,
                const struct cno_header_t *headers, size_t n)
 {
     // if the size limit was updated, should encode two values:
