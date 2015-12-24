@@ -887,7 +887,7 @@ void cno_connection_init(struct cno_connection_t *conn, enum CNO_CONNECTION_KIND
 
 void cno_connection_reset(struct cno_connection_t *conn)
 {
-    cno_buffer_off_clear(&conn->buffer);
+    cno_buffer_dyn_clear(&conn->buffer);
     cno_buffer_clear(&conn->continued);
     cno_hpack_clear(&conn->encoder);
     cno_hpack_clear(&conn->decoder);
@@ -926,7 +926,7 @@ static int cno_connection_upgrade(struct cno_connection_t *conn)
  */
 static int cno_connection_proceed(struct cno_connection_t *conn)
 {
-    for (;; cno_buffer_off_trim(&conn->buffer)) switch (conn->state) {
+    for (;; cno_buffer_dyn_trim(&conn->buffer)) switch (conn->state) {
         case CNO_CONNECTION_UNDEFINED:
             return CNO_OK;  // wait until connection_made before processing data
 
@@ -943,7 +943,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 char *buf = conn->buffer.data;
                 char *end = conn->buffer.size + buf;
                 while (buf != end && (*buf == '\r' || *buf == '\n')) ++buf;
-                cno_buffer_off_shift(&conn->buffer, buf - conn->buffer.data);
+                cno_buffer_dyn_shift(&conn->buffer, buf - conn->buffer.data);
             }
 
             if (!conn->buffer.size)
@@ -1059,7 +1059,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             if (conn->state == CNO_CONNECTION_HTTP1_READY)
                 conn->state = CNO_CONNECTION_HTTP1_READING;
 
-            cno_buffer_off_shift(&conn->buffer, (size_t) ok);
+            cno_buffer_dyn_shift(&conn->buffer, (size_t) ok);
 
             if (CNO_FIRE(conn, on_message_start, stream->id, &msg))
                 return CNO_ERROR_UP();
@@ -1097,7 +1097,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 if (conn->buffer.size < total)
                     return CNO_OK;
 
-                cno_buffer_off_shift(&conn->buffer, total);
+                cno_buffer_dyn_shift(&conn->buffer, total);
 
                 if (!total)
                     conn->http1_remaining = 0;
@@ -1113,7 +1113,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 b.size = conn->http1_remaining;
 
             conn->http1_remaining -= b.size;
-            cno_buffer_off_shift(&conn->buffer, b.size);
+            cno_buffer_dyn_shift(&conn->buffer, b.size);
 
             if (CNO_FIRE(conn, on_message_data, stream->id, b.data, b.size))
                 return CNO_ERROR_UP();
@@ -1136,7 +1136,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 if (strncmp(conn->buffer.data, CNO_PREFACE.data, CNO_PREFACE.size))
                     return CNO_ERROR(TRANSPORT, "invalid HTTP 2 client preface");
 
-                cno_buffer_off_shift(&conn->buffer, CNO_PREFACE.size);
+                cno_buffer_dyn_shift(&conn->buffer, CNO_PREFACE.size);
             }
 
             conn->state = CNO_CONNECTION_READY_NO_SETTINGS;
@@ -1162,7 +1162,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 return CNO_ERROR(TRANSPORT, "invalid HTTP 2 preface: no initial SETTINGS");
 
             conn->state = CNO_CONNECTION_READY;
-            cno_buffer_off_shift(&conn->buffer, 9 + m);
+            cno_buffer_dyn_shift(&conn->buffer, 9 + m);
 
             if (CNO_FIRE(conn, on_frame, &frame))
                 return CNO_ERROR_UP();
@@ -1191,7 +1191,7 @@ int cno_connection_data_received(struct cno_connection_t *conn, const char *data
     if (conn->state == CNO_CONNECTION_UNDEFINED)
         return CNO_ERROR(INVALID_STATE, "connection closed");
 
-    if (cno_buffer_off_concat(&conn->buffer, (struct cno_buffer_t) { (char *) data, length }))
+    if (cno_buffer_dyn_concat(&conn->buffer, (struct cno_buffer_t) { (char *) data, length }))
         return CNO_ERROR_UP();
 
     return cno_connection_proceed(conn);
@@ -1218,7 +1218,7 @@ int cno_connection_lost(struct cno_connection_t *conn)
             if (cno_stream_destroy_clean(conn, *s))
                 return CNO_ERROR_UP();
 
-    cno_buffer_off_clear(&conn->buffer);
+    cno_buffer_dyn_clear(&conn->buffer);
     return CNO_OK;
 }
 

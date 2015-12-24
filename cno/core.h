@@ -205,7 +205,7 @@ struct cno_connection_t
     uint32_t last_stream  [2];  // dereferencable with CNO_PEER_REMOTE/CNO_PEER_LOCAL
     uint32_t stream_count [2];
     struct cno_settings_t settings[2];
-    struct cno_buffer_off_t buffer;
+    struct cno_buffer_dyn_t buffer;
     struct cno_buffer_t continued;  // concat CONTINUATIONs with this
     struct cno_hpack_t decoder;
     struct cno_hpack_t encoder;

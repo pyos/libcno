@@ -160,7 +160,7 @@ static inline int cno_buffer_copy(struct cno_buffer_t *a, const struct cno_buffe
 #define CNO_BUFFER_TRIM_THRESHOLD 4096
 
 
-struct cno_buffer_off_t
+struct cno_buffer_dyn_t
 {
     char  *data;
     size_t size;
@@ -168,7 +168,7 @@ struct cno_buffer_off_t
 };
 
 
-static inline void cno_buffer_off_clear(struct cno_buffer_off_t *x)
+static inline void cno_buffer_dyn_clear(struct cno_buffer_dyn_t *x)
 {
     free(x->data - x->offset);
     x->data   = NULL;
@@ -178,7 +178,7 @@ static inline void cno_buffer_off_clear(struct cno_buffer_off_t *x)
 
 
 /* Consume first few bytes of a buffer. */
-static inline void cno_buffer_off_shift(struct cno_buffer_off_t *x, size_t off)
+static inline void cno_buffer_dyn_shift(struct cno_buffer_dyn_t *x, size_t off)
 {
     x->data   += off;
     x->size   -= off;
@@ -186,7 +186,7 @@ static inline void cno_buffer_off_shift(struct cno_buffer_off_t *x, size_t off)
 }
 
 
-static inline int cno_buffer_off_concat(struct cno_buffer_off_t *a, const struct cno_buffer_t b)
+static inline int cno_buffer_dyn_concat(struct cno_buffer_dyn_t *a, const struct cno_buffer_t b)
 {
     char *m;
 
@@ -211,7 +211,7 @@ static inline int cno_buffer_off_concat(struct cno_buffer_off_t *a, const struct
 
 
 /* Release the consumed part of a buffer. */
-static inline void cno_buffer_off_trim(struct cno_buffer_off_t *x)
+static inline void cno_buffer_dyn_trim(struct cno_buffer_dyn_t *x)
 {
     if (x->offset < CNO_BUFFER_TRIM_THRESHOLD)
         return;

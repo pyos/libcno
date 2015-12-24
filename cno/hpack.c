@@ -148,7 +148,7 @@ static size_t cno_hpack_index_of(struct cno_hpack_t *state, const struct cno_hea
 }
 
 
-static int cno_hpack_decode_uint(struct cno_buffer_off_t *source, uint8_t mask, size_t *out)
+static int cno_hpack_decode_uint(struct cno_buffer_dyn_t *source, uint8_t mask, size_t *out)
 {
     if (!source->size)
         return CNO_ERROR(COMPRESSION, "expected uint, got EOF");
@@ -168,12 +168,12 @@ static int cno_hpack_decode_uint(struct cno_buffer_off_t *source, uint8_t mask, 
             *out += (*src & 0x7F) << (7 * size++ - 7);
         } while (*src++ & 0x80);
 
-    cno_buffer_off_shift(source, size);
+    cno_buffer_dyn_shift(source, size);
     return CNO_OK;
 }
 
 
-static int cno_hpack_decode_string(struct cno_buffer_off_t *source, struct cno_buffer_t *out)
+static int cno_hpack_decode_string(struct cno_buffer_dyn_t *source, struct cno_buffer_t *out)
 {
     if (!source->size)
         return CNO_ERROR(COMPRESSION, "expected string, got EOF");
@@ -222,13 +222,13 @@ static int cno_hpack_decode_string(struct cno_buffer_off_t *source, struct cno_b
             return CNO_ERROR_UP();
     }
 
-    cno_buffer_off_shift(source, length);
+    cno_buffer_dyn_shift(source, length);
     return CNO_OK;
 }
 
 
 static int cno_hpack_decode_one(struct cno_hpack_t      *state,
-                                struct cno_buffer_off_t *source,
+                                struct cno_buffer_dyn_t *source,
                                 struct cno_header_t     *target, int first)
 {
     if (!source->size)
@@ -313,7 +313,7 @@ static int cno_hpack_decode_one(struct cno_hpack_t      *state,
 int cno_hpack_decode(struct cno_hpack_t *state, const struct cno_buffer_t *s,
                      struct cno_header_t *rs, size_t *n)
 {
-    struct cno_buffer_off_t buf = { s->data, s->size, 0 };
+    struct cno_buffer_dyn_t buf = { s->data, s->size, 0 };
     struct cno_header_t *ptr =  rs;
     struct cno_header_t *end = &rs[*n];
 
