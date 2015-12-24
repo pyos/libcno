@@ -158,19 +158,21 @@ struct cno_buffer_dyn_t
         };
     };
     size_t offset;
+    size_t reserve;
 };
 
 
 /* Construct a shiftable view sharing a buffer with a static one. */
-#define CNO_BUFFER_DYN_ALIAS(buf) (struct cno_buffer_dyn_t) { {buf}, 0 }
+#define CNO_BUFFER_DYN_ALIAS(buf) (struct cno_buffer_dyn_t) { {buf}, 0, 0 }
 
 
 static inline void cno_buffer_dyn_clear(struct cno_buffer_dyn_t *x)
 {
     free(x->data - x->offset);
-    x->data   = NULL;
-    x->size   = 0;
-    x->offset = 0;
+    x->data    = NULL;
+    x->size    = 0;
+    x->offset  = 0;
+    x->reserve = 0;
 }
 
 
@@ -185,24 +187,34 @@ static inline void cno_buffer_dyn_shift(struct cno_buffer_dyn_t *x, size_t off)
 
 static inline int cno_buffer_dyn_concat(struct cno_buffer_dyn_t *a, const struct cno_buffer_t b)
 {
-    char *m;
-
-    if (b.size <= a->offset)
-        memmove(m = a->data - a->offset, a->data, a->size);
-    else {
-        m = (char *) malloc(a->size + b.size);
-
-        if (m == NULL)
-            return CNO_ERROR(NO_MEMORY, "%zu bytes", a->size + b.size);
-
-        memcpy(m, a->data, a->size);
-        free(a->data - a->offset);
+    if (a->offset) {
+        memmove(a->data - a->offset, a->data, a->size);
+        a->data    -= a->offset;
+        a->reserve += a->offset;
+        a->offset   = 0;
     }
 
+    if (b.size <= a->reserve) {
+        memcpy(a->data + a->size, b.data, b.size);
+        a->size    += b.size;
+        a->reserve -= b.size;
+        return CNO_OK;
+    }
+
+    // round up to a multiple of 512 bytes
+    size_t new_size = (a->size + b.size + 511) & ~511;
+
+    char *m = (char *) malloc(new_size);
+
+    if (m == NULL)
+        return CNO_ERROR(NO_MEMORY, "%zu bytes", new_size);
+
+    memcpy(m, a->data, a->size);
     memcpy(m + a->size, b.data, b.size);
-    a->data   = m;
-    a->size  += b.size;
-    a->offset = 0;
+    free(a->data);
+    a->data    = m;
+    a->size   += b.size;
+    a->reserve = new_size - a->size;
     return CNO_OK;
 }
 
