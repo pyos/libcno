@@ -926,7 +926,7 @@ static int cno_connection_upgrade(struct cno_connection_t *conn)
  */
 static int cno_connection_proceed(struct cno_connection_t *conn)
 {
-    for (;; cno_buffer_dyn_trim(&conn->buffer)) switch (conn->state) {
+    while (1) switch (conn->state) {
         case CNO_CONNECTION_UNDEFINED:
             return CNO_OK;  // wait until connection_made before processing data
 

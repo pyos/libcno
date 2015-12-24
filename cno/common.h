@@ -161,9 +161,6 @@ struct cno_buffer_dyn_t
 };
 
 
-/* Don't waste time reallocating the buffer it that would free at most this many bytes. */
-#define CNO_BUFFER_TRIM_THRESHOLD 4096
-
 /* Construct a shiftable view sharing a buffer with a static one. */
 #define CNO_BUFFER_DYN_ALIAS(buf) (struct cno_buffer_dyn_t) { {buf}, 0 }
 
@@ -207,25 +204,6 @@ static inline int cno_buffer_dyn_concat(struct cno_buffer_dyn_t *a, const struct
     a->size  += b.size;
     a->offset = 0;
     return CNO_OK;
-}
-
-
-/* Release the consumed part of a buffer. */
-static inline void cno_buffer_dyn_trim(struct cno_buffer_dyn_t *x)
-{
-    if (x->offset < CNO_BUFFER_TRIM_THRESHOLD)
-        return;
-
-    char *m = (char *) malloc(x->size);
-
-    if (m == NULL)
-        // ok, maybe later.
-        return;
-
-    memcpy(m, x->data, x->size);
-    free(x->data - x->offset);
-    x->data   = m;
-    x->offset = 0;
 }
 
 
