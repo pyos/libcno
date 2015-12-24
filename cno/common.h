@@ -186,25 +186,26 @@ static inline void cno_buffer_off_shift(struct cno_buffer_off_t *x, size_t off)
 }
 
 
-/* Move back to the beginning of a buffer. */
-static inline void cno_buffer_off_reset(struct cno_buffer_off_t *x)
-{
-    x->data  -= x->offset;
-    x->size  += x->offset;
-    x->offset = 0;
-}
-
-
 static inline int cno_buffer_off_concat(struct cno_buffer_off_t *a, const struct cno_buffer_t b)
 {
-    char *m = (char *) realloc(a->data - a->offset, a->size + a->offset + b.size);
+    char *m;
 
-    if (m == NULL)
-        return CNO_ERROR(NO_MEMORY, "%zu bytes", a->size + a->offset + b.size);
+    if (b.size <= a->offset)
+        memmove(m = a->data - a->offset, a->data, a->size);
+    else {
+        m = (char *) malloc(a->size + b.size);
 
-    memcpy(m + a->size + a->offset, b.data, b.size);
-    a->data  = m + a->offset;
-    a->size += b.size;
+        if (m == NULL)
+            return CNO_ERROR(NO_MEMORY, "%zu bytes", a->size + b.size);
+
+        memcpy(m, a->data, a->size);
+        free(a->data - a->offset);
+    }
+
+    memcpy(m + a->size, b.data, b.size);
+    a->data   = m;
+    a->size  += b.size;
+    a->offset = 0;
     return CNO_OK;
 }
 
@@ -212,7 +213,7 @@ static inline int cno_buffer_off_concat(struct cno_buffer_off_t *a, const struct
 /* Release the consumed part of a buffer. */
 static inline void cno_buffer_off_trim(struct cno_buffer_off_t *x)
 {
-    if (x->offset <= CNO_BUFFER_TRIM_THRESHOLD)
+    if (x->offset < CNO_BUFFER_TRIM_THRESHOLD)
         return;
 
     char *m = (char *) malloc(x->size);
