@@ -28,6 +28,12 @@ extern "C" {
 #define CNO_MAX_HEADERS 128
 #endif
 
+#ifndef CNO_MAX_CONTINUATIONS
+/* Maximum number of CONTINUATION frames that can follow HEADERS/PUSH_PROMISE.
+ * They're all concatenated into a single buffer, so this limits consumed memory. */
+#define CNO_MAX_CONTINUATIONS 5
+#endif
+
 // no. of buckets in id-keyed stream hash map. should be prime for optimal hashing.
 #define CNO_STREAM_BUCKETS 61
 

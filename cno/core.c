@@ -519,6 +519,15 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
 
     frame->flags |= conn->continued_flags;
 
+    // we don't actually count CONTINUATIONs, but this is a good estimate. especially
+    // if the other side decides to send the message as a bunch of small frames
+    // for some reason.
+    size_t max_buf_size = (CNO_MAX_CONTINUATIONS + 1) * conn->settings[CNO_PEER_LOCAL].max_frame_size;
+
+    if (frame->payload.size + conn->continued.size > max_buf_size)
+        // finally a chance to use that error code.
+        return cno_frame_write_error(conn, CNO_STATE_ENHANCE_YOUR_CALM, "too many HEADERS");
+
     if (cno_buffer_concat(&conn->continued, frame->payload))
         return CNO_ERROR_UP();
 
