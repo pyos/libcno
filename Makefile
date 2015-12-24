@@ -26,7 +26,7 @@ _require_objects = \
 
 
 _require_examples = \
-	obj/examples-cpp/server    \
+	obj/examples-cxx/server    \
 	obj/examples/simple_server \
 	obj/examples/simple_client \
 	obj/examples/hpack
@@ -37,6 +37,7 @@ _require_examples = \
 
 
 all: obj/libcno.a
+examples: $(_require_examples)
 
 obj/libcno.so: $(_require_objects)
 	$(DYNLINK) $@ $^
