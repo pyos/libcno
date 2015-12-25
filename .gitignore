@@ -1,8 +1,6 @@
-*.pyc
-*.pyo
 *.so
-*.o
-*.a
 *.dll
+__pycache__
 /obj
+/build
 /cno/hpack-data.h
