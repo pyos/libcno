@@ -3,183 +3,229 @@ import asyncio
 from .raw import Connection
 
 
-class Stream (asyncio.Queue):
-    END = object()
-
-    def send(self, ob):
-        return self.put_nowait(ob)
+class Channel (asyncio.Queue):
+    '''A blocking queue that allows to async-iterate over all pushed items.'''
+    EOF = object()
 
     def eof(self):
-        return self.put_nowait(self.END)
+        '''Stop the consumer loop. Further attempts to iterate will do nothing.'''
+        self.put_nowait(self.EOF)
 
     async def __aiter__(self):
         return self
 
     async def __anext__(self):
-        ob = await self.get()
-        if ob is self.END:
+        it = await self.get()
+        if it is self.EOF:
             self.eof()
             raise StopAsyncIteration
-        return ob
+        return it
 
 
 class Request:
-    def __init__(self, conn, stream, method, path, headers, data, response):
-        self.connection = conn
-        self.stream     = stream
-        self.method     = method
-        self.path       = path
-        self.headers    = headers
-        self.chunks     = data
-        self.response   = response
+    def __init__(self, method: str, path: str, headers: [(str, str)], stream: object):
+        super().__init__()
+        self.stream   = stream
+        self.method   = method
+        self.path     = path
+        self.headers  = headers
+        self.payload  = Channel()
 
-    @property
-    async def payload(self):
-        data = b''
-        async for part in self.chunks:
-            data += part
-        return data
+    async def respond(self, code: int, headers: [(str, str)], data: bytes):
+        '''Send a response over the same stream.
 
-    async def cancel(self):
-        self.connection.write_reset(self.stream)
-        if self.response:
-            self.response.cancel()
+            Don't do this on client side. You'll get an exception.
 
-    async def push(self, method, path, headers):
-        self.connection.write_push(self.stream, method, path, headers)
+        '''
+        if self.method == "HEAD":
+            data = b''
 
-    async def respond(self, code, headers, data):
-        self.connection.write_message(self.stream, code, "", "", headers, not data)
+        self.stream.conn.write_message(self.stream.id, code, "", "", headers, not data)
 
         while data:
-            i = self.connection.write_data(self.stream, data, True)
-            if i == 0:
-                await self.connection._wait_for_flow_increase(self.stream)
-            else:
+            i = self.stream.conn.write_data(self.stream.id, data, True)
+            if i:
                 data = data[i:]
+            if data:
+                await self.stream.flow
+
+    def cancel(self):
+        '''Abort the stream. The handling coroutine will most likely be cancelled.'''
+        self.stream.conn.write_reset(self.stream.id)
+
+    def push(self, method: str, path: str, headers: [(str, str)]):
+        '''Push a request for a resource related to this request.
+
+            The request will be routed through as normal on a new stream.
+
+        '''
+        self.stream.conn.write_push(self.stream.id, method, path, headers)
 
 
 class Response:
-    def __init__(self, conn, stream, code, headers, data, pushed):
-        self.stream  = stream
+    def __init__(self, code: int, headers: [(str, str)], pushed: Channel, stream: object):
+        super().__init__()
         self.code    = code
         self.headers = headers
-        self.chunks  = data
+        self.stream  = stream
         self.pushed  = pushed
+        self.payload = Channel()
 
-    @property
-    async def payload(self):
-        data = b''
-        async for part in self.chunks:
-            data += part
-        return data
+    def cancel(self):
+        '''Abort the stream. This prevents further payload from being received.'''
+        self.stream.conn.write_reset(self.stream.id)
 
 
-class FakeStream:
-    def send(self, ob): pass
-    def eof(self): pass
-    async def __aiter__(self): return self
-    async def __anext__(self): raise StopAsyncIteration
+class StreamedConnection (Connection):
+    '''An asyncio protocol that handles HTTP 1 and 2 connections.
 
+        :param client: whether to run in client mode. [default: True]
+        :param force_http2: whether to use HTTP 2 always. [default: False]
 
-class FakeFuture:
-    def cancel(self): pass
-    def set_result(self, ob): pass
+        NOTE:: do not use this protocol. Create instances of `Client` and `Server` instead.
 
+        TODO:: choose between HTTP 1 and 2 according to the ALPN handshake by default.
 
-_NO_STREAM = FakeStream()
-_NO_TASK   = FakeFuture()
-
-
-class AIOConnection (Connection):
-    def __init__(self, *args, loop=None, **kwargs):
+    '''
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._loop     = loop or asyncio.get_event_loop()
-        self._futures  = {}
-        self._readers  = {}
-        self._writers  = {}
+        self.streams = {}
 
-    def on_message_data(self, stream, data):
-        self._readers.get(stream, _NO_STREAM).send(data)
+    def on_stream_start(self, i: int):
+        self.streams[i] = self.Stream(self, i)
 
-    def on_message_end(self, stream):
-        self._readers.pop(stream, _NO_STREAM).eof()
+    def on_stream_end(self, i: int):
+        self.streams.pop(i).abort()
 
-    def on_stream_end(self, stream):
-        self._futures.pop(stream, _NO_TASK).cancel()
-        self._writers.pop(stream, _NO_TASK).cancel()
-        self._readers.pop(stream, _NO_STREAM).eof()
+    def on_message_start(self, i: int, code: int, method: str, path: str, headers: [(str, str)]):
+        self.streams[i].message(code, method, path, headers)
 
-    def on_flow_increase(self, stream):
-        if stream:
-            self._writers.pop(stream, _NO_TASK).set_result(True)
-        else:
-            for task in self._writers.values():
-                task.set_result(True)
-            self._writers.clear()
+    def on_message_data(self, i: int, data: bytes):
+        self.streams[i].data(data)
 
-    async def _wait_for_flow_increase(self, stream):
-        wr = self._writers.get(stream, None)
-        if wr is None:
-            wr = self._writers[stream] = asyncio.Future(loop=self._loop)
-        return (await wr)
+    def on_message_end(self, i: int):
+        self.streams[i].end()
 
+    def on_message_push(self, i: int, parent: int, method: str, path: str, headers: [(str, str)]):
+        self.streams[parent].push(method, path, headers, self.streams[i])
 
-class AIOServer (AIOConnection):
-    def __init__(self, callback, loop=None):
-        super().__init__(client=False, loop=loop)
-        self._callback = callback
+    def on_flow_increase(self, i: int):
+        if i:
+            return self.streams[i].open_flow()
 
-    def on_message_start(self, stream, code, method, path, headers):
-        data = self._readers[stream] = Stream(loop=self._loop)
-        item = Request(self, stream, method, path, headers, data, None)
-        task = self._futures[stream] = asyncio.async(self._callback(item, loop=self._loop), loop=self._loop)
+        for s in self.streams.values():
+            s.open_flow()
+
+    # Other events:
+    #   on_frame      (type: int, flags: int, stream: int, payload: bytes)
+    #   on_frame_send (type: int, flags: int, stream: int, payload: bytes)
 
 
-class AIOClient (AIOConnection):
-    def __init__(self, loop=None, force_http2=False):
-        super().__init__(force_http2=force_http2, loop=loop)
-        self._pushreq = {}
+class Client (StreamedConnection):
+    '''An asyncio protocol implementing an HTTP 2 client.
 
-    def on_message_start(self, stream, code, method, path, headers):
-        data = self._readers[stream] = Stream(loop=self._loop)
-        item = Response(self, stream, code, headers, data, self._pushreq.get(stream, _NO_STREAM))
-        self._futures.pop(stream, _NO_TASK).set_result(item)
+        :param loop: an asyncio event loop to run on.
 
-    def on_stream_end(self, stream):
-        super().on_stream_end(stream)
-        self._pushreq.pop(stream, _NO_STREAM).eof()
+        :param force_http2: whether to default to HTTP 2 instead of HTTP 1.
+                            Set this to True if you've already negotiated HTTP 2.
+                            Otherwise, send an `Upgrade: h2c` request in HTTP 1 mode
+                            first.
 
-    def on_message_push(self, stream, parent, method, path, headers):
-        data = Stream(loop=self._loop)
-        data.eof()
-        task = self._futures[stream] = asyncio.Future(loop=self._loop)
-        item = Request(self, stream, method, path, headers, data, task)
-        self._pushreq.get(parent, _NO_STREAM).send(item)
+        TODO:: implement `Upgrade: h2c`.
 
-    async def request(self, method, path, headers, data):
+    '''
+    def __init__(self, loop, force_http2=False):
+        super().__init__(force_http2=force_http2)
+        self.loop = loop
+
+    async def request(self, method: str, path: str, headers: [(str, str)], data: bytes):
+        '''Initiate an HTTP request on a new stream.
+
+            :return: a Response object.
+
+        '''
         stream = self.next_stream
-
-        if stream in self._futures:
-            raise RuntimeError("already waiting for a response on this connection")
-
         self.write_message(stream, 0, method, path, headers, not data)
-        while data:
-            try:
-                self.write_data(stream, data)
-            except BlockingIOError:
-                await self._wait_for_flow_increase(stream)
-            else:
-                break
 
-        self._futures[stream] = fut = asyncio.Future(loop=self._loop)
-        self._pushreq[stream] = Stream(loop=self._loop)
-        if not self.is_http2:
-            self._pushreq[stream].eof()
-        try:
-            return (await fut)
-        finally:
-            if not fut.done():
-                fut.cancel()
-                self.write_reset(stream)
-            self._futures.pop(stream, None)
+        stream = self.streams[stream]
+        while data:
+            i = self.write_data(stream.id, data, True)
+            if i:
+                data = data[i:]
+            if data:
+                await stream.flow
+
+        return (await stream.resp)
+
+    class Stream:
+        def __init__(self, conn, id):
+            self.id   = id
+            self.conn = conn
+            self.flow = asyncio.Future(loop=conn.loop)
+            self.resp = asyncio.Future(loop=conn.loop)
+            self.rsrc = Channel()
+            self.rspo = None
+
+        def open_flow(self):
+            self.flow.set_result(None)
+            self.flow = asyncio.Future()
+
+        def message(self, code, _1, _2, headers):
+            self.rspo = Response(code, headers, self.rsrc, self)
+            self.resp.set_result(self.rspo)
+            self.data = self.rspo.payload.put_nowait
+            self.end  = self.rspo.payload.eof
+
+        def push(self, method, path, headers, stream):
+            reqo = Request(method, path, headers, stream)
+            reqo.payload.eof()
+            self.rsrc.put_nowait((reqo, stream.resp))
+
+        def abort(self):
+            self.flow.cancel()
+            if self.rspo:
+                self.rsrc.eof()
+                self.rspo.payload.eof()
+            else:
+                self.resp.cancel()
+
+
+class Server (StreamedConnection):
+    '''An asyncio protocol implementing an HTTP 2 server.
+
+        :param loop: an asyncio event loop to run on.
+
+        :param handler: an async function to call with each request.
+                        The event loop is also passed as the keyword argument `loop`.
+
+    '''
+    def __init__(self, loop, handler):
+        super().__init__(server=True)
+        self.loop    = loop
+        self.handler = handler
+
+    class Stream:
+        def __init__(self, conn, id):
+            self.id   = id
+            self.conn = conn
+            self.func = conn.handler
+            self.flow = asyncio.Future()
+            self.reqo = None
+            self.task = None
+
+        def open_flow(self):
+            self.flow.set_result(None)
+            self.flow = asyncio.Future()
+
+        def message(self, _, method, path, headers):
+            self.reqo = Request(method, path, headers, self)
+            self.task = asyncio.ensure_future(self.func(self.reqo, loop=self.conn.loop))
+            self.data = self.reqo.payload.put_nowait
+            self.end  = self.reqo.payload.eof
+
+        def abort(self):
+            self.flow.cancel()
+            if self.task:
+                self.task.cancel()
+                self.reqo = None
+                self.task = None

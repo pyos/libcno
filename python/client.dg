@@ -3,7 +3,7 @@ import '/ssl'
 import '/asyncio'
 import '/urllib/parse/urlparse'
 
-import '/common'
+import '/cloader'
 import '/cno'
 
 
@@ -17,8 +17,16 @@ main = async $ url loop ->
     sctx.set_npn_protocols  ['h2', 'http/1.1']
     sctx.set_alpn_protocols ['h2', 'http/1.1']
 
-  _, client = await loop.create_connection (-> cno.AIOClient loop force_http2: True) url.hostname port ssl: sctx
-  await common.print_response $ await client.request 'GET' url.path [(':scheme', url.scheme), (':authority', url.netloc)] b''
+  _, client = await loop.create_connection (-> cno.Client loop force_http2: True) url.hostname port ssl: sctx
+  rsp = await client.request 'GET' url.path [(':scheme', url.scheme), (':authority', url.netloc)] b''
+  print   '--' 'response:' rsp.code
+  for (k, v) in rsp.headers =>
+    print '  ' k v
+  async for p in rsp.payload => print '++' 'payload:' (len p) 'bytes'
+  async for (push, response) in rsp.pushed =>
+    print '++' 'push promise: ' push.method push.path
+    response = await response
+    print '++' 'push response:' response.code
 
 
 len sys.argv != 2 => exit $ 'usage: {0} <url>'.format *: sys.argv
