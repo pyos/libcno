@@ -283,7 +283,7 @@ static int cno_frame_parse_headers(struct cno_connection_t *conn,
     int seen_normal = 0;
 
     for (; it != msg->headers + msg->headers_len; ++it)
-        if (!cno_buffer_startswith(&it->name, CNO_BUFFER_CONST(":"))) {
+        if (!cno_buffer_startswith(it->name, CNO_BUFFER_CONST(":"))) {
             seen_normal = 1;
 
             // TODO reject connection-specific headers
@@ -294,26 +294,26 @@ static int cno_frame_parse_headers(struct cno_connection_t *conn,
         else if (seen_normal)
             goto invalid_message;
 
-        else if (!is_response && cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":path"))) {
+        else if (!is_response && cno_buffer_eq(it->name, CNO_BUFFER_CONST(":path"))) {
             if (msg->path.data)
                 goto invalid_message;
 
             msg->path.data = it->value.data;
             msg->path.size = it->value.size;
         }
-        else if (!is_response && cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":method"))) {
+        else if (!is_response && cno_buffer_eq(it->name, CNO_BUFFER_CONST(":method"))) {
             if (msg->method.data)
                 goto invalid_message;
 
             msg->method.data = it->value.data;
             msg->method.size = it->value.size;
         }
-        else if (!is_response && cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":authority")))
+        else if (!is_response && cno_buffer_eq(it->name, CNO_BUFFER_CONST(":authority")))
             {}  // nop
-        else if (!is_response && cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":scheme")))
+        else if (!is_response && cno_buffer_eq(it->name, CNO_BUFFER_CONST(":scheme")))
             {}  // nop
 
-        else if (is_response && cno_buffer_eq(&it->name, CNO_BUFFER_CONST(":status"))) {
+        else if (is_response && cno_buffer_eq(it->name, CNO_BUFFER_CONST(":status"))) {
             if (msg->code)
                 goto invalid_message;
 
@@ -373,7 +373,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
     struct cno_header_t  headers[CNO_MAX_HEADERS];
     struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, CNO_MAX_HEADERS };
 
-    if (cno_hpack_decode(&conn->decoder, &conn->continued.as_static, headers, &msg.headers_len)) {
+    if (cno_hpack_decode(&conn->decoder, conn->continued.as_static, headers, &msg.headers_len)) {
         cno_buffer_dyn_clear(&conn->continued);
         cno_frame_write_goaway(conn, CNO_RST_COMPRESSION_ERROR);
         return CNO_ERROR_UP();
@@ -1000,12 +1000,12 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     for (; s--; n++) *n = tolower(*n);
                 }
 
-                if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST("http2-settings"))) {
+                if (cno_buffer_eq(it->name, CNO_BUFFER_CONST("http2-settings"))) {
                     // TODO decode & emit on_frame
                 } else
 
-                if (!conn->client && cno_buffer_eq(&it->name,  CNO_BUFFER_CONST("upgrade"))
-                                  && cno_buffer_eq(&it->value, CNO_BUFFER_CONST("h2c"))) {
+                if (!conn->client && cno_buffer_eq(it->name,  CNO_BUFFER_CONST("upgrade"))
+                                  && cno_buffer_eq(it->value, CNO_BUFFER_CONST("h2c"))) {
                     if (conn->state != CNO_CONNECTION_HTTP1_READY)
                         return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: multiple upgrade headers");
 
@@ -1029,7 +1029,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     conn->state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
                 } else
 
-                if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST("content-length"))) {
+                if (cno_buffer_eq(it->name, CNO_BUFFER_CONST("content-length"))) {
                     if (conn->http1_remaining)
                         return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: multiple content-lengths");
 
@@ -1043,8 +1043,8 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                             return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: non-int length");
                 } else
 
-                if (cno_buffer_eq(&it->name, CNO_BUFFER_CONST("transfer-encoding"))) {
-                    if (!cno_buffer_eq(&it->value, CNO_BUFFER_CONST("chunked")))
+                if (cno_buffer_eq(it->name, CNO_BUFFER_CONST("transfer-encoding"))) {
+                    if (!cno_buffer_eq(it->value, CNO_BUFFER_CONST("chunked")))
                         return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: unknown transfer-encoding");
 
                     if (conn->http1_remaining)

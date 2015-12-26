@@ -157,7 +157,7 @@ int main(int argc, char *argv[])
         if (hex_to_bytes(&hexdata, &source))
             goto error;
 
-        if (cno_hpack_decode(&decoder, &source, result, &limit)) {
+        if (cno_hpack_decode(&decoder, source, result, &limit)) {
             cno_buffer_clear(&source);
             goto error;
         }

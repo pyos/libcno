@@ -130,14 +130,14 @@ static size_t cno_hpack_index_of(struct cno_hpack_t *state, const struct cno_hea
     const struct cno_header_t       *h = CNO_HPACK_STATIC_TABLE;
     const struct cno_header_table_t *t = state->first;
 
-    #define TRY(k, v)                               \
-        if (cno_buffer_eq(&needle->name, k)) {      \
-            if (cno_buffer_eq(&needle->value, v)) { \
-                *r = 1;                             \
-                return i;                           \
-            }                                       \
-            if (possible == 0)                      \
-                possible = i;                       \
+    #define TRY(k, v)                              \
+        if (cno_buffer_eq(needle->name, k)) {      \
+            if (cno_buffer_eq(needle->value, v)) { \
+                *r = 1;                            \
+                return i;                          \
+            }                                      \
+            if (possible == 0)                     \
+                possible = i;                      \
         }
     for (; i <= CNO_HPACK_STATIC_TABLE_SIZE; ++h, ++i) TRY(h->name, h->value);
     for (; t != cno_list_end(state); t = t->next, ++i) TRY(cno_header_table_k(t),
@@ -309,10 +309,10 @@ static int cno_hpack_decode_one(struct cno_hpack_t      *state,
 }
 
 
-int cno_hpack_decode(struct cno_hpack_t *state, const struct cno_buffer_t *s,
+int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t s,
                      struct cno_header_t *rs, size_t *n)
 {
-    struct cno_buffer_dyn_t buf = CNO_BUFFER_DYN_ALIAS(*s);
+    struct cno_buffer_dyn_t buf = CNO_BUFFER_DYN_ALIAS(s);
     struct cno_header_t *ptr =  rs;
     struct cno_header_t *end = &rs[*n];
 

@@ -10,7 +10,7 @@
 static _Thread_local struct cno_error_t LAST_ERROR;
 
 
-struct cno_error_t const * cno_error(void)
+const struct cno_error_t * cno_error(void)
 {
     return &LAST_ERROR;
 }

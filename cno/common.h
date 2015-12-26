@@ -71,7 +71,7 @@ struct cno_error_t
 
 
 /* Return some information about the last error in the current thread. */
-struct cno_error_t const * cno_error(void);
+const struct cno_error_t * cno_error(void);
 
 
 /* Reset the error information and construct a new traceback starting at a given point.
@@ -120,15 +120,15 @@ static inline void cno_buffer_clear(struct cno_buffer_t *x)
 }
 
 
-static inline int cno_buffer_eq(const struct cno_buffer_t *a, const struct cno_buffer_t b)
+static inline int cno_buffer_eq(const struct cno_buffer_t a, const struct cno_buffer_t b)
 {
-    return a->size == b.size && 0 == memcmp(a->data, b.data, b.size);
+    return a.size == b.size && 0 == memcmp(a.data, b.data, b.size);
 }
 
 
-static inline int cno_buffer_startswith(const struct cno_buffer_t *a, const struct cno_buffer_t b)
+static inline int cno_buffer_startswith(const struct cno_buffer_t a, const struct cno_buffer_t b)
 {
-    return a->size >= b.size && 0 == memcmp(a->data, b.data, b.size);
+    return a.size >= b.size && 0 == memcmp(a.data, b.data, b.size);
 }
 
 
