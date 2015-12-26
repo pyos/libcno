@@ -24,10 +24,10 @@ void log_frame(int fd, const struct cno_frame_t *frame, int recv)
 }
 
 
-void log_message(int fd, const struct cno_message_t *msg, int recv)
+void log_message(int fd, size_t stream, const struct cno_message_t *msg, int recv)
 {
     const char *e = recv ? "recv" : "sent";
-    fprintf(stdout, "%d: %s message [code = %d, method = ", fd, e, msg->code);
+    fprintf(stdout, "%d: %zu: %s message [code = %d, method = ", fd, stream, e, msg->code);
     fwrite(msg->method.data, msg->method.size, 1, stdout);
     fprintf(stdout, ", path = ");
     fwrite(msg->path.data, msg->path.size, 1, stdout);
@@ -72,14 +72,14 @@ int write_to_fd(void *data, const char *buf, size_t length)
 
 int log_sent_message(void *data, size_t stream, const struct cno_message_t *msg)
 {
-    log_message(((struct cbdata_t *) data)->fd, msg, 0);
+    log_message(((struct cbdata_t *) data)->fd, stream, msg, 0);
     return CNO_OK;
 }
 
 
 int log_recv_message(void *data, size_t stream, const struct cno_message_t *msg)
 {
-    log_message(((struct cbdata_t *) data)->fd, msg, 1);
+    log_message(((struct cbdata_t *) data)->fd, stream, msg, 1);
     return CNO_OK;
 }
 
@@ -87,7 +87,7 @@ int log_recv_message(void *data, size_t stream, const struct cno_message_t *msg)
 int log_recv_message_data(void *data, size_t stream, const char *buf, size_t length)
 {
     if (length) {
-        fprintf(stdout, "%d: recv data: ", ((struct cbdata_t *) data)->fd);
+        fprintf(stdout, "%d: %zu: recv data: ", ((struct cbdata_t *) data)->fd, stream);
         fwrite(buf, length, 1, stdout);
 
         if (buf[length - 1] != '\n')
