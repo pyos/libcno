@@ -98,11 +98,10 @@ struct cno_buffer_t
 };
 
 
-/* Initialize an empty dynamic buffer. */
+/* Initialize an empty static buffer. */
 #define CNO_BUFFER_EMPTY ((struct cno_buffer_t) { NULL, 0 })
 
-/* Initialize a static buffer from an array. None of the below functions work
- * with static buffers! Do not write to them either. */
+/* Initialize a static buffer from an array. */
 #define CNO_BUFFER_ARRAY(arr) ((struct cno_buffer_t) { (char *) arr, sizeof(arr) })
 
 /* Initialize a static buffer from a string constant. */
