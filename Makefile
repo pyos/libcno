@@ -19,10 +19,10 @@ _require_headers = \
 
 
 _require_objects = \
-	obj/common.o   \
-	obj/hpack.o    \
-	obj/core.o     \
-	obj/../picohttpparser/picohttpparser.o
+	obj/picohttpparser.o \
+	obj/common.o         \
+	obj/hpack.o          \
+	obj/core.o
 
 
 _require_examples = \
@@ -39,11 +39,18 @@ _require_examples = \
 all: obj/libcno.a
 examples: $(_require_examples)
 
+picohttpparser/.git: .gitmodules
+	git submodule update --init picohttpparser
+
 obj/libcno.so: $(_require_objects)
 	$(DYNLINK) $@ $^
 
 obj/libcno.a: $(_require_objects)
 	$(ARCHIVE) $@ $^
+
+obj/picohttpparser.o: picohttpparser/.git
+	@mkdir -p obj
+	$(COMPILE) $@ picohttpparser/picohttpparser.c -c
 
 obj/%.o: cno/%.c $(_require_headers)
 	@mkdir -p obj
