@@ -4,7 +4,7 @@ CFLAGS   ?= -O3
 CXXFLAGS ?= -O3
 PYTHON   ?= python3
 
-COMPILE = $(CC)  $(CFLAGS)   -std=c11   -Wall -Wextra -Werror -Wno-unused-parameter -fPIC -I. -o
+COMPILE = $(CC)  $(CFLAGS)   -std=c11   -Wall -Wextra -Werror -fPIC -I. -o
 COMPCPP = $(CXX) $(CXXFLAGS) -std=c++11 -Wall -Wextra -Werror -I. -o
 DYNLINK = $(CC) -shared -o
 ARCHIVE = ar rcs

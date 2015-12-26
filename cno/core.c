@@ -420,7 +420,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
  */
 static int cno_frame_handle_headers(struct cno_connection_t *conn,
                                     struct cno_stream_t     *stream,
-                                    struct cno_frame_t      *frame, int rstd)
+                                    struct cno_frame_t      *frame)
 {
     if (stream == NULL) {
         stream = cno_stream_new(conn, frame->stream, CNO_PEER_REMOTE);
@@ -465,7 +465,7 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
  */
 static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
                                          struct cno_stream_t     *stream,
-                                         struct cno_frame_t      *frame, int rstd)
+                                         struct cno_frame_t      *frame)
 {
     if (!stream || !(stream->accept & CNO_ACCEPT_PUSH))
         // also triggers if the other side is not a server
@@ -509,7 +509,7 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
  */
 static int cno_frame_handle_continuation(struct cno_connection_t *conn,
                                          struct cno_stream_t     *stream,
-                                         struct cno_frame_t      *frame, int rstd)
+                                         struct cno_frame_t      *frame)
 {
     if (!stream)
         return CNO_ERROR(TRANSPORT, "CONTINUATION on a non-existent stream");
@@ -538,6 +538,17 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
 }
 
 
+/* ignore non-HEADERS frames on reset streams, as the spec requires. unfortunately,
+ * these are indistinguishable from streams that were never opened, but hey, what
+ * can i do, keep a set of uint32_t-s? memory doesn't grow on trees, you know. */
+static int cno_frame_invalid_stream(struct cno_connection_t *conn, struct cno_frame_t *frame)
+{
+    return 0 < frame->stream && frame->stream <= conn->last_stream[cno_stream_is_local(conn, frame->stream)]
+        ? CNO_OK
+        : CNO_ERROR(TRANSPORT, "invalid stream");
+}
+
+
 /* handle a DATA frame. this includes sending a WINDOW_UPDATE to compensate for its size.
  *
  * fires:
@@ -547,7 +558,7 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
  */
 static int cno_frame_handle_data(struct cno_connection_t *conn,
                                  struct cno_stream_t     *stream,
-                                 struct cno_frame_t      *frame, int rstd)
+                                 struct cno_frame_t      *frame)
 {
     uint32_t length = frame->payload.size + frame->padding;
 
@@ -563,10 +574,7 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
     }
 
     if (!stream)
-        // ignore data on reset streams, as the spec requires. unfortunately, these are
-        // indistinguishable from streams that were never opened, but hey, what can i do,
-        // keep a set of uint32_t-s? memory doesn't grow on trees, you know.
-        return rstd ? CNO_OK : CNO_ERROR(TRANSPORT, "DATA on nonexistent stream");
+        return cno_frame_invalid_stream(conn, frame);
 
     if (!(stream->accept & CNO_ACCEPT_DATA))
         return cno_frame_write_rst_stream(conn, frame->stream, CNO_RST_STREAM_CLOSED);
@@ -590,8 +598,8 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
  * fires: on_pong technically, never, as there is no way to send a ping for now.
  */
 static int cno_frame_handle_ping(struct cno_connection_t *conn,
-                                 struct cno_stream_t     *steram,
-                                 struct cno_frame_t      *frame, int rstd)
+                                 struct cno_stream_t     *stream __attribute__((unused)),
+                                 struct cno_frame_t      *frame)
 {
     if (frame->stream)
         return cno_protocol_error(conn, "PING on nonzero stream");
@@ -614,8 +622,8 @@ static int cno_frame_handle_ping(struct cno_connection_t *conn,
  * throws: TRANSPORT if this frame is due to an error on our part.
  */
 static int cno_frame_handle_goaway(struct cno_connection_t *conn,
-                                   struct cno_stream_t     *stream,
-                                   struct cno_frame_t      *frame, int rstd)
+                                   struct cno_stream_t     *stream __attribute__((unused)),
+                                   struct cno_frame_t      *frame)
 {
     if (frame->stream)
         return cno_protocol_error(conn, "got GOAWAY on stream %u", frame->stream);
@@ -638,13 +646,10 @@ static int cno_frame_handle_goaway(struct cno_connection_t *conn,
  */
 static int cno_frame_handle_rst_stream(struct cno_connection_t *conn,
                                        struct cno_stream_t     *stream,
-                                       struct cno_frame_t      *frame, int rstd)
+                                       struct cno_frame_t      *frame)
 {
     if (!stream)
-        // ignore rst_streams on an already reset stream, too. the justification
-        // is that the peer may have sent this before receiving our rst_stream
-        // but we've send it before receiving this one.
-        return rstd ? CNO_OK : CNO_ERROR(TRANSPORT, "reset of a nonexistent stream");
+        return cno_frame_invalid_stream(conn, frame);
 
     if (frame->payload.size != 4)
         return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "bad RST_STREAM");
@@ -662,8 +667,8 @@ static int cno_frame_handle_rst_stream(struct cno_connection_t *conn,
  * fires: also nothing.
  */
 static int cno_frame_handle_priority(struct cno_connection_t *conn,
-                                     struct cno_stream_t     *stream,
-                                     struct cno_frame_t      *frame, int rstd)
+                                     struct cno_stream_t     *stream __attribute__((unused)),
+                                     struct cno_frame_t      *frame)
 {
     if (!frame->stream)
         return cno_protocol_error(conn, "PRIORITY on stream 0");
@@ -680,8 +685,8 @@ static int cno_frame_handle_priority(struct cno_connection_t *conn,
  * fires: on_flow_increase if the frame carries a new flow control window size.
  */
 static int cno_frame_handle_settings(struct cno_connection_t *conn,
-                                     struct cno_stream_t     *stream,
-                                     struct cno_frame_t      *frame, int rstd)
+                                     struct cno_stream_t     *stream __attribute__((unused)),
+                                     struct cno_frame_t      *frame)
 {
     if (frame->stream)
         return cno_protocol_error(conn, "SETTINGS not on stream 0");
@@ -731,7 +736,7 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
  */
 static int cno_frame_handle_window_update(struct cno_connection_t *conn,
                                           struct cno_stream_t     *stream,
-                                          struct cno_frame_t      *frame, int rstd)
+                                          struct cno_frame_t      *frame)
 {
     if (frame->payload.size != 4)
         return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "bad WINDOW_UPDATE");
@@ -752,7 +757,7 @@ static int cno_frame_handle_window_update(struct cno_connection_t *conn,
         if (stream->window_send >= 0x80000000u)
             return cno_frame_write_rst_stream(conn, frame->stream, CNO_RST_FLOW_CONTROL_ERROR);
     } else
-        return CNO_ERROR(TRANSPORT, "window increment on invalid stream");
+        return cno_frame_invalid_stream(conn, frame);
 
     return CNO_FIRE(conn, on_flow_increase, frame->stream);
 }
@@ -760,7 +765,7 @@ static int cno_frame_handle_window_update(struct cno_connection_t *conn,
 
 typedef int cno_frame_handler_t(struct cno_connection_t *,
                                 struct cno_stream_t     *,
-                                struct cno_frame_t      *, int);
+                                struct cno_frame_t      *);
 
 
 static cno_frame_handler_t *CNO_FRAME_HANDLERS[] = {
@@ -800,13 +805,8 @@ static int cno_frame_handle(struct cno_connection_t *conn, struct cno_frame_t *f
     if (frame->type >= CNO_FRAME_UNKNOWN)
         return CNO_OK;
 
-    // if a stream does not exist but has a plausible id (lower or equal to highest
-    // seen so far) it may have been reset, in which case receiving some frames
-    // on that stream is not an error.
-    int local = cno_stream_is_local(conn, frame->stream);
-    int reset = 0 < frame->stream && frame->stream <= conn->last_stream[local];
     struct cno_stream_t *stream = cno_stream_find(conn, frame->stream);
-    return CNO_FRAME_HANDLERS[frame->type](conn, stream, frame, reset);
+    return CNO_FRAME_HANDLERS[frame->type](conn, stream, frame);
 }
 
 
