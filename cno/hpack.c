@@ -44,12 +44,6 @@ static struct cno_buffer_t cno_header_table_v(const struct cno_header_table_t *t
 }
 
 
-static uint32_t cno_header_size(const struct cno_header_table_t *h)
-{
-    return h->k_size + h->v_size + 32;  // NOT sizeof -- this value is fixed in the RFC
-}
-
-
 /* Determine whether a header should be indexed. Certain headers containing
  * sensitive information should not be indexed to avoid attacks like CRIME. */
 static int cno_header_is_indexed(const struct cno_header_t *h)
@@ -63,7 +57,7 @@ static void cno_hpack_evict(struct cno_hpack_t *state, uint32_t limit)
 {
     while (state->size > limit) {
         struct cno_header_table_t *entry = state->last;
-        state->size -= cno_header_size(entry);
+        state->size -= entry->k_size + entry->v_size + 32;
         cno_list_remove(entry);
         free(entry);
     }
@@ -79,19 +73,25 @@ void cno_hpack_clear(struct cno_hpack_t *state)
 /* Insert a header into the index table. */
 static int cno_hpack_index(struct cno_hpack_t *state, const struct cno_header_t *h)
 {
-    size_t total = sizeof(struct cno_header_table_t) + h->name.size + h->value.size;
-    struct cno_header_table_t *entry = malloc(total);
+    size_t recorded = h->name.size + h->value.size + 32;
+    size_t actual   = h->name.size + h->value.size + sizeof(struct cno_header_table_t);
 
-    if (entry == NULL)
-        return CNO_ERROR(NO_MEMORY, "%zu bytes", total);
+    if (recorded > state->limit)
+        cno_hpack_evict(state, 0);
+    else {
+        cno_hpack_evict(state, state->limit - recorded);
 
-    memcpy(&entry->data[0],            h->name.data,  entry->k_size = h->name.size);
-    memcpy(&entry->data[h->name.size], h->value.data, entry->v_size = h->value.size);
+        struct cno_header_table_t *entry = malloc(actual);
 
-    state->size += cno_header_size(entry);
-    cno_list_init(entry);
-    cno_list_append(state, entry);
-    cno_hpack_evict(state, state->limit);
+        if (entry == NULL)
+            return CNO_ERROR(NO_MEMORY, "%zu bytes", actual);
+
+        state->size += recorded;
+        memcpy(&entry->data[0],            h->name.data,  entry->k_size = h->name.size);
+        memcpy(&entry->data[h->name.size], h->value.data, entry->v_size = h->value.size);
+        cno_list_append(state, entry);
+    }
+
     return CNO_OK;
 }
 
