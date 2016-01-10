@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <stdarg.h>
-#include <stddef.h>  // req @ common.h
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -32,15 +32,8 @@ int cno_error_set(const char *file, int line, const char *func, int code, const 
 
 int cno_error_upd(const char *file, int line, const char *func)
 {
-    if (LAST_ERROR.traceback_end == &LAST_ERROR.traceback[CNO_ERROR_TRACEBACK_DEPTH]) {
-        file = "...";
-        func = "...";
-        line = 0;
-    }
+    if (LAST_ERROR.traceback_end != &LAST_ERROR.traceback[CNO_ERROR_TRACEBACK])
+        *LAST_ERROR.traceback_end++ = (struct cno_traceback_t) { file, func, line };
 
-    struct cno_traceback_t *tb = LAST_ERROR.traceback_end++;
-    tb->file = file;
-    tb->func = func;
-    tb->line = line;
     return -1;
 }

@@ -11,6 +11,7 @@ ARCHIVE = ar rcs
 
 
 _require_headers = \
+	cno/config.h     \
 	cno/core.h       \
 	cno/hpack.h      \
 	cno/hpack-data.h \

@@ -4,6 +4,8 @@
 #ifndef CNO_COMMON_H
 #define CNO_COMMON_H
 
+#include "config.h"
+
 
 /* ----- Error handling -----
  *
@@ -12,30 +14,16 @@
  *
  * Call CNO_ERROR with the name of an error (there should be an appropriate CNO_ERRNO_*
  * constant) and the error message (printf-formatted) to signal a new error. CNO_ERROR
- * always returns -1, so that's all you need to do in int-returning functions.
- * CNO_ERROR_NULL is like CNO_ERROR but returns NULL.
+ * always returns -1. CNO_ERROR_NULL is like CNO_ERROR but returns NULL.
  *
- * Call CNO_ERROR_UP to add a line to the traceback when exiting due to an error
- * in a nested function. CNO_ERROR_UP returns -1, just like CNO_ERROR.
- * CNO_ERROR_UP_NULL returns NULL instead, duh. */
+ * Call CNO_ERROR_UP to add a line to the traceback when exiting due to an error in
+ * a nested function. CNO_ERROR_UP returns -1. CNO_ERROR_UP_NULL returns NULL instead. */
 
 #define CNO_OK 0
-
-#define CNO_ERROR_SET(...)   cno_error_set(__FILE__, __LINE__, __func__, __VA_ARGS__)
-#define CNO_ERROR(...)       CNO_ERROR_SET(CNO_ERRNO_ ## __VA_ARGS__)
+#define CNO_ERROR(...)       cno_error_set(__FILE__, __LINE__, __func__, CNO_ERRNO_ ## __VA_ARGS__)
+#define CNO_ERROR_UP()       cno_error_upd(__FILE__, __LINE__, __func__)
 #define CNO_ERROR_NULL(...) (CNO_ERROR(__VA_ARGS__), NULL)
-
-#if CNO_ERROR_DISABLE_TRACEBACKS
-    #define CNO_ERROR_UP()      -1
-    #define CNO_ERROR_UP_NULL() NULL
-#else
-    #define CNO_ERROR_UP()       cno_error_upd(__FILE__, __LINE__, __func__)
-    #define CNO_ERROR_UP_NULL() (CNO_ERROR_UP(), NULL)
-#endif
-
-/* Maximum number of lines in a traceback. Note that the space to hold them
- * is statically allocated. (Do not redefine this in different compilation units!) */
-#define CNO_ERROR_TRACEBACK_DEPTH 128
+#define CNO_ERROR_UP_NULL() (CNO_ERROR_UP(), NULL)
 
 
 enum CNO_ERRNO
@@ -65,8 +53,8 @@ struct cno_error_t
 {
     int  code;
     char text[512];
-    struct cno_traceback_t  traceback[CNO_ERROR_TRACEBACK_DEPTH];
     struct cno_traceback_t *traceback_end;
+    struct cno_traceback_t  traceback[CNO_ERROR_TRACEBACK];
 };
 
 
@@ -82,8 +70,7 @@ int cno_error_set (const char *file, int line,
 
 
 /* Append a line to the traceback, if there is space left. */
-int cno_error_upd (const char *file, int line,
-                   const char *func);
+int cno_error_upd (const char *file, int line, const char *func);
 
 
 /* ----- String views ----- */
@@ -114,8 +101,7 @@ struct cno_buffer_t
 static inline void cno_buffer_clear(struct cno_buffer_t *x)
 {
     free(x->data);
-    x->data = NULL;
-    x->size = 0;
+    *x = CNO_BUFFER_EMPTY;
 }
 
 
@@ -168,10 +154,7 @@ struct cno_buffer_dyn_t
 static inline void cno_buffer_dyn_clear(struct cno_buffer_dyn_t *x)
 {
     free(x->data - x->offset);
-    x->data    = NULL;
-    x->size    = 0;
-    x->offset  = 0;
-    x->reserve = 0;
+    *x = CNO_BUFFER_DYN_ALIAS(CNO_BUFFER_EMPTY);
 }
 
 
@@ -200,8 +183,7 @@ static inline int cno_buffer_dyn_concat(struct cno_buffer_dyn_t *a, const struct
         return CNO_OK;
     }
 
-    // round up to a multiple of 512 bytes
-    size_t new_size = (a->size + b.size + 511) & ~511;
+    size_t new_size = (a->size + b.size + CNO_BUFFER_ALLOC_INCR - 1) / CNO_BUFFER_ALLOC_INCR * CNO_BUFFER_ALLOC_INCR;
 
     char *m = (char *) malloc(new_size);
 
@@ -250,16 +232,15 @@ struct cno_list_t
 
 static inline void cno_list_gen_init(struct cno_list_t *x)
 {
-    x->next = x;
-    x->prev = x;
+    *x = (struct cno_list_t) { x, x };
 }
 
 
 static inline void cno_list_gen_append(struct cno_list_t *x, struct cno_list_t *y)
 {
-    y->prev = x;
-    y->next = x->next;
-    x->next = y->next->prev = y;
+    *y = (struct cno_list_t) { x, x->next };
+    x->next->prev = y;
+    x->next       = y;
 }
 
 

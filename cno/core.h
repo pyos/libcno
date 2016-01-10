@@ -11,31 +11,8 @@ extern "C" {
 #endif
 
 // skip to struct cno_connection_t for useful stuff.
-#include <cno/common.h>
-#include <cno/hpack.h>
-
-#ifndef CNO_MAX_HTTP1_HEADER_SIZE
-/* Max. length of a header, i.e. length of the name + length of the value + 4 bytes
- * (the ": " separator and the CRLF.) If a header longer than this is passed
- * to `cno_write_message`, it will return an assertion error. */
-#define CNO_MAX_HTTP1_HEADER_SIZE 4096
-#endif
-
-#ifndef CNO_MAX_HEADERS
-/* Max. number of entries in the header table of inbound messages. Applies to both HTTP 1
- * and HTTP 2. Since there's no way to know in advance how many headers a message has,
- * this option limits the stack space consumed. Does not affect outbound messages. */
-#define CNO_MAX_HEADERS 128
-#endif
-
-#ifndef CNO_MAX_CONTINUATIONS
-/* Maximum number of CONTINUATION frames that can follow HEADERS/PUSH_PROMISE.
- * They're all concatenated into a single buffer, so this limits consumed memory. */
-#define CNO_MAX_CONTINUATIONS 5
-#endif
-
-// no. of buckets in id-keyed stream hash map. should be prime for optimal hashing.
-#define CNO_STREAM_BUCKETS 61
+#include "common.h"
+#include "hpack.h"
 
 
 enum CNO_PEER_KIND
