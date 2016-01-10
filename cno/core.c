@@ -92,22 +92,25 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
         return local ? CNO_ERROR_NULL(WOULD_BLOCK, "wait for on_stream_end")
                      : CNO_ERROR_NULL(TRANSPORT,   "peer exceeded stream limit");
 
-    struct cno_stream_t *stream = calloc(1, sizeof(struct cno_stream_t));
+    struct cno_stream_t *stream = malloc(sizeof(struct cno_stream_t));
 
     if (!stream)
         return CNO_ERROR_NULL(NO_MEMORY, "%zu bytes", sizeof(struct cno_stream_t));
 
-    stream->id = id;
-    stream->window_recv = conn->settings[CNO_PEER_LOCAL].initial_window_size;
-    stream->window_send = conn->settings[CNO_PEER_REMOTE].initial_window_size;
-    stream->next = conn->streams[id % CNO_STREAM_BUCKETS];
+    *stream = (struct cno_stream_t) {
+        .id          = conn->last_stream[local] = id,
+        .next        = conn->streams[id % CNO_STREAM_BUCKETS],
+        .window_recv = conn->settings[CNO_PEER_LOCAL] .initial_window_size,
+        .window_send = conn->settings[CNO_PEER_REMOTE].initial_window_size,
+    };
 
     conn->streams[id % CNO_STREAM_BUCKETS] = stream;
-    conn->last_stream[local] = id;
     conn->stream_count[local]++;
 
     if (CNO_FIRE(conn, on_stream_start, id)) {
-        cno_stream_destroy(conn, stream);
+        conn->streams[id % CNO_STREAM_BUCKETS] = stream->next;
+        conn->stream_count[local]--;
+        free(stream);
         return CNO_ERROR_UP_NULL();
     }
 
