@@ -193,7 +193,6 @@ struct cno_settings_t
 
 struct cno_connection_t
 {
-    uint8_t /* enum CNO_CONNECTION_KIND  */ kind;
     uint8_t /* enum CNO_PEER_KIND        */ client;
     uint8_t /* enum CNO_CONNECTION_STATE */ state;
     uint8_t  continued_flags;  // OR the flags of the next CONTINUATION with this.

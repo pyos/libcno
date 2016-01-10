@@ -872,14 +872,15 @@ int cno_settings_apply(struct cno_connection_t *conn, const struct cno_settings_
 
 void cno_connection_init(struct cno_connection_t *conn, enum CNO_CONNECTION_KIND kind)
 {
-    memset(conn, 0, sizeof(struct cno_connection_t));
-    memcpy(&conn->settings[0], &CNO_SETTINGS_STANDARD, sizeof(struct cno_settings_t));
-    memcpy(&conn->settings[1], &CNO_SETTINGS_INITIAL,  sizeof(struct cno_settings_t));
-    conn->kind        = kind;
-    conn->client      = kind == CNO_CLIENT;
-    conn->state       = CNO_CONNECTION_UNDEFINED;
-    conn->window_recv = CNO_SETTINGS_STANDARD.initial_window_size;
-    conn->window_send = CNO_SETTINGS_STANDARD.initial_window_size;
+    *conn = (struct cno_connection_t) {
+        .client      = CNO_CLIENT == kind,
+        .state       = CNO_CONNECTION_UNDEFINED,
+        .window_recv = CNO_SETTINGS_STANDARD.initial_window_size,
+        .window_send = CNO_SETTINGS_STANDARD.initial_window_size,
+        .settings    = { /* remote = */ CNO_SETTINGS_STANDARD,
+                         /* local  = */ CNO_SETTINGS_INITIAL, },
+    };
+
     cno_hpack_init(&conn->decoder, CNO_SETTINGS_INITIAL .header_table_size);
     cno_hpack_init(&conn->encoder, CNO_SETTINGS_STANDARD.header_table_size);
 }
@@ -959,8 +960,8 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     return CNO_OK;
 
                 conn->state = CNO_CONNECTION_INIT;
-                conn->last_stream[0] = 0;
-                conn->last_stream[1] = 0;
+                conn->last_stream[CNO_PEER_REMOTE] = 0;
+                conn->last_stream[CNO_PEER_LOCAL]  = 0;
 
                 if (cno_stream_destroy_clean(conn, stream))
                     return CNO_ERROR_UP();
