@@ -1307,10 +1307,6 @@ payload_generation_error:
 }
 
 
-#define write_vector(ptr, vec) ((char *) memcpy(ptr, vec.data, vec.size) + vec.size)
-#define write_string(ptr, ...) (ptr + sprintf(ptr, ##__VA_ARGS__))
-
-
 int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct cno_message_t *msg, int final)
 {
     if (conn->state == CNO_CONNECTION_UNDEFINED)
@@ -1320,47 +1316,57 @@ int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct
         if (stream != 1)
             return CNO_ERROR(INVALID_STREAM, "can only write to stream 1 in HTTP 1 mode, not %zu", stream);
 
-        char head[CNO_MAX_HTTP1_HEADER_SIZE], *ptr = head;
+        char buffer[CNO_MAX_HTTP1_HEADER_SIZE + 3];
+        int size;
+
+        if (conn->client)
+            size = snprintf(buffer, sizeof(buffer), "%.*s %.*s HTTP/1.1\r\n",
+                (int) msg->method.size, msg->method.data,
+                (int) msg->path.size,   msg->path.data);
+        else
+            size = snprintf(buffer, sizeof(buffer), "HTTP/1.1 %d Something\r\n", msg->code);
+
+        if (size > CNO_MAX_HTTP1_HEADER_SIZE)
+            return CNO_ERROR(ASSERTION, "method/path too big");
+
         struct cno_header_t *it  = msg->headers;
         struct cno_header_t *end = msg->headers_len + it;
-
-        if (conn->client) {
-            if (msg->method.size + msg->path.size >= CNO_MAX_HTTP1_HEADER_SIZE - sizeof(" HTTP/1.1\r\n"))
-                return CNO_ERROR(ASSERTION, "path + method too long");
-
-            ptr = write_vector(ptr, msg->method);
-            ptr = write_string(ptr, " ");
-            ptr = write_vector(ptr, msg->path);
-            ptr = write_string(ptr, " HTTP/1.1\r\n");
-        } else
-            ptr = write_string(ptr, "HTTP/1.1 %d No Reason\r\n", msg->code);
-
-        ptr = write_string(ptr, "connection: keep-alive\r\n");
+        int had_connection_header = 0;
 
         for (; it != end; ++it) {
-            if (CNO_FIRE(conn, on_write, head, ptr - head))
+            if (size && CNO_FIRE(conn, on_write, buffer, size))
                 return CNO_ERROR_UP();
 
-            ptr = head;
+            if (cno_buffer_eq(it->name, CNO_BUFFER_CONST(":authority")))
+                size = snprintf(buffer, sizeof(buffer), "host: %.*s\r\n",
+                    (int) it->value.size, it->value.data);
 
-            if (it->name.size + it->value.size + 4 >= CNO_MAX_HTTP1_HEADER_SIZE)
-                return CNO_ERROR(TRANSPORT, "header too long");
+            else if (cno_buffer_startswith(it->name, CNO_BUFFER_CONST(":")))
+                size = 0;
 
-            if (strncmp(it->name.data, ":authority", it->name.size) == 0)
-                ptr = write_string(ptr, "host: ");
-            else if (strncmp(it->name.data, ":status", it->name.size) == 0)
-                return CNO_ERROR(ASSERTION, "set `message.code` instead of sending :status");
-            else if (it->name.size && it->name.data[0] == ':')
-                continue;
-            else
-                ptr = write_string(write_vector(ptr, it->name), ": ");
+            else {
+                size = snprintf(buffer, sizeof(buffer), "%.*s: %.*s\r\n",
+                    (int) it->name.size,  it->name.data,
+                    (int) it->value.size, it->value.data);
 
-            ptr = write_vector(ptr, it->value);
-            ptr = write_string(ptr, "\r\n");
+                if (cno_buffer_eq(it->name, CNO_BUFFER_CONST("connection")))
+                    had_connection_header = 1;
+            }
+
+            if (size > CNO_MAX_HTTP1_HEADER_SIZE)
+                return CNO_ERROR(ASSERTION, "header too big\r\n");
         }
 
-        ptr = write_string(ptr, "\r\n");
-        return CNO_FIRE(conn, on_write, head, ptr - head);
+        if (!had_connection_header) {
+            struct cno_buffer_t conn_header = CNO_BUFFER_CONST("connection: keep-alive\r\n");
+
+            if (CNO_FIRE(conn, on_write, conn_header.data, conn_header.size))
+                return CNO_ERROR_UP();
+        }
+
+        buffer[size + 0] = '\r';
+        buffer[size + 1] = '\n';
+        return CNO_FIRE(conn, on_write, buffer, size + 2);
     }
 
     struct cno_stream_t *streamobj = cno_stream_find(conn, stream);

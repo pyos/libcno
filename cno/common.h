@@ -21,7 +21,7 @@
 
 #define CNO_OK 0
 
-#define CNO_ERROR_SET(...)   cno_error_set(__FILE__, __LINE__, __func__, ##__VA_ARGS__)
+#define CNO_ERROR_SET(...)   cno_error_set(__FILE__, __LINE__, __func__, __VA_ARGS__)
 #define CNO_ERROR(...)       CNO_ERROR_SET(CNO_ERRNO_ ## __VA_ARGS__)
 #define CNO_ERROR_NULL(...) (CNO_ERROR(__VA_ARGS__), NULL)
 
