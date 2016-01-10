@@ -408,6 +408,7 @@ static int cno_hpack_encode_string(struct cno_buffer_dyn_t *buf, const struct cn
 
 static int cno_hpack_encode_size_update(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf, uint32_t size)
 {
+    cno_hpack_evict(state, size);
     return cno_hpack_encode_uint(buf, 0x20, 0x1F, state->limit = size);
 }
 
@@ -440,7 +441,7 @@ static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_dyn
 int cno_hpack_encode(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf,
                const struct cno_header_t *headers, size_t n)
 {
-    // if the size limit was updated, should encode two values:
+    // if the size limit was updated, we should encode two values:
     // the minimum value and the end value. the former may force the other side
     // to evict more entries from the table than the latter.
     if (state->limit != state->limit_update_min)
