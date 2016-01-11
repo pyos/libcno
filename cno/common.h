@@ -119,14 +119,17 @@ static inline int cno_buffer_startswith(const struct cno_buffer_t a, const struc
 
 static inline int cno_buffer_copy(struct cno_buffer_t *a, const struct cno_buffer_t b)
 {
-    char *m = (char *) malloc(b.size);
+    *a = CNO_BUFFER_EMPTY;
 
-    if (m == NULL)
-        return CNO_ERROR(NO_MEMORY, "%zu bytes", b.size);
+    if (b.size) {
+        void *m = malloc(b.size);
 
-    memcpy(m, b.data, b.size);
-    a->data = m;
-    a->size = b.size;
+        if (m == NULL)
+            return CNO_ERROR(NO_MEMORY, "%zu bytes", b.size);
+
+        *a = (struct cno_buffer_t) { (char *) memcpy(m, b.data, b.size), b.size };
+    }
+
     return CNO_OK;
 }
 

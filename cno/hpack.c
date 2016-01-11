@@ -187,7 +187,7 @@ static int cno_hpack_decode_string(struct cno_buffer_dyn_t *source, struct cno_b
     if (length > source->size)
         return CNO_ERROR(COMPRESSION, "expected %zu octets, got %zu", length, source->size);
 
-    if (huffman) {
+    if (length && huffman) {
         uint8_t *src = (uint8_t *) source->data;
         uint8_t *end = length + src;
         // min. length of a Huffman code = 5 bits => max length after decoding = x * 8 / 5.
