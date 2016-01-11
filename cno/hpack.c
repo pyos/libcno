@@ -48,8 +48,8 @@ static struct cno_buffer_t cno_header_table_v(const struct cno_header_table_t *t
  * sensitive information should not be indexed to avoid attacks like CRIME. */
 static int cno_header_is_indexed(const struct cno_header_t *h)
 {
-    return !(h->name.size == 6  && 0 == memcmp(h->name.data, "cookie", 6))
-        && !(h->name.size == 10 && 0 == memcmp(h->name.data, "set-cookie", 10));
+    return !cno_buffer_eq(h->name, CNO_BUFFER_CONST("cookie"))
+        && !cno_buffer_eq(h->name, CNO_BUFFER_CONST("set-cookie"));
 }
 
 
