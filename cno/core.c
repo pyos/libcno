@@ -737,7 +737,7 @@ static int cno_frame_handle_window_update(struct cno_connection_t *conn,
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "window increment out of bounds");
 
     if (!frame->stream) {
-        if (conn->window_send > 0x7fffffff - increment)
+        if (conn->window_send > 0x7fffffff - (int32_t) increment)
             return cno_frame_write_error(conn, CNO_RST_FLOW_CONTROL_ERROR, "window increment too big");
 
         conn->window_send += increment;
@@ -746,7 +746,7 @@ static int cno_frame_handle_window_update(struct cno_connection_t *conn,
         if (stream == NULL)
             return cno_frame_invalid_stream(conn, frame);
 
-        if (stream->window_send > 0x7fffffff - increment)
+        if (stream->window_send > 0x7fffffff - (int32_t) increment)
             return cno_frame_write_rst_stream(conn, frame->stream, CNO_RST_FLOW_CONTROL_ERROR);
 
         stream->window_send += increment;
@@ -1453,13 +1453,16 @@ int32_t cno_write_data(struct cno_connection_t *conn, size_t stream, const char 
     if (!(streamobj->accept & CNO_ACCEPT_WRITE_DATA))
         return CNO_ERROR(INVALID_STREAM, "can't carry data over stream %zu", stream);
 
-    if (length > conn->window_send) {
-        length = conn->window_send;
+    if (conn->window_send < 0 || streamobj->window_send < 0)
+        return 0;
+
+    if (length > (uint32_t) conn->window_send) {
+        length = (uint32_t) conn->window_send;
         final  = 0;
     }
 
-    if (length > streamobj->window_send) {
-        length = streamobj->window_send;
+    if (length > (uint32_t) streamobj->window_send) {
+        length = (uint32_t) streamobj->window_send;
         final  = 0;
     }
 

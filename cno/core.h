@@ -145,8 +145,8 @@ struct cno_stream_t
 {
     struct cno_stream_t *next;  // in hashmap bucket
     uint32_t id;
-    uint32_t window_recv;
-    uint32_t window_send;
+     int32_t window_recv;
+     int32_t window_send;
     uint8_t closed;
     uint8_t /* enum CNO_STREAM_ACCEPT */ accept;
 };
@@ -176,8 +176,8 @@ struct cno_connection_t
     uint32_t continued_stream;  // if nonzero, expect a CONTINUATION on that stream.
     uint32_t continued_promise;  // if prev. frame was a PUSH_PROMISE, this is the stream it created.
     uint32_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
-    uint32_t window_recv;
-    uint32_t window_send;
+     int32_t window_recv;
+     int32_t window_send;
     uint32_t last_stream  [2];  // dereferencable with CNO_REMOTE/CNO_LOCAL
     uint32_t stream_count [2];
     struct cno_settings_t settings[2];
