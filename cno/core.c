@@ -70,7 +70,7 @@ static int cno_stream_destroy_clean(struct cno_connection_t *conn, struct cno_st
 
 /* allocate resources for a new stream.
  *
- * third argument should be 1 (== CNO_PEER_LOCAL) iff we're initiating this stream.
+ * third argument should be 1 (== CNO_LOCAL) iff we're initiating this stream.
  *
  * fires: on_stream_start.
  * throws:
@@ -100,8 +100,8 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
     *stream = (struct cno_stream_t) {
         .id          = conn->last_stream[local] = id,
         .next        = conn->streams[id % CNO_STREAM_BUCKETS],
-        .window_recv = conn->settings[CNO_PEER_LOCAL] .initial_window_size,
-        .window_send = conn->settings[CNO_PEER_REMOTE].initial_window_size,
+        .window_recv = conn->settings[CNO_LOCAL] .initial_window_size,
+        .window_send = conn->settings[CNO_REMOTE].initial_window_size,
     };
 
     conn->streams[id % CNO_STREAM_BUCKETS] = stream;
@@ -159,7 +159,7 @@ static int cno_frame_write(struct cno_connection_t *conn,
                            struct cno_frame_t      *frame)
 {
     size_t length = frame->payload.size;
-    size_t limit  = conn->settings[CNO_PEER_REMOTE].max_frame_size;
+    size_t limit  = conn->settings[CNO_REMOTE].max_frame_size;
 
     if (length <= limit) {
         if (frame->type == CNO_FRAME_DATA) {
@@ -252,7 +252,7 @@ static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
  */
 static int cno_frame_write_goaway(struct cno_connection_t *conn, uint32_t /* enum CNO_RST_STREAM_CODE */ code)
 {
-    uint32_t last = conn->last_stream[CNO_PEER_REMOTE];
+    uint32_t last = conn->last_stream[CNO_REMOTE];
     struct cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, 0, { PACK(I32(last), I32(code)) } };
     return cno_frame_write(conn, NULL, &error);
 }
@@ -426,7 +426,7 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
                                     struct cno_frame_t      *frame)
 {
     if (stream == NULL) {
-        stream = cno_stream_new(conn, frame->stream, CNO_PEER_REMOTE);
+        stream = cno_stream_new(conn, frame->stream, CNO_REMOTE);
 
         if (stream == NULL)
             return CNO_ERROR_UP();
@@ -474,7 +474,7 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
         // also triggers if the other side is not a server
         return CNO_ERROR(TRANSPORT, "unexpected PUSH_PROMISE");
 
-    if (!conn->settings[CNO_PEER_LOCAL].enable_push)
+    if (!conn->settings[CNO_LOCAL].enable_push)
         return CNO_ERROR(TRANSPORT, "forbidden PUSH_PROMISE");
 
     if (frame->payload.size < 4)
@@ -484,7 +484,7 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
     frame->payload.data += 4;
     frame->payload.size -= 4;
 
-    struct cno_stream_t *pushed = cno_stream_new(conn, promised, CNO_PEER_REMOTE);
+    struct cno_stream_t *pushed = cno_stream_new(conn, promised, CNO_REMOTE);
 
     if (pushed == NULL)
         return CNO_ERROR_UP();
@@ -525,7 +525,7 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
     // we don't actually count CONTINUATIONs, but this is a good estimate. especially
     // if the other side decides to send the message as a bunch of small frames
     // for some reason.
-    size_t max_buf_size = (CNO_MAX_CONTINUATIONS + 1) * conn->settings[CNO_PEER_LOCAL].max_frame_size;
+    size_t max_buf_size = (CNO_MAX_CONTINUATIONS + 1) * conn->settings[CNO_LOCAL].max_frame_size;
 
     if (frame->payload.size + conn->continued.size > max_buf_size)
         // finally a chance to use that error code.
@@ -702,7 +702,7 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
     if (frame->payload.size % 6)
         return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "bad SETTINGS");
 
-    struct cno_settings_t *cfg = &conn->settings[CNO_PEER_REMOTE];
+    struct cno_settings_t *cfg = &conn->settings[CNO_REMOTE];
     uint8_t *ptr = (uint8_t *) frame->payload.data;
     uint8_t *end = ptr + frame->payload.size;
 
@@ -841,7 +841,7 @@ static int cno_settings_diff(struct cno_connection_t *conn,
  * then call cno_settings_apply to change the configuration. */
 void cno_settings_copy(struct cno_connection_t *conn, struct cno_settings_t *target)
 {
-    memcpy(target, &conn->settings[CNO_PEER_LOCAL], sizeof(*target));
+    memcpy(target, &conn->settings[CNO_LOCAL], sizeof(*target));
 }
 
 
@@ -862,10 +862,10 @@ int cno_settings_apply(struct cno_connection_t *conn, const struct cno_settings_
 
     if (conn->state != CNO_CONNECTION_INIT && cno_connection_is_http2(conn))
         // If not yet in HTTP2 mode, `cno_connection_upgrade` will send the SETTINGS frame.
-        if (cno_settings_diff(conn, conn->settings + CNO_PEER_LOCAL, settings))
+        if (cno_settings_diff(conn, conn->settings + CNO_LOCAL, settings))
             return CNO_ERROR_UP();
 
-    memcpy(&conn->settings[CNO_PEER_LOCAL], settings, sizeof(*settings));
+    memcpy(&conn->settings[CNO_LOCAL], settings, sizeof(*settings));
     conn->decoder.limit_upper = settings->header_table_size;
     // TODO the difference in initial flow control window size should be subtracted
     //      from the flow control window size of all active streams.
@@ -920,7 +920,7 @@ static int cno_connection_upgrade(struct cno_connection_t *conn)
     if (conn->client && CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size))
         return CNO_ERROR_UP();
 
-    return cno_settings_diff(conn, &CNO_SETTINGS_STANDARD, &conn->settings[CNO_PEER_LOCAL]);
+    return cno_settings_diff(conn, &CNO_SETTINGS_STANDARD, &conn->settings[CNO_LOCAL]);
 }
 
 
@@ -963,8 +963,8 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     return CNO_OK;
 
                 conn->state = CNO_CONNECTION_INIT;
-                conn->last_stream[CNO_PEER_REMOTE] = 0;
-                conn->last_stream[CNO_PEER_LOCAL]  = 0;
+                conn->last_stream[CNO_REMOTE] = 0;
+                conn->last_stream[CNO_LOCAL]  = 0;
 
                 if (cno_stream_destroy_clean(conn, stream))
                     return CNO_ERROR_UP();
@@ -1098,7 +1098,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 size_t length = strtoul(conn->buffer.data, NULL, 16);
                 size_t total  = length + (eol - conn->buffer.data) + 2;  // + crlf after data
 
-                if (total > conn->settings[CNO_PEER_LOCAL].max_frame_size)
+                if (total > conn->settings[CNO_LOCAL].max_frame_size)
                     return CNO_ERROR(TRANSPORT, "HTTP/1.x chunk too big");
 
                 if (conn->buffer.size < total)
@@ -1157,7 +1157,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             uint8_t *base = (uint8_t *) conn->buffer.data;
             size_t m = read3(base);
 
-            if (m > conn->settings[CNO_PEER_LOCAL].max_frame_size)
+            if (m > conn->settings[CNO_LOCAL].max_frame_size)
                 return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "frame too big");
 
             if (conn->buffer.size < 9 + m)
@@ -1235,7 +1235,7 @@ uint32_t cno_stream_next_id(struct cno_connection_t *conn)
     if (!cno_connection_is_http2(conn))
         return 1;
 
-    uint32_t last = conn->last_stream[CNO_PEER_LOCAL];
+    uint32_t last = conn->last_stream[CNO_LOCAL];
 
     if (last || !conn->client)
         return last + 2;
@@ -1262,7 +1262,7 @@ int cno_write_push(struct cno_connection_t *conn, size_t stream, const struct cn
     if (conn->client)
         return CNO_ERROR(ASSERTION, "clients can't push");
 
-    if (!cno_connection_is_http2(conn) || !conn->settings[CNO_PEER_REMOTE].enable_push)
+    if (!cno_connection_is_http2(conn) || !conn->settings[CNO_REMOTE].enable_push)
         return CNO_OK;
 
     if (cno_stream_is_local(conn, stream))
@@ -1294,7 +1294,7 @@ int cno_write_push(struct cno_connection_t *conn, size_t stream, const struct cn
 
     cno_buffer_dyn_clear(&payload);
 
-    struct cno_stream_t *childobj = cno_stream_new(conn, child, CNO_PEER_LOCAL);
+    struct cno_stream_t *childobj = cno_stream_new(conn, child, CNO_LOCAL);
 
     if (childobj == NULL)
         return CNO_ERROR_UP();
@@ -1378,7 +1378,7 @@ int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct
         if (!conn->client)
             return CNO_ERROR(INVALID_STREAM, "responding to invalid stream %zu", stream);
 
-        streamobj = cno_stream_new(conn, stream, CNO_PEER_LOCAL);
+        streamobj = cno_stream_new(conn, stream, CNO_LOCAL);
 
         if (streamobj == NULL)
             return CNO_ERROR_UP();

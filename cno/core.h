@@ -17,8 +17,8 @@ extern "C" {
 
 enum CNO_PEER_KIND
 {
-    CNO_PEER_REMOTE = 0,
-    CNO_PEER_LOCAL  = 1,
+    CNO_REMOTE = 0,
+    CNO_LOCAL  = 1,
 };
 
 
@@ -52,7 +52,7 @@ enum CNO_CONNECTION_STATE
 
 enum CNO_STREAM_ACCEPT
 {
-    CNO_ACCEPT_NOTHING       = 0x00,  // bitwise fields marking acceptable operations on a stream.
+    CNO_ACCEPT_NOTHING       = 0x00,
     CNO_ACCEPT_HEADERS       = 0x01,
     CNO_ACCEPT_DATA          = 0x02,
     CNO_ACCEPT_PUSH          = 0x04,
@@ -178,7 +178,7 @@ struct cno_connection_t
     uint32_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
     uint32_t window_recv;
     uint32_t window_send;
-    uint32_t last_stream  [2];  // dereferencable with CNO_PEER_REMOTE/CNO_PEER_LOCAL
+    uint32_t last_stream  [2];  // dereferencable with CNO_REMOTE/CNO_LOCAL
     uint32_t stream_count [2];
     struct cno_settings_t settings[2];
     struct cno_buffer_dyn_t buffer;
