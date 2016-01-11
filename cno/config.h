@@ -33,7 +33,7 @@
 
 #ifndef CNO_STREAM_BUCKETS
 /* Number of buckets in the "stream id -> stream object" hash map. Must be prime to
- * ensure an even distribution. Controls stack/heap usage, depeding on where connection
+ * ensure an even distribution. Controls stack/heap usage, depending on where connection
  * objects are allocated. */
 #define CNO_STREAM_BUCKETS 61
 #endif
