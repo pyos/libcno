@@ -1404,8 +1404,8 @@ int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct
         if (cno_hpack_encode(&conn->encoder, &payload, head, 2))
             goto payload_generation_error;
     } else {
-        char code[10] = { 0 };
-        snprintf(code, 10, "%d", msg->code);
+        char code[8];
+        snprintf(code, sizeof(code), "%d", msg->code);
 
         struct cno_header_t head[] = {
             { CNO_BUFFER_CONST(":status"), CNO_BUFFER_STRING(code) }
