@@ -172,6 +172,9 @@ static inline void cno_buffer_dyn_shift(struct cno_buffer_dyn_t *x, size_t off)
 
 static inline int cno_buffer_dyn_concat(struct cno_buffer_dyn_t *a, const struct cno_buffer_t b)
 {
+    if (b.data == NULL)
+        return CNO_OK;
+
     if (a->offset) {
         memmove(a->data - a->offset, a->data, a->size);
         a->data    -= a->offset;
@@ -193,7 +196,9 @@ static inline int cno_buffer_dyn_concat(struct cno_buffer_dyn_t *a, const struct
     if (m == NULL)
         return CNO_ERROR(NO_MEMORY, "%zu bytes", new_size);
 
-    memcpy(m, a->data, a->size);
+    if (a->data != NULL)
+        memcpy(m, a->data, a->size);
+
     memcpy(m + a->size, b.data, b.size);
     free(a->data);
     a->data    = m;
