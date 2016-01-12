@@ -326,6 +326,9 @@ int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t s,
         if (ptr->name.data != NULL || ptr->value.data != NULL) ++ptr;
     }
 
+    if (buf.size)
+        return CNO_ERROR(COMPRESSION, "header list too long");
+
     *n = ptr - rs;
     return CNO_OK;
 }
