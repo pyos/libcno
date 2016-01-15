@@ -27,10 +27,7 @@ _require_objects = \
 
 
 _require_examples = \
-	obj/examples-cxx/server    \
-	obj/examples/simple_server \
-	obj/examples/simple_client \
-	obj/examples/hpack
+	obj/examples-cxx/server
 
 
 .PHONY: all clean
