@@ -23,7 +23,6 @@ static inline uint32_t read3(const uint8_t *p) { return read4(p) >> 8; }
 #define I32(x) x >> 24, x >> 16, x >> 8, x
 
 
-// PRI SM. heh.
 static const struct cno_buffer_t CNO_PREFACE = CNO_BUFFER_CONST("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
 static const struct cno_settings_t CNO_SETTINGS_STANDARD = {{{ 4096, 1, -1,   65536, 16384, -1 }}};
 static const struct cno_settings_t CNO_SETTINGS_INITIAL  = {{{ 4096, 1, 1024, 65536, 65536, -1 }}};
@@ -147,7 +146,7 @@ static int cno_stream_close(struct cno_connection_t *conn, struct cno_stream_t *
 }
 
 
-/* send a single frame. it should fit in the flow control window, though!
+/* send a single frame. no flow control accounting is done.
  *
  * fires: on_write, on_frame_send.
  * throws:
@@ -162,12 +161,6 @@ static int cno_frame_write(struct cno_connection_t *conn,
     size_t limit  = conn->settings[CNO_REMOTE].max_frame_size;
 
     if (length <= limit) {
-        if (frame->type == CNO_FRAME_DATA) {
-            if (stream)
-                stream->window_send -= length;
-            conn->window_send -= length;
-        }
-
         if (CNO_FIRE(conn, on_frame_send, frame))
             return CNO_ERROR_UP();
 
@@ -1473,6 +1466,9 @@ int32_t cno_write_data(struct cno_connection_t *conn, size_t stream, const char 
 
     if (cno_frame_write(conn, streamobj, &frame))
         return CNO_ERROR_UP();
+
+    conn->window_send -= length;
+    streamobj->window_send -= length;
 
     if (final && cno_stream_close(conn, streamobj))
         return CNO_ERROR_UP();
