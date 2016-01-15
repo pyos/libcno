@@ -221,7 +221,7 @@ static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
     if (!obj)
         return CNO_OK;  // assume stream already ended naturally
 
-    struct cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, 0, stream, { PACK(I32(code)) } };
+    struct cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, stream, { PACK(I32(code)) } };
 
     if (cno_frame_write(conn, obj, &error))
         return CNO_ERROR_UP();
@@ -248,7 +248,7 @@ static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
 static int cno_frame_write_goaway(struct cno_connection_t *conn, uint32_t /* enum CNO_RST_STREAM_CODE */ code)
 {
     uint32_t last = conn->last_stream[CNO_REMOTE];
-    struct cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, 0, { PACK(I32(last), I32(code)) } };
+    struct cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, { PACK(I32(last), I32(code)) } };
     return cno_frame_write(conn, NULL, &error);
 }
 
@@ -401,6 +401,29 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
 }
 
 
+/* trim padding, if any, off a frame.
+
+ * throws: PROTOCOL if the padding spec is malformed.
+ */
+static int cno_frame_handle_padding(struct cno_connection_t *conn, struct cno_frame_t *frame)
+{
+    if (frame->flags & CNO_FLAG_PADDED) {
+        if (frame->payload.size == 0)
+            return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "no padding");
+
+        size_t padding = read1((uint8_t *) frame->payload.data) + 1;
+
+        if (padding > frame->payload.size)
+            return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "more padding than data");
+
+        frame->payload.data += 1;
+        frame->payload.size -= padding;
+    }
+
+    return CNO_OK;
+}
+
+
 /* handle a HEADERS frame.
  *
  * fires:
@@ -412,6 +435,9 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
                                     struct cno_stream_t     *stream,
                                     struct cno_frame_t      *frame)
 {
+    if (cno_frame_handle_padding(conn, frame))
+        return CNO_ERROR_UP();
+
     if (stream == NULL) {
         if (conn->client)
             return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected HEADERS");
@@ -459,6 +485,9 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
                                          struct cno_stream_t     *stream,
                                          struct cno_frame_t      *frame)
 {
+    if (cno_frame_handle_padding(conn, frame))
+        return CNO_ERROR_UP();
+
     if (!conn->settings[CNO_LOCAL].enable_push || !stream || !(stream->accept & CNO_ACCEPT_PUSH))
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected PUSH_PROMISE");
 
@@ -544,11 +573,14 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
                                  struct cno_stream_t     *stream,
                                  struct cno_frame_t      *frame)
 {
-    uint32_t length = frame->payload.size + frame->padding;
+    uint32_t length = frame->payload.size;
+
+    if (cno_frame_handle_padding(conn, frame))
+        return CNO_ERROR_UP();
 
     if (length) {
         // XXX do frames sent to closed streams count against connection-wide flow control?
-        struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, 0, { PACK(I32(length)) } };
+        struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, { PACK(I32(length)) } };
 
         if (cno_frame_write(conn, NULL, &update))
             return CNO_ERROR_UP();
@@ -571,7 +603,7 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
     if (!length)
         return CNO_OK;
 
-    struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, stream->id, { PACK(I32(length)) } };
+    struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, stream->id, { PACK(I32(length)) } };
     return cno_frame_write(conn, stream, &update);
 }
 
@@ -593,7 +625,7 @@ static int cno_frame_handle_ping(struct cno_connection_t *conn,
     if (frame->flags & CNO_FLAG_ACK)
         return CNO_FIRE(conn, on_pong, frame->payload.data);
 
-    struct cno_frame_t response = { CNO_FRAME_PING, CNO_FLAG_ACK, 0, 0, frame->payload };
+    struct cno_frame_t response = { CNO_FRAME_PING, CNO_FLAG_ACK, 0, frame->payload };
     return cno_frame_write(conn, NULL, &response);
 }
 
@@ -708,7 +740,7 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
     cno_hpack_setlimit(&conn->encoder, conn->encoder.limit_upper);
     // TODO update stream flow control windows.
 
-    struct cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK, 0, 0, CNO_BUFFER_EMPTY };
+    struct cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK, 0, CNO_BUFFER_EMPTY };
     return cno_frame_write(conn, NULL, &ack);
 }
 
@@ -776,19 +808,6 @@ static int cno_frame_handle(struct cno_connection_t *conn, struct cno_frame_t *f
         if (frame->type != CNO_FRAME_CONTINUATION || frame->stream != conn->continued_stream)
             return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "expected a CONTINUATION");
 
-    if (frame->flags & CNO_FLAG_PADDED) {
-        if (frame->payload.size == 0)
-            return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "no padding");
-
-        frame->padding = read1((uint8_t *) frame->payload.data) + 1;
-
-        if (frame->padding > frame->payload.size)
-            return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "truncated frame with padding");
-
-        frame->payload.data += 1;  // padding follows the data.
-        frame->payload.size -= frame->padding;
-    }
-
     if (frame->type >= CNO_FRAME_UNKNOWN)
         return CNO_OK;
 
@@ -816,7 +835,7 @@ static int cno_settings_diff(struct cno_connection_t *conn,
         if (*ax != *bx)
             memcpy(ptr++, PACK(I16(i), I32(*bx)));
 
-    struct cno_frame_t frame = { CNO_FRAME_SETTINGS, 0, 0, 0, { (char *) payload, (ptr - payload) * 6 } };
+    struct cno_frame_t frame = { CNO_FRAME_SETTINGS, 0, 0, { (char *) payload, (ptr - payload) * 6 } };
     return cno_frame_write(conn, NULL, &frame);
 }
 
@@ -1147,7 +1166,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             if (conn->buffer.size < 9 + m)
                 return CNO_OK;
 
-            struct cno_frame_t frame = { read1(&base[3]), read1(&base[4]), 0, read4(&base[5]), { (char *) &base[9], m } };
+            struct cno_frame_t frame = { read1(&base[3]), read1(&base[4]), read4(&base[5]), { (char *) &base[9], m } };
 
             if (conn->state == CNO_CONNECTION_READY_NO_SETTINGS && frame.type != CNO_FRAME_SETTINGS)
                 return CNO_ERROR(TRANSPORT, "invalid HTTP 2 preface: no initial SETTINGS");
@@ -1258,7 +1277,7 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
         return CNO_ERROR(INVALID_STREAM, "cannot push to this stream");
 
     struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_ALIAS(CNO_BUFFER_EMPTY);
-    struct cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, 0, stream, CNO_BUFFER_EMPTY };
+    struct cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_EMPTY };
     struct cno_header_t head[2] = {
         { CNO_BUFFER_CONST(":method"), msg->method },
         { CNO_BUFFER_CONST(":path"),   msg->path   },
@@ -1374,7 +1393,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
     struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_ALIAS(CNO_BUFFER_EMPTY);
-    struct cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, 0, stream, CNO_BUFFER_EMPTY };
+    struct cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_EMPTY };
 
     if (final)
         frame.flags |= CNO_FLAG_END_STREAM;
@@ -1462,7 +1481,7 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
     if (!length && !final)
         return 0;
 
-    struct cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, 0, stream, { (char *) data, length } };
+    struct cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, stream, { (char *) data, length } };
 
     if (cno_frame_write(conn, streamobj, &frame))
         return CNO_ERROR_UP();

@@ -125,7 +125,6 @@ struct cno_frame_t
 {
     uint8_t /* enum CNO_FRAME_TYPE  */ type;
     uint8_t /* enum CNO_FRAME_FLAGS */ flags;
-    uint16_t padding;
     uint32_t stream;
     struct cno_buffer_t payload;
 };
