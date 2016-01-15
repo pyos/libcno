@@ -113,48 +113,52 @@ static PyObject *py_headers_of(const struct cno_message_t *msg)
 }
 
 
-static int py_on_stream_start(void *self, size_t stream)
-           PY_SIMPLE_CALLBACK("on_stream_start", "n", stream);
+static int py_on_stream_start(void *self, uint32_t stream)
+           PY_SIMPLE_CALLBACK("on_stream_start", "k", (unsigned long) stream);
 
 
-static int py_on_stream_end(void *self, size_t stream)
-           PY_SIMPLE_CALLBACK("on_stream_end", "n", stream);
+static int py_on_stream_end(void *self, uint32_t stream)
+           PY_SIMPLE_CALLBACK("on_stream_end", "k", (unsigned long) stream);
 
 
-static int py_on_message_start(void *self, size_t stream, const struct cno_message_t *msg)
-           PY_SIMPLE_CALLBACK("on_message_start", "nis#s#N", stream, msg->code,
+static int py_on_message_start(void *self, uint32_t stream, const struct cno_message_t *msg)
+           PY_SIMPLE_CALLBACK("on_message_start", "kis#s#N", (unsigned long) stream, msg->code,
                msg->method.data, msg->method.size, msg->path.data, msg->path.size, py_headers_of(msg));
 
 
-static int py_on_message_push(void *self, size_t stream, const struct cno_message_t *msg, size_t parent)
-           PY_SIMPLE_CALLBACK("on_message_push", "nns#s#N", stream, parent,
+static int py_on_message_push(void *self, uint32_t stream, const struct cno_message_t *msg, uint32_t parent)
+           PY_SIMPLE_CALLBACK("on_message_push", "kks#s#N",
+               (unsigned long) stream,
+               (unsigned long) parent,
                msg->method.data, msg->method.size, msg->path.data, msg->path.size, py_headers_of(msg));
 
 
-static int py_on_message_data(void *self, size_t stream, const char *data, size_t length)
-           PY_SIMPLE_CALLBACK("on_message_data", "ny#", stream, data, length);
+static int py_on_message_data(void *self, uint32_t stream, const char *data, size_t length)
+           PY_SIMPLE_CALLBACK("on_message_data", "ky#", (unsigned long) stream, data, length);
 
 
-static int py_on_message_end(void *self, size_t stream)
-           PY_SIMPLE_CALLBACK("on_message_end", "n", stream);
+static int py_on_message_end(void *self, uint32_t stream)
+           PY_SIMPLE_CALLBACK("on_message_end", "k", (unsigned long) stream);
+
+
+static int py_on_flow_increase(void *self, uint32_t stream)
+           PY_SIMPLE_CALLBACK("on_flow_increase", "k", (unsigned long) stream);
 
 
 static int py_on_frame(void *self, const struct cno_frame_t *frame)
-           PY_SIMPLE_CALLBACK("on_frame", "nnny#", frame->type, frame->flags,
-               frame->stream, frame->payload.data, frame->payload.size);
+           PY_SIMPLE_CALLBACK("on_frame", "BBky#",
+               (unsigned char) frame->type, (unsigned char) frame->flags,
+               (unsigned long) frame->stream, frame->payload.data, frame->payload.size);
 
 
 static int py_on_frame_send(void *self, const struct cno_frame_t *frame)
-           PY_SIMPLE_CALLBACK("on_frame_send", "nnny#", frame->type, frame->flags,
-               frame->stream, frame->payload.data, frame->payload.size);
+           PY_SIMPLE_CALLBACK("on_frame_send", "BBky#",
+               (unsigned char) frame->type, (unsigned char) frame->flags,
+               (unsigned long) frame->stream, frame->payload.data, frame->payload.size);
 
 
 static int py_on_pong(void *self, const char *data)
            PY_SIMPLE_CALLBACK("on_pong", "y#", data, 8);
-
-
-static int py_on_flow_increase(void *self, size_t stream)
-           PY_SIMPLE_CALLBACK("on_flow_increase", "n", stream);
 
 
 static int py_init(struct connection_obj_t *self, PyObject *args, PyObject *kwargs)
@@ -178,10 +182,10 @@ static int py_init(struct connection_obj_t *self, PyObject *args, PyObject *kwar
     self->conn.on_message_push  = &py_on_message_push;
     self->conn.on_message_data  = &py_on_message_data;
     self->conn.on_message_end   = &py_on_message_end;
+    self->conn.on_flow_increase = &py_on_flow_increase;
     self->conn.on_frame         = &py_on_frame;
     self->conn.on_frame_send    = &py_on_frame_send;
     self->conn.on_pong          = &py_on_pong;
-    self->conn.on_flow_increase = &py_on_flow_increase;
     self->force_http2 = force_http2;
     self->initialized = 1;
     return 0;
@@ -260,7 +264,7 @@ static PyObject * py_write_reset(struct connection_obj_t *self, PyObject *args)
     if (!PyArg_ParseTuple(args, "n", &stream))
         return NULL;
 
-    if (cno_write_reset(&self->conn, (size_t) stream))
+    if (cno_write_reset(&self->conn, (uint32_t) stream))
         return py_handle_error(self);
 
     Py_RETURN_NONE;
@@ -331,7 +335,7 @@ static PyObject * py_write_push(struct connection_obj_t *self, PyObject *args)
     if (encode_headers(headers, &msg))
         return NULL;
 
-    int failed = cno_write_push(&self->conn, (size_t) stream, &msg);
+    int failed = cno_write_push(&self->conn, (uint32_t) stream, &msg);
     PyMem_RawFree(msg.headers);
 
     if (failed)
@@ -355,7 +359,7 @@ static PyObject * py_write_message(struct connection_obj_t *self, PyObject *args
     if (encode_headers(headers, &msg))
         return NULL;
 
-    int failed = cno_write_message(&self->conn, (size_t) stream, &msg, eof);
+    int failed = cno_write_message(&self->conn, (uint32_t) stream, &msg, eof);
     PyMem_RawFree(msg.headers);
 
     if (failed)
