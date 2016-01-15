@@ -225,13 +225,13 @@ struct cno_connection_t
     void *cb_data;
     #define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob->cb_data, __VA_ARGS__))
     int (*on_write         )(void *, const char * /* data */, size_t /* length */);
-    int (*on_stream_start  )(void *, size_t /* stream id */);
-    int (*on_stream_end    )(void *, size_t);
-    int (*on_flow_increase )(void *, size_t);
-    int (*on_message_start )(void *, size_t, const struct cno_message_t * /* msg */);
-    int (*on_message_push  )(void *, size_t, const struct cno_message_t *, size_t /* parent stream */);
-    int (*on_message_data  )(void *, size_t, const char * /* data */, size_t /* length */);
-    int (*on_message_end   )(void *, size_t);
+    int (*on_stream_start  )(void *, uint32_t /* stream id */);
+    int (*on_stream_end    )(void *, uint32_t);
+    int (*on_flow_increase )(void *, uint32_t);
+    int (*on_message_start )(void *, uint32_t, const struct cno_message_t * /* msg */);
+    int (*on_message_push  )(void *, uint32_t, const struct cno_message_t *, uint32_t /* parent stream */);
+    int (*on_message_data  )(void *, uint32_t, const char * /* data */, size_t /* length */);
+    int (*on_message_end   )(void *, uint32_t);
     int (*on_frame         )(void *, const struct cno_frame_t *);
     int (*on_frame_send    )(void *, const struct cno_frame_t *);
     int (*on_pong          )(void *, const char * /* payload, 8 bytes */);
@@ -258,15 +258,15 @@ struct cno_connection_t
  * To cleanly shut a connection down, call cno_connection_stop.
  *
  */
-void     cno_connection_init          (struct cno_connection_t *conn, enum CNO_CONNECTION_KIND kind);
-int      cno_connection_made          (struct cno_connection_t *conn, enum CNO_HTTP_VERSION version);
-int      cno_connection_data_received (struct cno_connection_t *conn, const char *data, size_t length);
-int      cno_connection_lost          (struct cno_connection_t *conn);
-void     cno_connection_reset         (struct cno_connection_t *conn);
-int      cno_connection_stop          (struct cno_connection_t *conn);
-int      cno_connection_is_http2      (struct cno_connection_t *conn);
-void     cno_settings_copy            (struct cno_connection_t *conn,       struct cno_settings_t *);
-int      cno_settings_apply           (struct cno_connection_t *conn, const struct cno_settings_t *);
+void cno_connection_init          (struct cno_connection_t *conn, enum CNO_CONNECTION_KIND kind);
+int  cno_connection_made          (struct cno_connection_t *conn, enum CNO_HTTP_VERSION version);
+int  cno_connection_data_received (struct cno_connection_t *conn, const char *data, size_t length);
+int  cno_connection_lost          (struct cno_connection_t *conn);
+void cno_connection_reset         (struct cno_connection_t *conn);
+int  cno_connection_stop          (struct cno_connection_t *conn);
+int  cno_connection_is_http2      (struct cno_connection_t *conn);
+void cno_settings_copy            (struct cno_connection_t *conn,       struct cno_settings_t *);
+int  cno_settings_apply           (struct cno_connection_t *conn, const struct cno_settings_t *);
 
 /* (As a client) sending requests:
  *
@@ -299,10 +299,10 @@ int      cno_settings_apply           (struct cno_connection_t *conn, const stru
  * is only possible by bringing down the whole connection.
  */
 uint32_t cno_stream_next_id (struct cno_connection_t *conn);
-int      cno_write_reset    (struct cno_connection_t *conn, size_t stream);
-int      cno_write_push     (struct cno_connection_t *conn, size_t stream, const struct cno_message_t *msg);
-int      cno_write_message  (struct cno_connection_t *conn, size_t stream, const struct cno_message_t *msg, int final);
-int32_t  cno_write_data     (struct cno_connection_t *conn, size_t stream, const char *data, size_t length, int final);
+int      cno_write_reset    (struct cno_connection_t *conn, uint32_t stream);
+int      cno_write_push     (struct cno_connection_t *conn, uint32_t stream, const struct cno_message_t *msg);
+int      cno_write_message  (struct cno_connection_t *conn, uint32_t stream, const struct cno_message_t *msg, int final);
+int      cno_write_data     (struct cno_connection_t *conn, uint32_t stream, const char *data, size_t length, int final);
 
 #ifdef __cplusplus
 }  // extern "C"

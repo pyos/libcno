@@ -2,12 +2,10 @@
  * A simple async I/O web server that responds to all requests with a "hello, world".
  * Requests with more than 10 MB of data are rejected with error 400.
  *
- *   $ make obj/examples-cxx/server STRICT=1
- *   $ server
+ *   $ make obj/examples-cxx/server
+ *   $ server &
  *   [0] ready
  *   [1] ready
- *   ^Z
- *   $ bg
  *   $ nghttp http://127.0.0.1:8000/ -d - <<< 'test'
  *   Hello, World! (5 bytes)
  *

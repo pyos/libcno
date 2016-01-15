@@ -35,14 +35,14 @@ namespace cno
 
     struct stream
     {
-        size_t id;
+        uint32_t id;
         struct cno_connection_t * const connection;
         bool sent_all = false;
 
         std::string buffer;
         aio::event<int> on_drain;
 
-        stream(struct cno_connection_t *conn, size_t id) : id(id), connection(conn) {}
+        stream(struct cno_connection_t *conn, uint32_t id) : id(id), connection(conn) {}
         stream(stream const &)  = delete;
         stream(stream const &&) = delete;
         stream& operator = (stream const &)  = delete;
@@ -117,7 +117,7 @@ namespace cno
     template <typename stream_t, enum CNO_CONNECTION_KIND kind> struct protocol : aio::protocol
     {
         struct cno_connection_t conn;
-        std::unordered_map<size_t, stream_t *> streams;
+        std::unordered_map<uint32_t, stream_t *> streams;
 
         protocol(aio::transport *t) : aio::protocol(t)
         {
@@ -138,8 +138,9 @@ namespace cno
 
         virtual ~protocol()
         {
-            // TODO log errors
-            cno_connection_lost(&conn);
+            if (cno_connection_lost(&conn))
+                // TODO log errors
+                {}
             cno_connection_reset(&conn);
             for (auto &it : streams) delete it.second;
         }
@@ -159,13 +160,13 @@ namespace cno
             return CNO_OK;
         }
 
-        static int on_stream(protocol *p, size_t id)
+        static int on_stream(protocol *p, uint32_t id)
         {
             p->streams[id] = new stream_t{&p->conn, id};
             return CNO_OK;
         }
 
-        static int on_stream_end(protocol *p, size_t id)
+        static int on_stream_end(protocol *p, uint32_t id)
         {
             auto it = p->streams.find(id);
             delete it->second;
@@ -173,22 +174,22 @@ namespace cno
             return CNO_OK;
         }
 
-        static int on_message(protocol *p, size_t id, const struct cno_message_t *msg)
+        static int on_message(protocol *p, uint32_t id, const struct cno_message_t *msg)
         {
             return p->streams[id]->on_message(*(const message *) msg);
         }
 
-        static int on_message_data(protocol *p, size_t id, const char *data, size_t size)
+        static int on_message_data(protocol *p, uint32_t id, const char *data, size_t size)
         {
             return p->streams[id]->on_data({ data, size });
         }
 
-        static int on_message_end(protocol *p, size_t id)
+        static int on_message_end(protocol *p, uint32_t id)
         {
             return p->streams[id]->on_end();
         }
 
-        static int on_flow(protocol *p, size_t id)
+        static int on_flow(protocol *p, uint32_t id)
         {
             if (id)
                 return p->streams[id]->on_flow();

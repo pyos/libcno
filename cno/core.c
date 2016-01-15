@@ -1229,7 +1229,7 @@ uint32_t cno_stream_next_id(struct cno_connection_t *conn)
 }
 
 
-int cno_write_reset(struct cno_connection_t *conn, size_t stream)
+int cno_write_reset(struct cno_connection_t *conn, uint32_t stream)
 {
     if (!cno_connection_is_http2(conn))
         return CNO_ERROR(DISCONNECT, "HTTP/1.x connection rejected");
@@ -1238,7 +1238,7 @@ int cno_write_reset(struct cno_connection_t *conn, size_t stream)
 }
 
 
-int cno_write_push(struct cno_connection_t *conn, size_t stream, const struct cno_message_t *msg)
+int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct cno_message_t *msg)
 {
     if (conn->state == CNO_CONNECTION_UNDEFINED)
         return CNO_ERROR(INVALID_STATE, "connection closed");
@@ -1255,7 +1255,7 @@ int cno_write_push(struct cno_connection_t *conn, size_t stream, const struct cn
     struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
 
     if (streamobj == NULL || !(streamobj->accept & CNO_ACCEPT_WRITE_PUSH))
-        return CNO_ERROR(INVALID_STREAM, "stream %zu is not a response stream", stream);
+        return CNO_ERROR(INVALID_STREAM, "cannot push to this stream");
 
     struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_ALIAS(CNO_BUFFER_EMPTY);
     struct cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, 0, stream, CNO_BUFFER_EMPTY };
@@ -1294,14 +1294,14 @@ payload_generation_error:
 }
 
 
-int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct cno_message_t *msg, int final)
+int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const struct cno_message_t *msg, int final)
 {
     if (conn->state == CNO_CONNECTION_UNDEFINED)
         return CNO_ERROR(INVALID_STATE, "connection closed");
 
     if (!cno_connection_is_http2(conn)) {
         if (stream != 1)
-            return CNO_ERROR(INVALID_STREAM, "can only write to stream 1 in HTTP 1 mode, not %zu", stream);
+            return CNO_ERROR(INVALID_STREAM, "can only write to stream 1 in HTTP 1 mode");
 
         char buffer[CNO_MAX_HTTP1_HEADER_SIZE + 3];
         int size;
@@ -1360,7 +1360,7 @@ int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct
 
     if (streamobj == NULL) {
         if (!conn->client)
-            return CNO_ERROR(INVALID_STREAM, "responding to invalid stream %zu", stream);
+            return CNO_ERROR(INVALID_STREAM, "cannot respond to an idle stream");
 
         streamobj = cno_stream_new(conn, stream, CNO_LOCAL);
 
@@ -1371,7 +1371,7 @@ int cno_write_message(struct cno_connection_t *conn, size_t stream, const struct
     }
 
     if (!(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
-        return CNO_ERROR(INVALID_STREAM, "stream %zu not writable", stream);
+        return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
     struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_ALIAS(CNO_BUFFER_EMPTY);
     struct cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, 0, stream, CNO_BUFFER_EMPTY };
@@ -1423,14 +1423,14 @@ payload_generation_error:
 }
 
 
-int32_t cno_write_data(struct cno_connection_t *conn, size_t stream, const char *data, size_t length, int final)
+int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *data, size_t length, int final)
 {
     if (conn->state == CNO_CONNECTION_UNDEFINED)
         return CNO_ERROR(INVALID_STATE, "connection closed");
 
     if (!cno_connection_is_http2(conn)) {
         if (stream != 1)
-            return CNO_ERROR(INVALID_STREAM, "can only write to stream 1 in HTTP 1 mode, not %zu", stream);
+            return CNO_ERROR(INVALID_STREAM, "can only write to stream 1 in HTTP 1 mode");
 
         if (length && CNO_FIRE(conn, on_write, data, length))
             return CNO_ERROR_UP();
@@ -1441,10 +1441,10 @@ int32_t cno_write_data(struct cno_connection_t *conn, size_t stream, const char 
     struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
 
     if (streamobj == NULL)
-        return CNO_ERROR(INVALID_STREAM, "stream %zu does not exist", stream);
+        return CNO_ERROR(INVALID_STREAM, "stream does not exist");
 
     if (!(streamobj->accept & CNO_ACCEPT_WRITE_DATA))
-        return CNO_ERROR(INVALID_STREAM, "can't carry data over stream %zu", stream);
+        return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
     if (conn->window_send < 0 || streamobj->window_send < 0)
         return 0;
