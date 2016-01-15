@@ -4,26 +4,30 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <cno/common.h>
+#include "config.h"
+#include "common.h"
 
 
-static _Thread_local struct cno_error_t LAST_ERROR;
+#if CNO_THREADED
+    _Thread_local
+#endif
+static struct cno_error_t E;
 
 
 const struct cno_error_t * cno_error(void)
 {
-    return &LAST_ERROR;
+    return &E;
 }
 
 
 int cno_error_set(const char *file, int line, const char *func, int code, const char *fmt, ...)
 {
-    LAST_ERROR.code = code;
-    LAST_ERROR.traceback_end = &LAST_ERROR.traceback[0];
+    E.code = code;
+    E.traceback_end = &E.traceback[0];
 
     va_list vl;
     va_start(vl, fmt);
-    vsnprintf(LAST_ERROR.text, sizeof(LAST_ERROR.text), fmt, vl);
+    vsnprintf(E.text, sizeof(E.text), fmt, vl);
     va_end(vl);
 
     return cno_error_upd(file, line, func);
@@ -32,8 +36,8 @@ int cno_error_set(const char *file, int line, const char *func, int code, const 
 
 int cno_error_upd(const char *file, int line, const char *func)
 {
-    if (LAST_ERROR.traceback_end != &LAST_ERROR.traceback[CNO_ERROR_TRACEBACK])
-        *LAST_ERROR.traceback_end++ = (struct cno_traceback_t) { file, func, line };
+    if (E.traceback_end != &E.traceback[sizeof(E.traceback) / sizeof(*E.traceback)])
+        *E.traceback_end++ = (struct cno_traceback_t) { file, func, line };
 
     return -1;
 }

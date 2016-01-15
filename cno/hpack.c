@@ -1,13 +1,12 @@
+#include <stddef.h>
 #include <stdint.h>
-
-#include <stddef.h>  // for common.h
 #include <stdlib.h>
 #include <string.h>
 
-#include <cno/common.h>  // for hpack.h
-
-#include <cno/hpack.h>
-#include <cno/hpack-data.h>
+#include "config.h"
+#include "common.h"
+#include "hpack.h"
+#include "hpack-data.h"
 
 
 void cno_hpack_init(struct cno_hpack_t *state, uint32_t limit)
@@ -48,8 +47,8 @@ static struct cno_buffer_t cno_header_table_v(const struct cno_header_table_t *t
  * sensitive information should not be indexed to avoid attacks like CRIME. */
 static int cno_header_is_indexed(const struct cno_header_t *h)
 {
-    return !cno_buffer_eq(h->name, CNO_BUFFER_CONST("cookie"))
-        && !cno_buffer_eq(h->name, CNO_BUFFER_CONST("set-cookie"));
+    return !cno_buffer_eq(h->name, CNO_BUFFER_STRING("cookie"))
+        && !cno_buffer_eq(h->name, CNO_BUFFER_STRING("set-cookie"));
 }
 
 

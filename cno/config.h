@@ -1,8 +1,7 @@
-#ifndef CNO_ERROR_TRACEBACKS
-/* Max. depth of a stack trace to store on a cno_error_t should an error occur.
- * Controls thread-local storage space consumption in `common.c`. Must be at least 1
- * to store the original location of the error. */
-#define CNO_ERROR_TRACEBACK 64
+#ifndef CNO_THREADED
+/* Whether to (attempt to) support multithreaded environments.
+ * Requires C11 _Thread_local. */
+#define CNO_THREADED 1
 #endif
 
 #ifndef CNO_BUFFER_ALLOC_INCR

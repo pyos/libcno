@@ -4,22 +4,15 @@
 #ifndef CNO_COMMON_H
 #define CNO_COMMON_H
 
-#include "config.h"
-
-
-/* ----- Error handling -----
+/* return type | ok value   | error value
+ * ------------+------------+------------
+ *         int | CNO_OK = 0 | nonzero
+ *      void * | non-NULL   | NULL
  *
- * A function that can return an error must return either an int or a pointer.
- * 0 or a non-NULL pointer means OK; -1 or a NULL pointer means there's an error.
- *
- * Call CNO_ERROR with the name of an error (there should be an appropriate CNO_ERRNO_*
- * constant) and the error message (printf-formatted) to signal a new error. CNO_ERROR
- * always returns -1. CNO_ERROR_NULL is like CNO_ERROR but returns NULL.
- *
- * Call CNO_ERROR_UP to add a line to the traceback when exiting due to an error in
- * a nested function. CNO_ERROR_UP returns -1. CNO_ERROR_UP_NULL returns NULL instead. */
-
-#define CNO_OK 0
+ * CNO_ERROR(code, printf-formatted description) sets and returns an error.
+ * CNO_ERROR_UP() adds a line to the traceback. CNO_ERROR_NULL/CNO_ERROR_UP_NULL
+ * are equivalent, but return a pointer-typed invalid value (NULL).
+ */
 #define CNO_ERROR(...)       cno_error_set(__FILE__, __LINE__, __func__, CNO_ERRNO_ ## __VA_ARGS__)
 #define CNO_ERROR_UP()       cno_error_upd(__FILE__, __LINE__, __func__)
 #define CNO_ERROR_NULL(...) (CNO_ERROR(__VA_ARGS__), NULL)
@@ -28,7 +21,7 @@
 
 enum CNO_ERRNO
 {
-    CNO_ERRNO_GENERIC         = 0,
+    CNO_OK                    = 0,
     CNO_ERRNO_ASSERTION       = 1,
     CNO_ERRNO_NO_MEMORY       = 2,
     CNO_ERRNO_NOT_IMPLEMENTED = 3,
@@ -52,9 +45,9 @@ struct cno_traceback_t
 struct cno_error_t
 {
     int  code;
-    char text[512];
+    char text[256];
     struct cno_traceback_t *traceback_end;
-    struct cno_traceback_t  traceback[CNO_ERROR_TRACEBACK];
+    struct cno_traceback_t  traceback[16];
 };
 
 
@@ -62,10 +55,8 @@ struct cno_error_t
 const struct cno_error_t * cno_error(void);
 
 
-/* Reset the error information and construct a new traceback starting at a given point.
- * Should not be called directly; use CNO_ERROR instead. */
-int cno_error_set (const char *file, int line,
-                   const char *func, int code,
+/* Overwrite the error code and replace the traceback with a single line. */
+int cno_error_set (const char *file, int line, const char *func, int code,
                    const char *fmt, ...) __attribute__ ((format(printf, 5, 6)));
 
 
@@ -85,16 +76,8 @@ struct cno_buffer_t
 };
 
 
-/* Initialize an empty static buffer. */
-#define CNO_BUFFER_EMPTY ((struct cno_buffer_t) { NULL, 0 })
-
-/* Initialize a static buffer from an array. */
-#define CNO_BUFFER_ARRAY(arr) ((struct cno_buffer_t) { (char *) arr, sizeof(arr) })
-
-/* Initialize a static buffer from a string constant. */
-#define CNO_BUFFER_CONST(str) ((struct cno_buffer_t) { (char *) str, sizeof(str) - 1 })
-
-/* Initialize a static buffer from a null-terminated string. */
+#define CNO_BUFFER_EMPTY       ((struct cno_buffer_t) { NULL, 0 })
+#define CNO_BUFFER_ARRAY(arr)  ((struct cno_buffer_t) { (char *) arr, sizeof(arr) })
 #define CNO_BUFFER_STRING(str) ((struct cno_buffer_t) { (char *) str, strlen(str) })
 
 
