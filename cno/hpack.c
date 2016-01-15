@@ -307,7 +307,7 @@ static int cno_hpack_decode_one(struct cno_hpack_t      *state,
 int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t s,
                      struct cno_header_t *rs, size_t *n)
 {
-    struct cno_buffer_dyn_t buf = CNO_BUFFER_DYN_ALIAS(s);
+    struct cno_buffer_dyn_t buf = {{s}, 0, 0};
     struct cno_header_t *ptr =  rs;
     struct cno_header_t *end = &rs[*n];
 

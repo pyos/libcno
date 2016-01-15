@@ -4,20 +4,6 @@
 #ifndef CNO_COMMON_H
 #define CNO_COMMON_H
 
-/* return type | ok value   | error value
- * ------------+------------+------------
- *         int | CNO_OK = 0 | nonzero
- *      void * | non-NULL   | NULL
- *
- * CNO_ERROR(code, printf-formatted description) sets and returns an error.
- * CNO_ERROR_UP() adds a line to the traceback. CNO_ERROR_NULL/CNO_ERROR_UP_NULL
- * are equivalent, but return a pointer-typed invalid value (NULL).
- */
-#define CNO_ERROR(...)       cno_error_set(__FILE__, __LINE__, __func__, CNO_ERRNO_ ## __VA_ARGS__)
-#define CNO_ERROR_UP()       cno_error_upd(__FILE__, __LINE__, __func__)
-#define CNO_ERROR_NULL(...) (CNO_ERROR(__VA_ARGS__), NULL)
-#define CNO_ERROR_UP_NULL() (CNO_ERROR_UP(), NULL)
-
 
 enum CNO_ERRNO
 {
@@ -51,21 +37,6 @@ struct cno_error_t
 };
 
 
-/* Return some information about the last error in the current thread. */
-const struct cno_error_t * cno_error(void);
-
-
-/* Overwrite the error code and replace the traceback with a single line. */
-int cno_error_set (const char *file, int line, const char *func, int code,
-                   const char *fmt, ...) __attribute__ ((format(printf, 5, 6)));
-
-
-/* Append a line to the traceback, if there is space left. */
-int cno_error_upd (const char *file, int line, const char *func);
-
-
-/* ----- String views ----- */
-
 struct cno_buffer_t
 {
     // depending on where this thing is used, it may hold either binary octets
@@ -76,9 +47,45 @@ struct cno_buffer_t
 };
 
 
-#define CNO_BUFFER_EMPTY       ((struct cno_buffer_t) { NULL, 0 })
-#define CNO_BUFFER_ARRAY(arr)  ((struct cno_buffer_t) { (char *) arr, sizeof(arr) })
-#define CNO_BUFFER_STRING(str) ((struct cno_buffer_t) { (char *) str, strlen(str) })
+struct cno_buffer_dyn_t
+{
+    union {
+        struct cno_buffer_t as_static;
+        struct {
+            char  *data;
+            size_t size;
+        };
+    };
+    size_t offset;
+    size_t reserve;
+};
+
+
+/* Return some information about the last error in the current thread. */
+const struct cno_error_t * cno_error(void);
+
+/* Fail with a specified error code and message. */
+int cno_error_set(const char *file, int line, const char *func, int code,
+                  const char *fmt, ...) __attribute__ ((format(printf, 5, 6)));
+
+/* Fail with the same code and message as the previous call to `cno_error_set`. */
+int cno_error_upd(const char *file, int line, const char *func);
+
+
+#define CNO_ERROR(...)       cno_error_set(__FILE__, __LINE__, __func__, CNO_ERRNO_ ## __VA_ARGS__)
+#define CNO_ERROR_UP()       cno_error_upd(__FILE__, __LINE__, __func__)
+#define CNO_ERROR_NULL(...) (CNO_ERROR(__VA_ARGS__), NULL)
+#define CNO_ERROR_UP_NULL() (CNO_ERROR_UP(), NULL)
+
+
+static const struct cno_buffer_t     CNO_BUFFER_EMPTY     = { NULL, 0 };
+static const struct cno_buffer_dyn_t CNO_BUFFER_DYN_EMPTY = {{{NULL, 0}}, 0, 0};
+
+
+static inline struct cno_buffer_t CNO_BUFFER_STRING(const char *s)
+{
+    return (struct cno_buffer_t) { (char *) s, strlen(s) };
+}
 
 
 static inline void cno_buffer_clear(struct cno_buffer_t *x)
@@ -117,34 +124,13 @@ static inline int cno_buffer_copy(struct cno_buffer_t *a, const struct cno_buffe
 }
 
 
-/* ----- Shiftable string views ----- */
-
-struct cno_buffer_dyn_t
-{
-    union {
-        struct cno_buffer_t as_static;
-        struct {
-            char  *data;
-            size_t size;
-        };
-    };
-    size_t offset;
-    size_t reserve;
-};
-
-
-/* Construct a shiftable view sharing a buffer with a static one. */
-#define CNO_BUFFER_DYN_ALIAS(buf) (struct cno_buffer_dyn_t) { {buf}, 0, 0 }
-
-
 static inline void cno_buffer_dyn_clear(struct cno_buffer_dyn_t *x)
 {
     free(x->data - x->offset);
-    *x = CNO_BUFFER_DYN_ALIAS(CNO_BUFFER_EMPTY);
+    *x = CNO_BUFFER_DYN_EMPTY;
 }
 
 
-/* Consume first few bytes of a buffer. */
 static inline void cno_buffer_dyn_shift(struct cno_buffer_dyn_t *x, size_t off)
 {
     x->data   += off;
@@ -189,9 +175,6 @@ static inline int cno_buffer_dyn_concat(struct cno_buffer_dyn_t *a, const struct
     a->reserve = new_size - a->size;
     return CNO_OK;
 }
-
-
-/* ----- Generic intrusive doubly-linked circular list ----- */
 
 
 struct cno_list_t

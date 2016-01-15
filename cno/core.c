@@ -1276,7 +1276,7 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
     if (streamobj == NULL || !(streamobj->accept & CNO_ACCEPT_WRITE_PUSH))
         return CNO_ERROR(INVALID_STREAM, "cannot push to this stream");
 
-    struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_ALIAS(CNO_BUFFER_EMPTY);
+    struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_EMPTY;
     struct cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_EMPTY };
     struct cno_header_t head[2] = {
         { CNO_BUFFER_STRING(":method"), msg->method },
@@ -1392,7 +1392,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
     if (!(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
         return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
-    struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_ALIAS(CNO_BUFFER_EMPTY);
+    struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_EMPTY;
     struct cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_EMPTY };
 
     if (final)
