@@ -1,11 +1,8 @@
 CC       ?= gcc
-CXX      ?= g++
 CFLAGS   ?= -O3
-CXXFLAGS ?= -O3
 PYTHON   ?= python3
 
 COMPILE = $(CC)  $(CFLAGS)   -std=c11   -Wall -Wextra -Werror -fPIC -I. -o
-COMPCPP = $(CXX) $(CXXFLAGS) -std=c++11 -Wall -Wextra -Werror -I. -o
 DYNLINK = $(CC) -shared -o
 ARCHIVE = ar rcs
 
@@ -26,16 +23,11 @@ _require_objects = \
 	obj/core.o
 
 
-_require_examples = \
-	obj/examples-cxx/server
-
-
 .PHONY: all clean
-.PRECIOUS: obj/%.o obj/libcno.a obj/libcno.so obj/examples/%
+.PRECIOUS: obj/%.o obj/libcno.a obj/libcno.so
 
 
 all: obj/libcno.a
-examples: $(_require_examples)
 
 picohttpparser/.git: .gitmodules
 	git submodule update --init picohttpparser
@@ -53,14 +45,6 @@ obj/picohttpparser.o: picohttpparser/.git
 obj/%.o: cno/%.c $(_require_headers)
 	@mkdir -p obj
 	$(COMPILE) $@ $< -c
-
-obj/examples/%: examples/%.c obj/libcno.a
-	@mkdir -p obj/examples
-	$(COMPILE) $@ $< -L./obj -lcno -pthread
-
-obj/examples-cxx/%: examples-cxx/%.cc obj/libcno.a
-	@mkdir -p obj/examples-cxx
-	$(COMPCPP) $@ $< -L./obj -lcno -pthread
 
 cno/hpack-data.h: cno/hpack-data.py
 	$(PYTHON) cno/hpack-data.py
