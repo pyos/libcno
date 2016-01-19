@@ -34,7 +34,7 @@ static const struct cno_settings_t CNO_SETTINGS_INITIAL  = {{{ 4096, 1, 1024, 65
  */
 static int cno_stream_is_local(struct cno_connection_t *conn, uint32_t id)
 {
-    return id % 2 == !!conn->client;
+    return id % 2 == conn->client;
 }
 
 
@@ -940,7 +940,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
         case CNO_CONNECTION_HTTP1_INIT:
             conn->state = CNO_CONNECTION_HTTP1_READY;
 
-            if (cno_stream_new(conn, 1, !!conn->client) == NULL)
+            if (cno_stream_new(conn, 1, conn->client) == NULL)
                 return CNO_ERROR_UP();
 
             break;
@@ -1276,14 +1276,21 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
     if (streamobj == NULL || !(streamobj->accept & CNO_ACCEPT_WRITE_PUSH))
         return CNO_ERROR(INVALID_STREAM, "cannot push to this stream");
 
+    uint32_t child = cno_stream_next_id(conn);
+
+    struct cno_stream_t *childobj = cno_stream_new(conn, child, CNO_LOCAL);
+
+    if (childobj == NULL)
+        return CNO_ERROR_UP();
+
+    childobj->accept = CNO_ACCEPT_WRITE_HEADERS;
+
     struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_EMPTY;
     struct cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_EMPTY };
     struct cno_header_t head[2] = {
         { CNO_BUFFER_STRING(":method"), msg->method },
         { CNO_BUFFER_STRING(":path"),   msg->path   },
     };
-
-    uint32_t child = cno_stream_next_id(conn);
 
     if (cno_buffer_dyn_concat(&payload, (struct cno_buffer_t) { PACK(I32(child)) })
     ||  cno_hpack_encode(&conn->encoder, &payload, head, 2)
@@ -1296,13 +1303,6 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
         goto payload_generation_error;
 
     cno_buffer_dyn_clear(&payload);
-
-    struct cno_stream_t *childobj = cno_stream_new(conn, child, CNO_LOCAL);
-
-    if (childobj == NULL)
-        return CNO_ERROR_UP();
-
-    childobj->accept = CNO_ACCEPT_WRITE_HEADERS;
 
     return CNO_FIRE(conn, on_message_start, child, msg)
         || CNO_FIRE(conn, on_message_end,   child);
