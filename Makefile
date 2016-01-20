@@ -2,17 +2,17 @@ CC       ?= gcc
 CFLAGS   ?= -O3
 PYTHON   ?= python3
 
-COMPILE = $(CC)  $(CFLAGS)   -std=c11   -Wall -Wextra -Werror -fPIC -I. -o
+COMPILE = $(CC) $(CFLAGS) -std=c11 -Wall -Wextra -Werror -fPIC -o
 DYNLINK = $(CC) -shared -o
 ARCHIVE = ar rcs
 
 
 _require_headers = \
+	cno/common.h     \
 	cno/config.h     \
 	cno/core.h       \
 	cno/hpack.h      \
 	cno/hpack-data.h \
-	cno/common.h     \
 	picohttpparser/picohttpparser.h
 
 

@@ -20,13 +20,29 @@ void cno_hpack_init(struct cno_hpack_t *state, uint32_t limit)
 }
 
 
+static void cno_hpack_evict(struct cno_hpack_t *state, uint32_t limit)
+{
+    while (state->size > limit) {
+        struct cno_header_table_t *entry = state->last;
+        state->size -= entry->k_size + entry->v_size + 32;
+        cno_list_remove(entry);
+        free(entry);
+    }
+}
+
+
+void cno_hpack_clear(struct cno_hpack_t *state)
+{
+    cno_hpack_evict(state, 0);
+}
+
+
 void cno_hpack_setlimit(struct cno_hpack_t *state, uint32_t limit)
 {
     if (state->limit_update_min > limit)
-        state->limit_update_min = limit;
+        cno_hpack_evict(state, state->limit_update_min = limit);
 
-    // the update will be applied (and encoded for the other side) the next time
-    // we send a header block.
+    // the update will be encoded the next time we send a header block.
     state->limit_update_end = limit;
 }
 
@@ -48,24 +64,8 @@ static struct cno_buffer_t cno_header_table_v(const struct cno_header_table_t *t
 static int cno_header_is_indexed(const struct cno_header_t *h)
 {
     return !cno_buffer_eq(h->name, CNO_BUFFER_STRING("cookie"))
-        && !cno_buffer_eq(h->name, CNO_BUFFER_STRING("set-cookie"));
-}
-
-
-static void cno_hpack_evict(struct cno_hpack_t *state, uint32_t limit)
-{
-    while (state->size > limit) {
-        struct cno_header_table_t *entry = state->last;
-        state->size -= entry->k_size + entry->v_size + 32;
-        cno_list_remove(entry);
-        free(entry);
-    }
-}
-
-
-void cno_hpack_clear(struct cno_hpack_t *state)
-{
-    cno_hpack_evict(state, 0);
+        && !cno_buffer_eq(h->name, CNO_BUFFER_STRING("set-cookie"))
+        && !(h->flags & CNO_HEADER_NOT_INDEXED);
 }
 
 
@@ -117,6 +117,7 @@ static int cno_hpack_lookup(struct cno_hpack_t *state, size_t index, struct cno_
 
     out->name  = cno_header_table_k(hdr);
     out->value = cno_header_table_v(hdr);
+    out->flags = 0;
     return CNO_OK;
 }
 
@@ -169,7 +170,7 @@ static int cno_hpack_decode_uint(struct cno_buffer_dyn_t *source, uint8_t mask, 
 }
 
 
-static int cno_hpack_decode_string(struct cno_buffer_dyn_t *source, struct cno_buffer_t *out)
+static int cno_hpack_decode_string(struct cno_buffer_dyn_t *source, struct cno_buffer_t *out, int *borrow)
 {
     if (!source->size)
         return CNO_ERROR(COMPRESSION, "expected string, got EOF");
@@ -213,9 +214,11 @@ static int cno_hpack_decode_string(struct cno_buffer_dyn_t *source, struct cno_b
 
         out->data = (char *) buf;
         out->size = ptr - buf;
-    } else
-        if (cno_buffer_copy(out, (struct cno_buffer_t) { source->data, length }))
-            return CNO_ERROR_UP();
+    } else {
+        out->data = source->data;
+        out->size = length;
+        *borrow = 1;
+    }
 
     cno_buffer_dyn_shift(source, length);
     return CNO_OK;
@@ -224,78 +227,63 @@ static int cno_hpack_decode_string(struct cno_buffer_dyn_t *source, struct cno_b
 
 static int cno_hpack_decode_one(struct cno_hpack_t      *state,
                                 struct cno_buffer_dyn_t *source,
-                                struct cno_header_t     *target, int first)
+                                struct cno_header_t     *target)
 {
+    *target = CNO_HEADER_EMPTY;
+
     if (!source->size)
         return CNO_ERROR(COMPRESSION, "expected header, got EOF");
 
-    struct cno_header_t header = { CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY };
-    uint8_t head = *source->data;
-    uint8_t mask = 0;
-    size_t index;
+    size_t index = 0;
+    size_t flags = 0;
 
-    if (head & 0x80 /* indexed header field */) {
-        if (cno_hpack_decode_uint(source, 0x7F, &index))
+    if (*source->data & 0x80) {
+        // 1....... -- name & value taken from the table
+        return cno_hpack_decode_uint(source, 0x7F, &index)
+            || cno_hpack_lookup(state, index, target);
+    } else if ((*source->data & 0xC0) == 0x40) {
+        // 01...... -- name taken from the table, value included as a literal
+        if (cno_hpack_decode_uint(source, 0x3F, &index))
             return CNO_ERROR_UP();
+    } else if ((*source->data & 0xE0) == 0x20) {
+        // 001..... -- table size limit update; see cno_hpack_decode
+        return CNO_ERROR(COMPRESSION, "unexpected table size limit update");
+    } else {
+        // 0000.... -- same as 0x40, but we shouldn't insert this header into the table.
+        // 0001.... -- same as 0x00, but proxies must not encode differently.
+        flags = CNO_HEADER_NOT_INDEXED;
 
-        if (cno_hpack_lookup(state, index, &header))
+        if (cno_hpack_decode_uint(source, 0x0F, &index))
             return CNO_ERROR_UP();
-
-        if (cno_buffer_copy(&target->name, header.name))
-            return CNO_ERROR_UP();
-
-        if (cno_buffer_copy(&target->value, header.value)) {
-            cno_buffer_clear(&target->name);
-            return CNO_ERROR_UP();
-        }
-
-        return CNO_OK;
     }
 
-    else if (head & 0x40 /* literal with incremental indexing */)
-        mask = 0x30;
+    if (index == 0) {
+        int borrow = 0;
 
-    else if (head & 0x20 /* dynamic table size update */) {
-        if (!first)
-            return CNO_ERROR(COMPRESSION, "table size update should be the first item");
-
-        if (cno_hpack_decode_uint(source, 0x1F, &index))
+        if (cno_hpack_decode_string(source, &target->name, &borrow))
             return CNO_ERROR_UP();
 
-        if (index > state->limit_upper)
-            return CNO_ERROR(COMPRESSION, "requested table size is too big");
-
-        cno_hpack_evict(state, state->limit = index);
-        target->name  = CNO_BUFFER_EMPTY;
-        target->value = CNO_BUFFER_EMPTY;
-        return CNO_OK;
+        if (!borrow)
+            flags |= CNO_HEADER_OWNS_NAME;
+    } else {
+        if (cno_hpack_lookup(state, index, target))
+            return CNO_ERROR_UP();
     }
 
-    // both other options decoded the same way.
-    // head & 0x10 -- literal never indexed
-    // otherwise   -- literal without indexing
+    target->flags = flags;
+    int borrow = 0;
 
-    if (cno_hpack_decode_uint(source, 0x0F | mask, &index))
-        return CNO_ERROR_UP();
-
-    if (index) {
-        if (cno_hpack_lookup(state, index, &header))
-            return CNO_ERROR_UP();
-        if (cno_buffer_copy(&target->name, header.name))
-            return CNO_ERROR_UP();
-    } else
-        if (cno_hpack_decode_string(source, &target->name))
-            return CNO_ERROR_UP();
-
-    if (cno_hpack_decode_string(source, &target->value)) {
-        cno_buffer_clear(&target->name);
+    if (cno_hpack_decode_string(source, &target->value, &borrow)) {
+        cno_hpack_free_header(target);
         return CNO_ERROR_UP();
     }
 
-    if (mask) {  // the header should be added to the index table
+    if (!borrow)
+        target->flags |= CNO_HEADER_OWNS_VALUE;
+
+    if (!(flags & CNO_HEADER_NOT_INDEXED)) {
         if (cno_hpack_index(state, target)) {
-            cno_buffer_clear(&target->name);
-            cno_buffer_clear(&target->value);
+            cno_hpack_free_header(target);
             return CNO_ERROR_UP();
         }
     }
@@ -311,22 +299,30 @@ int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t s,
     struct cno_header_t *ptr =  rs;
     struct cno_header_t *end = &rs[*n];
 
-    while (ptr != end && buf.size) {
-        if (cno_hpack_decode_one(state, &buf, ptr, ptr == rs)) {
-            while (ptr-- != rs) {
-                cno_buffer_clear(&ptr->name);
-                cno_buffer_clear(&ptr->value);
-            }
+    while (buf.size && (*buf.data & 0xE0) == 0x20) {
+        // 001..... -- a new size limit for the table
+        size_t limit = 0;
+
+        if (cno_hpack_decode_uint(&buf, 0x1F, &limit))
+            return CNO_ERROR_UP();
+
+        if (limit > state->limit_upper)
+            return CNO_ERROR(COMPRESSION, "requested table size is too big");
+
+        cno_hpack_evict(state, state->limit = limit);
+    }
+
+    for (; buf.size; ptr++) {
+        if (ptr == end)
+            return CNO_ERROR(COMPRESSION, "header list too long");
+
+        if (cno_hpack_decode_one(state, &buf, ptr)) {
+            while (ptr != rs)
+                cno_hpack_free_header(--ptr);
 
             return CNO_ERROR_UP();
         }
-
-        // empty headers are actually table size change events.
-        if (ptr->name.data != NULL || ptr->value.data != NULL) ++ptr;
     }
-
-    if (buf.size)
-        return CNO_ERROR(COMPRESSION, "header list too long");
 
     *n = ptr - rs;
     return CNO_OK;
@@ -399,13 +395,6 @@ huffman_inefficient:
 }
 
 
-static int cno_hpack_encode_size_update(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf, uint32_t size)
-{
-    cno_hpack_evict(state, size);
-    return cno_hpack_encode_uint(buf, 0x20, 0x1F, state->limit = size);
-}
-
-
 static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf, const struct cno_header_t *h)
 {
     int index = cno_hpack_index_of(state, h);
@@ -433,21 +422,21 @@ static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_dyn
 int cno_hpack_encode(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf,
                const struct cno_header_t *headers, size_t n)
 {
-    // if the size limit was updated, we should encode two values:
-    // the minimum value and the end value. the former may force the other side
-    // to evict more entries from the table than the latter.
+    // force the other side to evict the same number of entries first
     if (state->limit != state->limit_update_min)
-        if (cno_hpack_encode_size_update(state, buf, state->limit_update_min))
+        if (cno_hpack_encode_uint(buf, 0x20, 0x1F, state->limit_update_min))
             return CNO_ERROR_UP();
 
+    // only then set the limit to its actual value
     if (state->limit != state->limit_update_end)
-        if (cno_hpack_encode_size_update(state, buf, state->limit_update_end))
+        if (cno_hpack_encode_uint(buf, 0x20, 0x1F, state->limit_update_end))
             return CNO_ERROR_UP();
+
+    state->limit_update_min = state->limit = state->limit_update_end;
 
     while (n--)
         if (cno_hpack_encode_one(state, buf, headers++))
             return CNO_ERROR_UP();
 
-    state->limit_update_min = state->limit;
     return CNO_OK;
 }

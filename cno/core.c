@@ -369,7 +369,6 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
     }
 
-    cno_buffer_dyn_clear(&conn->continued);
     conn->continued_stream  = 0;
     conn->continued_promise = 0;
 
@@ -392,11 +391,10 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
         }
     }
 
-    for (; msg.headers_len; msg.headers++, msg.headers_len--) {
-        cno_buffer_clear(&msg.headers->name);
-        cno_buffer_clear(&msg.headers->value);
-    }
+    for (; msg.headers_len; msg.headers++, msg.headers_len--)
+        cno_hpack_free_header(msg.headers);
 
+    cno_buffer_dyn_clear(&conn->continued);
     return failed;
 }
 
@@ -974,22 +972,19 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 break;
             }
 
-            // `phr_header` and `cno_header_t` have same contents.
-            struct cno_header_t headers[CNO_MAX_HEADERS];
-            struct cno_header_t *it = headers;
-            struct cno_header_t *end;
-            struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, CNO_MAX_HEADERS };
+            struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, NULL, CNO_MAX_HEADERS };
+            struct phr_header headers_phr[CNO_MAX_HEADERS];
 
             int minor;
             int ok = conn->client
               ? phr_parse_response(conn->buffer.data, conn->buffer.size, &minor, &msg.code,
                     (const char **) &msg.method.data, &msg.method.size,
-                    (struct phr_header *) headers, &msg.headers_len, 0)
+                    headers_phr, &msg.headers_len, 0)
 
               : phr_parse_request(conn->buffer.data, conn->buffer.size,
                     (const char **) &msg.method.data, &msg.method.size,
                     (const char **) &msg.path.data, &msg.path.size,
-                    &minor, (struct phr_header *) headers, &msg.headers_len, 0);
+                    &minor, headers_phr, &msg.headers_len, 0);
 
             if (ok == -2)
                 return CNO_OK;
@@ -998,9 +993,18 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             if (minor != 1)
                 return CNO_ERROR(TRANSPORT, "HTTP/1.%d not supported", minor);
 
+            struct cno_header_t headers[msg.headers_len];
+            struct cno_header_t *it = msg.headers = headers;
+
             conn->http1_remaining = 0;
 
-            for (end = it + msg.headers_len; it != end; ++it) {
+            for (size_t i = 0; i < msg.headers_len; i++, it++) {
+                *it = (struct cno_header_t) {
+                    { (char *) headers_phr[i].name,  headers_phr[i].name_len  },
+                    { (char *) headers_phr[i].value, headers_phr[i].value_len },
+                    0
+                };
+
                 {   // header names are case-insensitive
                     char * n = it->name.data;
                     size_t s = it->name.size;
@@ -1017,8 +1021,8 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                         return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: multiple upgrade headers");
 
                     struct cno_header_t upgrade_headers[] = {
-                        { CNO_BUFFER_STRING("connection"), CNO_BUFFER_STRING("upgrade") },
-                        { CNO_BUFFER_STRING("upgrade"),    CNO_BUFFER_STRING("h2c")     },
+                        { CNO_BUFFER_STRING("connection"), CNO_BUFFER_STRING("upgrade"), 0 },
+                        { CNO_BUFFER_STRING("upgrade"),    CNO_BUFFER_STRING("h2c"),     0 },
                     };
 
                     struct cno_message_t upgrade_msg = { 101, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, upgrade_headers, 2 };
@@ -1288,8 +1292,8 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
     struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_EMPTY;
     struct cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_EMPTY };
     struct cno_header_t head[2] = {
-        { CNO_BUFFER_STRING(":method"), msg->method },
-        { CNO_BUFFER_STRING(":path"),   msg->path   },
+        { CNO_BUFFER_STRING(":method"), msg->method, 0 },
+        { CNO_BUFFER_STRING(":path"),   msg->path,   0 },
     };
 
     if (cno_buffer_dyn_concat(&payload, (struct cno_buffer_t) { PACK(I32(child)) })
@@ -1400,8 +1404,8 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
     if (conn->client) {
         struct cno_header_t head[] = {
-            { CNO_BUFFER_STRING(":method"), msg->method },
-            { CNO_BUFFER_STRING(":path"),   msg->path   },
+            { CNO_BUFFER_STRING(":method"), msg->method, 0 },
+            { CNO_BUFFER_STRING(":path"),   msg->path,   0 },
         };
 
         if (cno_hpack_encode(&conn->encoder, &payload, head, 2))
@@ -1411,7 +1415,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         snprintf(code, sizeof(code), "%d", msg->code);
 
         struct cno_header_t head[] = {
-            { CNO_BUFFER_STRING(":status"), CNO_BUFFER_STRING(code) }
+            { CNO_BUFFER_STRING(":status"), CNO_BUFFER_STRING(code), 0 }
         };
 
         if (cno_hpack_encode(&conn->encoder, &payload, head, 1))

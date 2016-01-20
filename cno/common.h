@@ -88,13 +88,6 @@ static inline struct cno_buffer_t CNO_BUFFER_STRING(const char *s)
 }
 
 
-static inline void cno_buffer_clear(struct cno_buffer_t *x)
-{
-    free(x->data);
-    *x = CNO_BUFFER_EMPTY;
-}
-
-
 static inline int cno_buffer_eq(const struct cno_buffer_t a, const struct cno_buffer_t b)
 {
     return a.size == b.size && 0 == memcmp(a.data, b.data, b.size);
@@ -104,23 +97,6 @@ static inline int cno_buffer_eq(const struct cno_buffer_t a, const struct cno_bu
 static inline int cno_buffer_startswith(const struct cno_buffer_t a, const struct cno_buffer_t b)
 {
     return a.size >= b.size && 0 == memcmp(a.data, b.data, b.size);
-}
-
-
-static inline int cno_buffer_copy(struct cno_buffer_t *a, const struct cno_buffer_t b)
-{
-    *a = CNO_BUFFER_EMPTY;
-
-    if (b.size) {
-        void *m = malloc(b.size);
-
-        if (m == NULL)
-            return CNO_ERROR(NO_MEMORY, "%zu bytes", b.size);
-
-        *a = (struct cno_buffer_t) { (char *) memcpy(m, b.data, b.size), b.size };
-    }
-
-    return CNO_OK;
 }
 
 

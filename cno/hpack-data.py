@@ -209,7 +209,7 @@ with open(os.path.join(os.path.dirname(__file__), 'hpack-data.h'), 'w') as fd:
     )
     print(s.format(
         LEAF_OK, LEAF_CHAR,
-        ','.join('{{"%s",%s},{"%s",%s}}' % (k, len(k), v, len(v)) for k, v in STATIC_TABLE),
+        ','.join('{{"%s",%s},{"%s",%s},0}' % (k, len(k), v, len(v)) for k, v in STATIC_TABLE),
         ','.join('{%s,%s}'    % h for h in HUFFMAN),
         ','.join('{%s,%s,%s}' % h for h in huffman_dfa(huffman_to_tree(HUFFMAN))),
     ), file=fd)
