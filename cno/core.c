@@ -954,9 +954,6 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             if (!conn->buffer.size)
                 return CNO_OK;
 
-            // should be exactly one stream right now.
-            struct cno_stream_t *stream = cno_stream_find(conn, 1);
-
             // the http 2 client preface looks like an http 1 request, but is not.
             // picohttpparser will reject it. (note: CNO_PREFACE is null-terminated.)
             if (!conn->client && !strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size)) {
@@ -967,7 +964,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 conn->last_stream[CNO_REMOTE] = 0;
                 conn->last_stream[CNO_LOCAL]  = 0;
 
-                if (cno_stream_destroy_clean(conn, stream))
+                if (cno_stream_destroy_clean(conn, cno_stream_find(conn, 1)))
                     return CNO_ERROR_UP();
                 break;
             }
@@ -979,17 +976,23 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             int ok = conn->client
               ? phr_parse_response(conn->buffer.data, conn->buffer.size, &minor, &msg.code,
                     (const char **) &msg.method.data, &msg.method.size,
-                    headers_phr, &msg.headers_len, 0)
+                    headers_phr, &msg.headers_len, 1)
 
               : phr_parse_request(conn->buffer.data, conn->buffer.size,
                     (const char **) &msg.method.data, &msg.method.size,
                     (const char **) &msg.path.data, &msg.path.size,
-                    &minor, headers_phr, &msg.headers_len, 0);
+                    &minor, headers_phr, &msg.headers_len, 1);
 
-            if (ok == -2)
+            if (ok == -2) {
+                if (conn->buffer.size > CNO_MAX_CONTINUATIONS * conn->settings[CNO_LOCAL].max_frame_size)
+                    return CNO_ERROR(TRANSPORT, "HTTP/1.x message too big");
+
                 return CNO_OK;
+            }
+
             if (ok == -1)
                 return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message");
+
             if (minor != 1)
                 return CNO_ERROR(TRANSPORT, "HTTP/1.%d not supported", minor);
 
@@ -1027,7 +1030,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
 
                     struct cno_message_t upgrade_msg = { 101, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, upgrade_headers, 2 };
 
-                    if (cno_write_message(conn, stream->id, &upgrade_msg, 1))
+                    if (cno_write_message(conn, 1, &upgrade_msg, 1))
                         return CNO_ERROR_UP();
 
                     // if we send the preface now, we'll be able to send HTTP 2 frames
@@ -1064,6 +1067,8 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     conn->http1_remaining = (uint32_t) -1;
                 }
             }
+
+            struct cno_stream_t *stream = cno_stream_find(conn, 1);
 
             stream->accept |= CNO_ACCEPT_WRITE_HEADERS;
 
