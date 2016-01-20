@@ -20,14 +20,14 @@
 #ifndef CNO_MAX_HEADERS
 /* Max. number of entries in the header table of inbound messages. Applies to both HTTP 1
  * and HTTP 2. Does not affect outbound messages. Controls stack space usage. */
-#define CNO_MAX_HEADERS 128
+#define CNO_MAX_HEADERS 64
 #endif
 
 #ifndef CNO_MAX_CONTINUATIONS
 /* Maximum number of CONTINUATION frames that can follow HEADERS/PUSH_PROMISE.
  * We can't start processing these frames until we've concatenated them all into
  * a single buffer. Controls peak memory consumption. */
-#define CNO_MAX_CONTINUATIONS 5
+#define CNO_MAX_CONTINUATIONS 3
 #endif
 
 #ifndef CNO_STREAM_BUCKETS
