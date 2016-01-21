@@ -150,8 +150,8 @@ static int cno_hpack_decode_uint(struct cno_buffer_dyn_t *source, uint8_t mask, 
     if (!source->size)
         return CNO_ERROR(COMPRESSION, "expected uint, got EOF");
 
-    uint8_t *src = (uint8_t *) source->data;
-    uint8_t head = *out = *src++ & mask;
+    const uint8_t *src = (const uint8_t *) source->data;
+    const uint8_t head = *out = *src++ & mask;
     uint8_t size = 1;
 
     if (head == mask)
@@ -185,8 +185,8 @@ static int cno_hpack_decode_string(struct cno_buffer_dyn_t *source, struct cno_b
         return CNO_ERROR(COMPRESSION, "expected %zu octets, got %zu", length, source->size);
 
     if (length && huffman) {
-        uint8_t *src = (uint8_t *) source->data;
-        uint8_t *end = length + src;
+        const uint8_t *src = (const uint8_t *) source->data;
+        const uint8_t *end = length + src;
         // min. length of a Huffman code = 5 bits => max length after decoding = x * 8 / 5.
         uint8_t *buf = malloc(length * 2);
         uint8_t *ptr = buf;
@@ -358,8 +358,8 @@ static int cno_hpack_encode_string(struct cno_buffer_dyn_t *buf, const struct cn
     if (out == NULL)
         return CNO_ERROR(NO_MEMORY, "%zu bytes", s.size);
 
-    uint8_t *src = (uint8_t *) s.data;
-    uint8_t *end = src + s.size;
+    const uint8_t *src = (const uint8_t *) s.data;
+    const uint8_t *end = src + s.size;
 
     uint64_t bits = 0;
     uint8_t  used = 0;

@@ -42,7 +42,7 @@ struct cno_buffer_t
     // depending on where this thing is used, it may hold either binary octets
     // or human-readable data (http headers). casting the buffer to uint8_t
     // where necessary is easy, converting all string literals to uint8_t is not.
-    char  *data;
+    const char *data;
     size_t size;
 };
 
@@ -84,7 +84,7 @@ static const struct cno_buffer_dyn_t CNO_BUFFER_DYN_EMPTY = {{{NULL, 0}}, 0, 0};
 
 static inline struct cno_buffer_t CNO_BUFFER_STRING(const char *s)
 {
-    return (struct cno_buffer_t) { (char *) s, strlen(s) };
+    return (struct cno_buffer_t) { s, strlen(s) };
 }
 
 

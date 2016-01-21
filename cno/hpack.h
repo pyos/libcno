@@ -59,10 +59,10 @@ int cno_hpack_encode(struct cno_hpack_t *, struct cno_buffer_dyn_t *, const stru
 static inline void cno_hpack_free_header(struct cno_header_t *h)
 {
     if (h->flags & CNO_HEADER_OWNS_NAME)
-        free(h->name.data);
+        free((void *) h->name.data);
 
     if (h->flags & CNO_HEADER_OWNS_VALUE)
-        free(h->value.data);
+        free((void *) h->value.data);
 
     *h = CNO_HEADER_EMPTY;
 }
