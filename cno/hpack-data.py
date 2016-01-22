@@ -3,43 +3,13 @@ import textwrap
 import itertools
 
 
-LEAF_OK    = 1
-LEAF_CHAR  = 2
-TREE_LIMIT = 1 << 16  # because cno_huffman_leaf_t.tree is uint16_t
+#    1 2 . 4 . . . 8 <-- impossible
+#    ^     ^
+# slow     +14 KB worth of constants but faster
+HUFFMAN_INPUT_BITS = 4
+HUFFMAN_ACCEPT = 0x01
+HUFFMAN_APPEND = 0x02
 
-STATIC_TABLE = [
-    (":authority",          ""           ), (":method",                     "GET"          ),
-    (":method",             "POST"       ), (":path",                       "/"            ),
-    (":path",               "/index.html"), (":scheme",                     "http"         ),
-    (":scheme",             "https"      ), (":status",                     "200"          ),
-    (":status",             "204"        ), (":status",                     "206"          ),
-    (":status",             "304"        ), (":status",                     "400"          ),
-    (":status",             "404"        ), (":status",                     "500"          ),
-    ("accept-charset",      ""           ), ("accept-encoding",             "gzip, deflate"),
-    ("accept-language",     ""           ), ("accept-ranges",               ""             ),
-    ("accept",              ""           ), ("access-control-allow-origin", ""             ),
-    ("age",                 ""           ), ("allow",                       ""             ),
-    ("authorization",       ""           ), ("cache-control",               ""             ),
-    ("content-disposition", ""           ), ("content-encoding",            ""             ),
-    ("content-language",    ""           ), ("content-length",              ""             ),
-    ("content-location",    ""           ), ("content-range",               ""             ),
-    ("content-type",        ""           ), ("cookie",                      ""             ),
-    ("date",                ""           ), ("etag",                        ""             ),
-    ("expect",              ""           ), ("expires",                     ""             ),
-    ("from",                ""           ), ("host",                        ""             ),
-    ("if-match",            ""           ), ("if-modified-since",           ""             ),
-    ("if-none-match",       ""           ), ("if-range",                    ""             ),
-    ("if-unmodified-since", ""           ), ("last-modified",               ""             ),
-    ("link",                ""           ), ("location",                    ""             ),
-    ("max-forwards",        ""           ), ("proxy-authenticate",          ""             ),
-    ("proxy-authorization", ""           ), ("range",                       ""             ),
-    ("referer",             ""           ), ("refresh",                     ""             ),
-    ("retry-after",         ""           ), ("server",                      ""             ),
-    ("set-cookie",          ""           ), ("strict-transport-security",   ""             ),
-    ("transfer-encoding",   ""           ), ("user-agent",                  ""             ),
-    ("vary",                ""           ), ("via",                         ""             ),
-    ("www-authenticate",    ""           ),
-]
 
 HUFFMAN = [  # char code -> (right-aligned huffman code, bit length)
     (     0x1ff8, 13), (   0x7fffd8, 23 ), (  0xfffffe2, 28 ), (  0xfffffe3, 28 ),
@@ -109,107 +79,110 @@ HUFFMAN = [  # char code -> (right-aligned huffman code, bit length)
 ]
 
 
-def huffman_to_tree(xs, max_code_length=32):
-    def branch(xs, i):
-        if not xs or i > max_code_length:
+STATIC_TABLE = [
+    (":authority",          ""           ), (":method",                     "GET"          ),
+    (":method",             "POST"       ), (":path",                       "/"            ),
+    (":path",               "/index.html"), (":scheme",                     "http"         ),
+    (":scheme",             "https"      ), (":status",                     "200"          ),
+    (":status",             "204"        ), (":status",                     "206"          ),
+    (":status",             "304"        ), (":status",                     "400"          ),
+    (":status",             "404"        ), (":status",                     "500"          ),
+    ("accept-charset",      ""           ), ("accept-encoding",             "gzip, deflate"),
+    ("accept-language",     ""           ), ("accept-ranges",               ""             ),
+    ("accept",              ""           ), ("access-control-allow-origin", ""             ),
+    ("age",                 ""           ), ("allow",                       ""             ),
+    ("authorization",       ""           ), ("cache-control",               ""             ),
+    ("content-disposition", ""           ), ("content-encoding",            ""             ),
+    ("content-language",    ""           ), ("content-length",              ""             ),
+    ("content-location",    ""           ), ("content-range",               ""             ),
+    ("content-type",        ""           ), ("cookie",                      ""             ),
+    ("date",                ""           ), ("etag",                        ""             ),
+    ("expect",              ""           ), ("expires",                     ""             ),
+    ("from",                ""           ), ("host",                        ""             ),
+    ("if-match",            ""           ), ("if-modified-since",           ""             ),
+    ("if-none-match",       ""           ), ("if-range",                    ""             ),
+    ("if-unmodified-since", ""           ), ("last-modified",               ""             ),
+    ("link",                ""           ), ("location",                    ""             ),
+    ("max-forwards",        ""           ), ("proxy-authenticate",          ""             ),
+    ("proxy-authorization", ""           ), ("range",                       ""             ),
+    ("referer",             ""           ), ("refresh",                     ""             ),
+    ("retry-after",         ""           ), ("server",                      ""             ),
+    ("set-cookie",          ""           ), ("strict-transport-security",   ""             ),
+    ("transfer-encoding",   ""           ), ("user-agent",                  ""             ),
+    ("vary",                ""           ), ("via",                         ""             ),
+    ("www-authenticate",    ""           ),
+]
+
+
+def huffman_dfa(table, bits_per_step):
+    '''
+        Initial state:    `(0, 0, HUFFMAN_ACCEPT)`
+        Transition rule:  `state = states[state.next | N_more_bits_of_input]`
+        Accepting states: `state.flags & HUFFMAN_ACCEPT`
+        Decoded a byte:   `state.flags & HUFFMAN_APPEND`
+    '''
+    def branch(xs):
+        if not xs:
             return None
 
-        for middle, (code, length, char) in enumerate(xs):
-            if length < i:
-                # got enough bits to decode a character.
+        for char, _, msb in xs:
+            if not msb:
                 return char
-            if (code << i) & (1 << length):
-                # `middle` is the first entry with 1 at i-th most significant bit.
-                break
-        else:
-            # all valid codes have 0 as i-th bit.
-            middle = len(xs)
 
-        a = branch(xs[:middle], i + 1)
-        b = branch(xs[middle:], i + 1)
-        return None if a is b is None else (a, b)
+        return (branch([(char, code, msb >> 1) for char, code, msb in xs if not code & msb]),
+                branch([(char, code, msb >> 1) for char, code, msb in xs if     code & msb]))
 
-    return branch(sorted((c, s, i) for i, (c, s) in enumerate(xs)), 1)
+    tree = root = branch([(char, code, 1 << (ln - 1)) for char, (code, ln) in enumerate(table)])
 
-
-def flatten(tree):
-    yield tree
-    if isinstance(tree, tuple):
-        yield from flatten(tree[0])
-        yield from flatten(tree[1])
-
-
-def step(root, state, seq):
-    # feed some bits to the huffman decoder dfa. returns (decoded char, new state).
-    char = False
-    while state is not None:
-        if isinstance(state, int):
-            assert char is False, 'a single step would yield multiple characters'
-            char, state = state, root
-        else:
-            try:
-                state = state[next(seq)]
-            except StopIteration:
-                break
-    return char, state
-
-
-def huffman_dfa(root, bits_per_step=4):
-    inputs = list(itertools.product((0, 1), repeat=bits_per_step))
-    # given a huffman tree (essentially a dfa that consumes bits), construct a dfa
-    # that takes multiple bits at a time as input. to run the dfa, start from state 0.
-    # take the current state, bitwise-or with the input, then use the result as an index
-    # into the array. this will yield a (flags, char, next state) tuple.
-    # states marked with LEAF_OK are the accepting states. ones with LEAF_CHAR
-    # have decoded a character which must be appended to the output.
-    switch = {(state, inp): step(root, state, iter(inp)) for state in flatten(root) for inp in inputs}
-    # a complete encoded sequence must decode to some characters and optionally
-    # be padded with 1-s until the nearest octet boundary. thus the states reachable
-    # from the 0-th state by following 1-branches are exactly the accepting ones.
-    tree = root
-    accept = set()
+    accept = []
     for _ in range(8):  # "padded to nearest octet boundary" => 0-7 ones.
-        accept.add(tree)
-        if isinstance(tree, tuple):
-            tree = tree[1]
-    assert None not in accept, 'an invalid state is also accepting'
+        assert isinstance(tree, tuple), 'padding would emit a character or throw an error'
+        accept.append(tree)
+        tree = tree[1]
 
-    reachable = [root]
-    for state in reachable:
-        for inp in inputs:
-            _, next_state = switch[state, inp]
-            if next_state not in reachable:
-                reachable.append(next_state)
-    assert len(reachable) <= (TREE_LIMIT >> bits_per_step), "you're gonna need a bigger int"
-    print(len(reachable), 'states')
+    states = [root]
+    for state in states:
+        for bits in itertools.product((0, 1), repeat=bits_per_step):
+            char, next = None, state
 
-    for state in reachable:
-        for inp in inputs:
-            char, next_state = switch[state, inp]
-            flags  = LEAF_OK   if next_state in accept else 0
-            flags |= LEAF_CHAR if char is not False    else 0
-            yield (flags, int(char), reachable.index(next_state) << bits_per_step)
+            for bit in bits:
+                if next is None:
+                    break
+
+                next = next[bit]
+                if isinstance(next, int):
+                    assert char is None, 'a single step would yield multiple characters'
+                    char, next = next, root
+
+            if next not in states:
+                states.append(next)
+
+            yield (states.index(next) << bits_per_step, char or 0,
+                HUFFMAN_ACCEPT * (next in accept) |
+                HUFFMAN_APPEND * (char is not None))
 
 
 with open(os.path.join(os.path.dirname(__file__), 'hpack-data.h'), 'w') as fd:
-    s = textwrap.dedent(
-    '''
-    // make cno/hpack-data.h
-    struct cno_huffman_item_t {{ uint32_t code; uint8_t bits; }};
-    struct cno_huffman_leaf_t {{ uint8_t  type; uint8_t data; uint16_t tree; }};
+    fd.write(
+        textwrap.dedent('''
+        // make cno/hpack-data.h
+        struct cno_huffman_item_t {{ uint32_t code; uint8_t bits; }};
+        struct cno_huffman_leaf_t {{ uint16_t next; uint8_t byte; uint8_t flags; }};
 
-    static const uint8_t CNO_HUFFMAN_LEAF_OK    = {};
-    static const uint8_t CNO_HUFFMAN_LEAF_CHAR  = {};
+        enum {{
+            CNO_HPACK_STATIC_TABLE_SIZE = {},
+            CNO_HUFFMAN_ACCEPT = {},
+            CNO_HUFFMAN_APPEND = {},
+            CNO_HUFFMAN_INPUT_BITS = {},
+        }};
 
-    static const struct cno_header_t CNO_HPACK_STATIC_TABLE[]  = {{ {} }};
-    static const struct cno_huffman_item_t CNO_HUFFMAN_TABLE[] = {{ {} }};
-    static const struct cno_huffman_leaf_t CNO_HUFFMAN_TREES[] = {{ {} }};
-    static const size_t CNO_HPACK_STATIC_TABLE_SIZE = sizeof(CNO_HPACK_STATIC_TABLE) / sizeof(struct cno_header_t);
-    '''
+        static const struct cno_header_t CNO_HPACK_STATIC_TABLE[]  = {{ {} }};
+        static const struct cno_huffman_item_t CNO_HUFFMAN_TABLE[] = {{ {} }};
+        static const struct cno_huffman_leaf_t CNO_HUFFMAN_TREES[] = {{ {} }};
+        ''').format(
+            len(STATIC_TABLE), HUFFMAN_ACCEPT, HUFFMAN_APPEND, HUFFMAN_INPUT_BITS,
+            ','.join('{{"%s",%s},{"%s",%s},0}' % (k, len(k), v, len(v)) for k, v in STATIC_TABLE),
+            ','.join('{%s,%s}'    % h for h in HUFFMAN),
+            ','.join('{%s,%s,%s}' % h for h in huffman_dfa(HUFFMAN, HUFFMAN_INPUT_BITS)),
+        )
     )
-    print(s.format(
-        LEAF_OK, LEAF_CHAR,
-        ','.join('{{"%s",%s},{"%s",%s},0}' % (k, len(k), v, len(v)) for k, v in STATIC_TABLE),
-        ','.join('{%s,%s}'    % h for h in HUFFMAN),
-        ','.join('{%s,%s,%s}' % h for h in huffman_dfa(huffman_to_tree(HUFFMAN))),
-    ), file=fd)

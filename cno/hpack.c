@@ -184,20 +184,20 @@ static int cno_hpack_decode_string(struct cno_buffer_dyn_t *source, struct cno_b
         if (!buf)
             return CNO_ERROR(NO_MEMORY, "%zu bytes", length * 2);
 
-        struct cno_huffman_leaf_t state = { CNO_HUFFMAN_LEAF_OK, 0, 0 };
+        struct cno_huffman_leaf_t state = { 0, 0, CNO_HUFFMAN_ACCEPT };
 
-        for (; src != end; src++) {
-            uint8_t chr = *src;
+        do {
+            uint8_t chr = *src++;
 
-            int i; for (i = 0; i < 2; i++, chr <<= 4) {
-                state = CNO_HUFFMAN_TREES[state.tree | (chr >> 4)];
+            for (int i = 0; i < 8 / CNO_HUFFMAN_INPUT_BITS; i++, chr <<= CNO_HUFFMAN_INPUT_BITS) {
+                state = CNO_HUFFMAN_TREES[state.next | (chr >> (8 - CNO_HUFFMAN_INPUT_BITS))];
 
-                if (state.type & CNO_HUFFMAN_LEAF_CHAR)
-                    *ptr++ = state.data;
+                if (state.flags & CNO_HUFFMAN_APPEND)
+                    *ptr++ = state.byte;
             }
-        }
+        } while (src != end);
 
-        if (!(state.type & CNO_HUFFMAN_LEAF_OK)) {
+        if (!(state.flags & CNO_HUFFMAN_ACCEPT)) {
             free(buf);
             return CNO_ERROR(COMPRESSION, "invalid or truncated Huffman code");
         }
@@ -392,7 +392,7 @@ static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_dyn
     if (h->flags & CNO_HEADER_NOT_INDEXED) {
         // "not indexed" means not added to the dynamic table. if there's already a header
         // with the same name there, we should still use its index for compression.
-        if (cno_hpack_encode_uint(buf, 0x10, 0xF, index))
+        if (cno_hpack_encode_uint(buf, 0x10, 0xF, abs(index)))
             return CNO_ERROR_UP();
     } else {
         if (index < 0)
