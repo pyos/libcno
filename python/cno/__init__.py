@@ -1,6 +1,6 @@
 import asyncio
 
-from .raw import Connection
+from . import raw
 
 
 class Channel (asyncio.Queue):
@@ -76,7 +76,7 @@ class Response:
         self.stream.conn.write_reset(self.stream.id)
 
 
-class StreamedConnection (Connection):
+class StreamedConnection (raw.Connection):
     '''An asyncio protocol that handles HTTP 1 and 2 connections.
 
         :param client: whether to run in client mode. [default: True]

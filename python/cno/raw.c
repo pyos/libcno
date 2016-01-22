@@ -37,7 +37,10 @@ struct connection_obj_t
 static PyObject * py_handle_error(struct connection_obj_t *self)
 {
     if (self->transport) {
+        PyObject *ptype, *pvalue, *ptraceback;
+        PyErr_Fetch(&ptype, &pvalue, &ptraceback);
         PyObject *ob = PyObject_CallMethod(self->transport, "close", "");
+        PyErr_Restore(ptype, pvalue, ptraceback);
         Py_XDECREF(ob);
         Py_DECREF(self->transport);
         self->transport = NULL;
@@ -298,16 +301,20 @@ static int encode_headers(PyObject *headers, struct cno_message_t *msg)
     }
 
     while ((item = PyIter_Next(iter))) {
-        if (!PyArg_ParseTuple(item, "s#s#", &header->name.data,  &header->name.size,
-                                            &header->value.data, &header->value.size)) {
+        int sensitive = 0;
+
+        if (!PyArg_ParseTuple(item, "s#s#|p",
+                &header->name.data,  &header->name.size,
+                &header->value.data, &header->value.size, &sensitive)) {
             Py_DECREF(item);
             Py_DECREF(iter);
             PyMem_RawFree(msg->headers);
-            PyErr_Format(PyExc_ValueError, "headers must be 2-tuples of strings");
+            PyErr_Format(PyExc_ValueError, "headers must be (name, value) or (name, value, sensitive)");
             return -1;
         }
 
         Py_DECREF(item);
+        header->flags = sensitive ? CNO_HEADER_NOT_INDEXED : 0;
         ++header;
     }
 
