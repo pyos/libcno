@@ -1314,13 +1314,13 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
     if (!cno_connection_is_http2(conn) || !conn->settings[CNO_REMOTE].enable_push)
         return CNO_OK;
 
-    if (cno_stream_is_local(conn, stream))
-        return CNO_OK;  // don't push in response to our own push
-
     struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
 
-    if (streamobj == NULL || !(streamobj->accept & CNO_ACCEPT_WRITE_PUSH))
-        return CNO_ERROR(INVALID_STREAM, "cannot push to this stream");
+    if (streamobj == NULL)
+        return CNO_ERROR(INVALID_STREAM, "push to a nonexistent stream");
+
+    if (!(streamobj->accept & CNO_ACCEPT_WRITE_PUSH))
+        return CNO_OK;  // pushed requests are safe, so whether we send one doesn't matter
 
     uint32_t child = cno_stream_next_id(conn);
 
