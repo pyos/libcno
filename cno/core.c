@@ -138,10 +138,9 @@ static struct cno_stream_t * cno_stream_find(const struct cno_connection_t *conn
  */
 static int cno_stream_close(struct cno_connection_t *conn, struct cno_stream_t *stream)
 {
-    if (!(stream->accept & CNO_ACCEPT_INBOUND))
+    if (!(stream->accept &= ~CNO_ACCEPT_OUTBOUND))
         return cno_stream_destroy_clean(conn, stream);
 
-    stream->accept &= ~CNO_ACCEPT_OUTBOUND;
     return CNO_OK;
 }
 
@@ -255,74 +254,6 @@ static int cno_frame_write_goaway(struct cno_connection_t *conn, uint32_t /* enu
                                         : CNO_ERROR(TRANSPORT, __VA_ARGS__))
 
 
-static int cno_frame_parse_headers(struct cno_connection_t *conn,
-                                   struct cno_stream_t     *stream,
-                                   struct cno_message_t    *msg, int is_response)
-{
-    if (stream->accept & CNO_ACCEPT_TRAILERS)
-        // trailers contain no status/method/path
-        return CNO_OK;
-
-    const char *p;
-    const struct cno_header_t *it = msg->headers;
-    int seen_normal = 0;
-
-    for (; it != msg->headers + msg->headers_len; ++it)
-        if (!cno_buffer_startswith(it->name, CNO_BUFFER_STRING(":"))) {
-            seen_normal = 1;
-
-            // TODO reject connection-specific headers
-            for (p = it->name.data; p != it->name.data + it->name.size; p++)
-                if ('A' <= *p && *p <= 'Z')
-                    goto invalid_message;
-        }
-        else if (seen_normal)
-            goto invalid_message;
-
-        else if (!is_response && cno_buffer_eq(it->name, CNO_BUFFER_STRING(":path"))) {
-            if (msg->path.data)
-                goto invalid_message;
-
-            msg->path.data = it->value.data;
-            msg->path.size = it->value.size;
-        }
-        else if (!is_response && cno_buffer_eq(it->name, CNO_BUFFER_STRING(":method"))) {
-            if (msg->method.data)
-                goto invalid_message;
-
-            msg->method.data = it->value.data;
-            msg->method.size = it->value.size;
-        }
-        else if (!is_response && cno_buffer_eq(it->name, CNO_BUFFER_STRING(":authority")))
-            {}  // nop
-        else if (!is_response && cno_buffer_eq(it->name, CNO_BUFFER_STRING(":scheme")))
-            {}  // nop
-
-        else if (is_response && cno_buffer_eq(it->name, CNO_BUFFER_STRING(":status"))) {
-            if (msg->code)
-                goto invalid_message;
-
-            for (p = it->value.data; p != it->value.data + it->value.size; p++) {
-                if (*p < '0' || '9' < *p)
-                    goto invalid_message;
-
-                msg->code = msg->code * 10 + (*p - '0');
-            }
-        }
-        else goto invalid_message;
-
-    if (is_response ? !msg->code
-                    : !msg->path.data || !msg->method.data)
-        goto invalid_message;
-
-    return CNO_OK;
-
-invalid_message:
-    msg->code = -1;
-    return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
-}
-
-
 /* handle a frame that carries an END_STREAM flag.
  *
  * fires:
@@ -345,6 +276,120 @@ static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
 }
 
 
+/* ensure that an HTTP 2 message satisfies the rules regarding headers and their arragment;
+ * if it does, pass it on to the application layer; otherwise, reset the stream.
+ *
+ * emits: on_message_start, on_message_trail, on_push_promise, maybe on_message_end/on_stream_end
+ */
+static int cno_frame_handle_message(struct cno_connection_t *conn,
+                                    struct cno_stream_t     *stream,
+                                    struct cno_frame_t      *frame,
+                                    struct cno_message_t    *msg)
+{
+    const struct cno_header_t *it  = msg->headers;
+    const struct cno_header_t *end = msg->headers + msg->headers_len;
+
+    // >HTTP/2 uses special pseudo-header fields beginning with ':' character
+    // >(ASCII 0x3a) [to convey the target URI, ...]
+    for (; it != end && cno_buffer_startswith(it->name, CNO_BUFFER_STRING(":")); ++it) {
+        if (stream->accept & CNO_ACCEPT_TRAILERS)
+            // >Pseudo-header fields MUST NOT appear in trailers.
+            goto invalid_message;
+
+        if (conn->client && !conn->continued_promise) {
+            if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":status"))) {
+                if (msg->code)
+                    goto invalid_message;
+
+                for (const char *p = it->value.data; p != it->value.data + it->value.size; p++) {
+                    if (*p < '0' || '9' < *p)
+                        goto invalid_message;
+
+                    msg->code = msg->code * 10 + (*p - '0');
+                }
+
+                continue;
+            }
+
+            // >Endpoints MUST NOT generate pseudo-header fields
+            // >other than those defined in this document.
+            goto invalid_message;
+        }
+
+        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":path"))) {
+            if (msg->path.data)
+                goto invalid_message;
+
+            msg->path = it->value;
+            continue;
+        }
+
+
+        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":method"))) {
+            if (msg->method.data)
+                goto invalid_message;
+
+            msg->method = it->value;
+            continue;
+        }
+
+        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":authority"))) continue;
+        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":scheme"))) continue;
+        goto invalid_message;
+    }
+
+    for (; it != end; ++it) {
+        // >All pseudo-header fields MUST appear in the header block
+        // >before regular header fields.
+        if (cno_buffer_startswith(it->name, CNO_BUFFER_STRING(":")))
+            goto invalid_message;
+
+        // >However, header field names MUST be converted to lowercase
+        // >prior to their encoding in HTTP/2.
+        for (const char *p = it->name.data; p != it->name.data + it->name.size; p++)
+            if ('A' <= *p && *p <= 'Z')
+                goto invalid_message;
+
+        // TODO
+        // >HTTP/2 does not use the Connection header field to indicate
+        // >connection-specific header fields.
+    }
+
+    if (stream->accept & CNO_ACCEPT_TRAILERS) {
+        stream->accept &= ~CNO_ACCEPT_INBOUND;
+
+        if (CNO_FIRE(conn, on_message_trail, stream->id, msg))
+            return CNO_ERROR_UP();
+
+        return cno_frame_handle_end_stream(conn, stream);
+    }
+
+    if (conn->client && !conn->continued_promise ? !msg->code : !msg->path.data || !msg->method.data)
+        goto invalid_message;
+
+    if (conn->continued_promise)
+        // accept pushes even on reset streams.
+        return CNO_FIRE(conn, on_message_push, conn->continued_promise, msg, stream->id);
+
+    stream->accept &= ~CNO_ACCEPT_HEADERS;
+    stream->accept |=  CNO_ACCEPT_TRAILERS | CNO_ACCEPT_DATA;
+
+    if (stream->closed)
+        return cno_stream_destroy_clean(conn, stream);
+
+    if (CNO_FIRE(conn, on_message_start, stream->id, msg))
+        return CNO_ERROR_UP();
+
+    if (frame->flags & CNO_FLAG_END_STREAM)
+        return cno_frame_handle_end_stream(conn, stream);
+
+    return CNO_OK;
+
+invalid_message:
+    return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
+}
+
+
 /* handle a frame that carries an END_HEADERS flag.
  *
  * fires:
@@ -355,7 +400,7 @@ static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
  */
 static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
                                         struct cno_stream_t     *stream,
-                                        struct cno_frame_t      *frame, uint32_t promise)
+                                        struct cno_frame_t      *frame)
 {
     struct cno_header_t  headers[CNO_MAX_HEADERS];
     struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, CNO_MAX_HEADERS };
@@ -366,39 +411,17 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
     }
 
+    struct cno_buffer_dyn_t buf = conn->continued;
+    conn->continued = CNO_BUFFER_DYN_EMPTY;
     conn->continued_stream  = 0;
     conn->continued_promise = 0;
 
-    int failed = cno_frame_parse_headers(conn, stream, &msg, conn->client && promise == 0);
+    int failed = cno_frame_handle_message(conn, stream, frame, &msg);
 
-    if (!failed && msg.code != -1) {
-        if (promise)
-            // accept pushes even on reset streams.
-            failed = CNO_FIRE(conn, on_message_push, promise, &msg, stream->id);
-        else if (stream->accept & CNO_ACCEPT_TRAILERS) {
-            stream->accept &= ~CNO_ACCEPT_INBOUND;
+    for (struct cno_header_t *it = headers + msg.headers_len; it != headers;)
+        cno_hpack_free_header(--it);
 
-            if (CNO_FIRE(conn, on_message_trail, stream->id, &msg))
-                failed = -1;
-            else
-                failed = cno_frame_handle_end_stream(conn, stream);
-        } else {
-            stream->accept &= ~CNO_ACCEPT_HEADERS;
-            stream->accept |=  CNO_ACCEPT_TRAILERS | CNO_ACCEPT_DATA;
-
-            if (stream->closed)
-                failed = cno_stream_destroy_clean(conn, stream);
-            else if (CNO_FIRE(conn, on_message_start, stream->id, &msg))
-                failed = -1;
-            else if (frame->flags & CNO_FLAG_END_STREAM)
-                failed = cno_frame_handle_end_stream(conn, stream);
-        }
-    }
-
-    for (; msg.headers_len; msg.headers++, msg.headers_len--)
-        cno_hpack_free_header(msg.headers);
-
-    cno_buffer_dyn_clear(&conn->continued);
+    cno_buffer_dyn_clear(&buf);
     return failed;
 }
 
@@ -479,7 +502,7 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
 
     if (frame->flags & CNO_FLAG_END_HEADERS)
-        return cno_frame_handle_end_headers(conn, stream, frame, 0);
+        return cno_frame_handle_end_headers(conn, stream, frame);
 
     return CNO_OK;
 }
@@ -521,7 +544,7 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
 
     if (frame->flags & CNO_FLAG_END_HEADERS)
-        return cno_frame_handle_end_headers(conn, stream, frame, promised);
+        return cno_frame_handle_end_headers(conn, stream, frame);
 
     return CNO_OK;
 }
@@ -552,7 +575,7 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
     frame->flags |= conn->continued_flags;
 
     if (frame->flags & CNO_FLAG_END_HEADERS)
-        return cno_frame_handle_end_headers(conn, stream, frame, conn->continued_promise);
+        return cno_frame_handle_end_headers(conn, stream, frame);
 
     return CNO_OK;
 }
@@ -565,6 +588,7 @@ static int cno_frame_invalid_stream(struct cno_connection_t *conn, struct cno_fr
 {
     if (0 < frame->stream && frame->stream <= conn->last_stream[cno_stream_is_local(conn, frame->stream)])
         return CNO_OK;
+
     // definitely idle
     return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "invalid stream");
 }
