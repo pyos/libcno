@@ -49,23 +49,13 @@ void cno_hpack_setlimit(struct cno_hpack_t *state, uint32_t limit)
 
 static struct cno_buffer_t cno_header_table_k(const struct cno_header_table_t *t)
 {
-    return (struct cno_buffer_t) { (char *) &t->data[0], t->k_size };
+    return (struct cno_buffer_t) { &t->data[0], t->k_size };
 }
 
 
 static struct cno_buffer_t cno_header_table_v(const struct cno_header_table_t *t)
 {
-    return (struct cno_buffer_t) { (char *) &t->data[t->k_size], t->v_size };
-}
-
-
-/* Determine whether a header should be indexed. Certain headers containing
- * sensitive information should not be indexed to avoid attacks like CRIME. */
-static int cno_header_is_indexed(const struct cno_header_t *h)
-{
-    return !cno_buffer_eq(h->name, CNO_BUFFER_STRING("cookie"))
-        && !cno_buffer_eq(h->name, CNO_BUFFER_STRING("set-cookie"))
-        && !(h->flags & CNO_HEADER_NOT_INDEXED);
+    return (struct cno_buffer_t) { &t->data[t->k_size], t->v_size };
 }
 
 
@@ -399,17 +389,18 @@ static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_dyn
 {
     int index = cno_hpack_index_of(state, h);
 
-    if (cno_header_is_indexed(h)) {
+    if (h->flags & CNO_HEADER_NOT_INDEXED) {
+        // "not indexed" means not added to the dynamic table. if there's already a header
+        // with the same name there, we should still use its index for compression.
+        if (cno_hpack_encode_uint(buf, 0x10, 0xF, index))
+            return CNO_ERROR_UP();
+    } else {
         if (index < 0)
             return cno_hpack_encode_uint(buf, 0x80, 0x7F, -index);
 
         if (cno_hpack_encode_uint(buf, 0x40, 0x3F, index) || cno_hpack_index(state, h))
             return CNO_ERROR_UP();
-    } else
-        // "not indexed" means not added to the dynamic table. if there's already a header
-        // with the same name there, we should still use its index for compression.
-        if (cno_hpack_encode_uint(buf, 0x10, 0xF, index))
-            return CNO_ERROR_UP();
+    }
 
     if (!index)
         if (cno_hpack_encode_string(buf, h->name))
