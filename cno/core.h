@@ -57,7 +57,8 @@ enum CNO_STREAM_ACCEPT
     CNO_ACCEPT_HEADERS       = 0x01,
     CNO_ACCEPT_DATA          = 0x02,
     CNO_ACCEPT_PUSH          = 0x04,
-    CNO_ACCEPT_INBOUND       = 0x07,
+    CNO_ACCEPT_TRAILERS      = 0x08,
+    CNO_ACCEPT_INBOUND       = 0x0F,
     CNO_ACCEPT_WRITE_PUSH    = 0x20,
     CNO_ACCEPT_WRITE_HEADERS = 0x40,
     CNO_ACCEPT_WRITE_DATA    = 0x80,
@@ -172,6 +173,7 @@ struct cno_connection_t
 {
     uint8_t /* enum CNO_PEER_KIND        */ client;
     uint8_t /* enum CNO_CONNECTION_STATE */ state;
+    uint8_t /* unused */ flags;
     uint8_t  continued_flags;  // OR the flags of the next CONTINUATION with this.
     uint32_t continued_stream;  // if nonzero, expect a CONTINUATION on that stream.
     uint32_t continued_promise;  // if prev. frame was a PUSH_PROMISE, this is the stream it created.
@@ -229,6 +231,7 @@ struct cno_connection_t
     int (*on_stream_end    )(void *, uint32_t);
     int (*on_flow_increase )(void *, uint32_t);
     int (*on_message_start )(void *, uint32_t, const struct cno_message_t * /* msg */);
+    int (*on_message_trail )(void *, uint32_t, const struct cno_message_t * /* msg */);
     int (*on_message_push  )(void *, uint32_t, const struct cno_message_t *, uint32_t /* parent stream */);
     int (*on_message_data  )(void *, uint32_t, const char * /* data */, size_t /* length */);
     int (*on_message_end   )(void *, uint32_t);

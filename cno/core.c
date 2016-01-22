@@ -259,6 +259,10 @@ static int cno_frame_parse_headers(struct cno_connection_t *conn,
                                    struct cno_stream_t     *stream,
                                    struct cno_message_t    *msg, int is_response)
 {
+    if (stream->accept & CNO_ACCEPT_TRAILERS)
+        // trailers contain no status/method/path
+        return CNO_OK;
+
     const char *p;
     const struct cno_header_t *it = msg->headers;
     int seen_normal = 0;
@@ -371,9 +375,16 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
         if (promise)
             // accept pushes even on reset streams.
             failed = CNO_FIRE(conn, on_message_push, promise, &msg, stream->id);
-        else {
+        else if (stream->accept & CNO_ACCEPT_TRAILERS) {
+            stream->accept &= ~CNO_ACCEPT_INBOUND;
+
+            if (CNO_FIRE(conn, on_message_trail, stream->id, &msg))
+                failed = -1;
+            else
+                failed = cno_frame_handle_end_stream(conn, stream);
+        } else {
             stream->accept &= ~CNO_ACCEPT_HEADERS;
-            stream->accept |=  CNO_ACCEPT_DATA;
+            stream->accept |=  CNO_ACCEPT_TRAILERS | CNO_ACCEPT_DATA;
 
             if (stream->closed)
                 failed = cno_stream_destroy_clean(conn, stream);
@@ -441,7 +452,13 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
         stream->accept = CNO_ACCEPT_HEADERS | CNO_ACCEPT_WRITE_HEADERS | CNO_ACCEPT_WRITE_PUSH;
     }
 
-    if (!(stream->accept & CNO_ACCEPT_HEADERS))
+    if (stream->accept & CNO_ACCEPT_TRAILERS) {
+        stream->accept &= ~CNO_ACCEPT_DATA;
+
+        if (!(frame->flags & CNO_FLAG_END_STREAM))
+            return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "trailers without END_STREAM");
+    }
+    else if (!(stream->accept & CNO_ACCEPT_HEADERS))
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected HEADERS");
 
     if (frame->flags & CNO_FLAG_PRIORITY) {
