@@ -23,7 +23,6 @@ enum CNO_ERRNO
 struct cno_traceback_t
 {
     const char * file;
-    const char * func;
     int line;
 };
 
@@ -65,15 +64,15 @@ struct cno_buffer_dyn_t
 const struct cno_error_t * cno_error(void);
 
 /* Fail with a specified error code and message. */
-int cno_error_set(const char *file, int line, const char *func, int code,
-                  const char *fmt, ...) __attribute__ ((format(printf, 5, 6)));
+int cno_error_set(const char *file, int line, int code,
+                  const char *fmt, ...) __attribute__ ((format(printf, 4, 5)));
 
 /* Fail with the same code and message as the previous call to `cno_error_set`. */
-int cno_error_upd(const char *file, int line, const char *func);
+int cno_error_upd(const char *file, int line);
 
 
-#define CNO_ERROR(...)       cno_error_set(__FILE__, __LINE__, __func__, CNO_ERRNO_ ## __VA_ARGS__)
-#define CNO_ERROR_UP()       cno_error_upd(__FILE__, __LINE__, __func__)
+#define CNO_ERROR(...)       cno_error_set(__FILE__, __LINE__, CNO_ERRNO_ ## __VA_ARGS__)
+#define CNO_ERROR_UP()       cno_error_upd(__FILE__, __LINE__)
 #define CNO_ERROR_NULL(...) (CNO_ERROR(__VA_ARGS__), NULL)
 #define CNO_ERROR_UP_NULL() (CNO_ERROR_UP(), NULL)
 
