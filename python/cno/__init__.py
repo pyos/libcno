@@ -25,11 +25,25 @@ class Channel (asyncio.Queue):
 class Request:
     def __init__(self, method: str, path: str, headers: [(str, str)], stream: object):
         super().__init__()
+        self.conn     = stream.conn
         self.stream   = stream
         self.method   = method
         self.path     = path
         self.headers  = headers
         self.payload  = Channel()
+
+    async def write_headers(self, code: int, headers: [(str, str)], final: bool):
+        '''Begin responding to this request.'''
+        self.conn.write_message(self.stream.id, code, "", "", headers, final)
+
+    async def write_data(self, data, final: bool):
+        '''Send the next (and possibly the last) chunk of data.'''
+        while data:
+            i = self.conn.write_data(self.stream.id, data, final)
+            if i:
+                data = data[i:]
+            if data:
+                await self.stream.flow
 
     async def respond(self, code: int, headers: [(str, str)], data: bytes):
         '''Send a response over the same stream.
@@ -37,21 +51,15 @@ class Request:
             Don't do this on client side. You'll get an exception.
 
         '''
-        if self.method == "HEAD":
-            data = b''
-
-        self.stream.conn.write_message(self.stream.id, code, "", "", headers, not data)
-
-        while data:
-            i = self.stream.conn.write_data(self.stream.id, data, True)
-            if i:
-                data = data[i:]
-            if data:
-                await self.stream.flow
+        if data and self.method != 'HEAD':
+            await self.write_headers(code, headers, False)
+            await self.write_data(data, True)
+        else:
+            await self.write_headers(code, headers, False)
 
     def cancel(self):
         '''Abort the stream. The handling coroutine will most likely be cancelled.'''
-        self.stream.conn.write_reset(self.stream.id)
+        self.conn.write_reset(self.stream.id)
 
     def push(self, method: str, path: str, headers: [(str, str)]):
         '''Push a request for a resource related to this request.
@@ -59,21 +67,22 @@ class Request:
             The request will be routed through as normal on a new stream.
 
         '''
-        self.stream.conn.write_push(self.stream.id, method, path, headers)
+        self.conn.write_push(self.stream.id, method, path, headers)
 
 
 class Response:
     def __init__(self, code: int, headers: [(str, str)], pushed: Channel, stream: object):
         super().__init__()
         self.code    = code
-        self.headers = headers
+        self.conn    = stream.conn
         self.stream  = stream
+        self.headers = headers
         self.pushed  = pushed
         self.payload = Channel()
 
     def cancel(self):
         '''Abort the stream. This prevents further payload from being received.'''
-        self.stream.conn.write_reset(self.stream.id)
+        self.conn.write_reset(self.stream.id)
 
 
 class StreamedConnection (raw.Connection):
