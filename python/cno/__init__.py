@@ -100,6 +100,10 @@ class StreamedConnection (raw.Connection):
         super().__init__(*args, **kwargs)
         self.streams = {}
 
+    def connection_made(self, transport):
+        super().connection_made(transport)
+        self.transport = transport
+
     def on_stream_start(self, i: int):
         self.streams[i] = self.Stream(self, i)
 
