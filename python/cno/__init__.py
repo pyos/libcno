@@ -38,6 +38,9 @@ class Request:
 
     async def write_data(self, data, final: bool):
         '''Send the next (and possibly the last) chunk of data.'''
+        if final and not data:
+            self.conn.write_data(self.stream.id, b'', final)
+
         while data:
             i = self.conn.write_data(self.stream.id, data, final)
             if i:
