@@ -1,4 +1,10 @@
+try:
+    import ssl
+except ImportError:
+    ssl = None
+
 import asyncio
+import urllib.parse
 
 from . import raw
 
@@ -96,8 +102,6 @@ class StreamedConnection (raw.Connection):
 
         NOTE:: do not use this protocol. Create instances of `Client` and `Server` instead.
 
-        TODO:: choose between HTTP 1 and 2 according to the ALPN handshake by default.
-
     '''
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -147,12 +151,22 @@ class Client (StreamedConnection):
                             Otherwise, send an `Upgrade: h2c` request in HTTP 1 mode
                             first.
 
+        :param authority: the hostname of the peer. If not provided, should be sent
+                          as an `:authority` header in all requests.
+
+        :param scheme: the scheme used to connect to the peer. If not provided, should
+                       be sent as a `:scheme` header in all requests.
+
+        TODO:: choose between HTTP 1 and 2 according to the ALPN handshake by default.
+
         TODO:: implement `Upgrade: h2c`.
 
     '''
-    def __init__(self, loop, force_http2=False):
+    def __init__(self, loop, force_http2=False, authority=None, scheme=None):
         super().__init__(force_http2=force_http2)
-        self.loop = loop
+        self.loop      = loop
+        self.authority = authority
+        self.scheme    = scheme
 
     async def request(self, method: str, path: str, headers: [(str, str)], data: bytes):
         '''Initiate an HTTP request on a new stream.
@@ -160,6 +174,12 @@ class Client (StreamedConnection):
             :return: a Response object.
 
         '''
+        headers = list(headers)
+        if self.authority is not None:
+            headers.append((':authority', self.authority))
+        if self.scheme is not None:
+            headers.append((':scheme', self.scheme))
+
         stream = self.next_stream
         self.write_message(stream, 0, method, path, headers, not data)
 
@@ -245,3 +265,40 @@ class Server (StreamedConnection):
                 self.task.cancel()
                 self.reqo = None
                 self.task = None
+
+
+async def connect(loop, url) -> Client:
+    '''Create an asyncio client connection to a given URL.
+
+        :param url: either a string or an `urlparse`d tuple.
+
+    '''
+    if isinstance(url, str):
+        url = urllib.parse.urlparse(url)
+
+    sctx = None
+    port = 80
+
+    if url.scheme == 'https':
+        if ssl is None:
+            raise NotImplementedError('SSL not supported by Python')
+
+        sctx = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
+        sctx.set_npn_protocols( ['h2', 'http/1.1'])
+        sctx.set_alpn_protocols(['h2', 'http/1.1'])
+        port = 443
+
+    proto = Client(loop, authority=url.netloc, scheme=url.scheme)
+    await loop.create_connection(lambda: proto, url.hostname, url.port or port, ssl=sctx)
+    return proto
+
+
+async def request(loop, method, url, headers=[], payload=b'') -> Response:
+    '''Send an asyncio request to a given URL.
+
+        :param url: either a string, an `urlparse`d tuple.
+
+    '''
+    if isinstance(url, str):
+        url = urllib.parse.urlparse(url)
+    return (await (await connect(loop, url)).request(method, url.path, headers, payload))
