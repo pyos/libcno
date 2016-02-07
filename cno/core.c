@@ -1410,10 +1410,10 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         }
 
         if (!had_connection_header) {
-            struct cno_buffer_t conn_header = CNO_BUFFER_STRING("connection: keep-alive\r\n");
-
-            if (CNO_FIRE(conn, on_write, conn_header.data, conn_header.size))
+            if (size && CNO_FIRE(conn, on_write, buffer, size))
                 return CNO_ERROR_UP();
+
+            size = snprintf(buffer, sizeof(buffer), "connection: keep-alive\r\n");
         }
 
         buffer[size + 0] = '\r';
