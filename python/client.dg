@@ -17,7 +17,7 @@ main = async $ url loop ->
     sctx.set_npn_protocols  ['h2', 'http/1.1']
     sctx.set_alpn_protocols ['h2', 'http/1.1']
 
-  _, client = await loop.create_connection (-> cno.Client loop force_http2: True) url.hostname port ssl: sctx
+  _, client = await loop.create_connection (-> cno.Client loop) url.hostname port ssl: sctx
   rsp = await client.request 'GET' url.path [(':scheme', url.scheme), (':authority', url.netloc)] b''
   print   '--' 'response:' rsp.code
   for (k, v) in rsp.headers =>

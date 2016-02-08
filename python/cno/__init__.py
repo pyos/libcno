@@ -108,7 +108,13 @@ class StreamedConnection (raw.Connection):
         self.streams = {}
 
     def connection_made(self, transport):
-        super().connection_made(transport)
+        sobj = transport.get_extra_info('ssl_object')
+        super().connection_made(transport,
+            sobj is not None and (
+                (ssl.HAS_ALPN and sobj.selected_alpn_protocol() == 'h2') or
+                (ssl.HAS_NPN  and sobj.selected_npn_protocol()  == 'h2')
+            )
+        )
         self.transport = transport
 
     def on_stream_start(self, i: int):
@@ -211,6 +217,8 @@ class Client (StreamedConnection):
             self.resp.set_result(self.rspo)
             self.data = self.rspo.payload.put_nowait
             self.end  = self.rspo.payload.eof
+            if not self.conn.is_http2:
+                self.rsrc.eof()
 
         def push(self, method, path, headers, stream):
             reqo = Request(method, path, headers, stream)
@@ -284,8 +292,10 @@ async def connect(loop, url) -> Client:
             raise NotImplementedError('SSL not supported by Python')
 
         sctx = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
-        sctx.set_npn_protocols( ['h2', 'http/1.1'])
-        sctx.set_alpn_protocols(['h2', 'http/1.1'])
+        if ssl.HAS_NPN:
+            sctx.set_npn_protocols( ['h2', 'http/1.1'])
+        if ssl.HAS_ALPN:
+            sctx.set_alpn_protocols(['h2', 'http/1.1'])
         port = 443
 
     proto = Client(loop, authority=url.netloc, scheme=url.scheme)

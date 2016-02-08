@@ -233,15 +233,16 @@ static PyObject * py_data_received(struct connection_obj_t *self, PyObject *args
 static PyObject * py_connection_made(struct connection_obj_t *self, PyObject *args)
 {
     PyObject *transport;
+    int is_http2 = 0;
 
-    if (!PyArg_ParseTuple(args, "O", &transport))
+    if (!PyArg_ParseTuple(args, "O|p", &transport, &is_http2))
         return NULL;
 
     Py_INCREF(transport);
     self->transport = transport;
 
     // TODO use ALPN/NPN (asyncio does not provide them through get_extra_data yet.)
-    if (cno_connection_made(&self->conn, self->force_http2 ? CNO_HTTP2 : CNO_HTTP1))
+    if (cno_connection_made(&self->conn, self->force_http2 || is_http2 ? CNO_HTTP2 : CNO_HTTP1))
         return py_handle_error(self);
 
     Py_RETURN_NONE;
