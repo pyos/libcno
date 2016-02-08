@@ -23,7 +23,7 @@ _require_objects = \
 	obj/core.o
 
 
-.PHONY: all clean
+.PHONY: all clean python-pre-build-ext
 .PRECIOUS: obj/%.o obj/libcno.a obj/libcno.so
 
 
@@ -48,6 +48,8 @@ obj/%.o: cno/%.c $(_require_headers)
 
 cno/hpack-data.h: cno/hpack-data.py
 	$(PYTHON) cno/hpack-data.py
+
+python-pre-build-ext: cno/hpack-data.h picohttpparser/.git
 
 clean:
 	rm -rf obj build
