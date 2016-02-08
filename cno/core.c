@@ -411,17 +411,15 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
     }
 
-    struct cno_buffer_dyn_t buf = conn->continued;
-    conn->continued = CNO_BUFFER_DYN_EMPTY;
-    conn->continued_stream  = 0;
-    conn->continued_promise = 0;
-
     int failed = cno_frame_handle_message(conn, stream, frame, &msg);
 
     for (struct cno_header_t *it = headers + msg.headers_len; it != headers;)
         cno_hpack_free_header(--it);
 
-    cno_buffer_dyn_clear(&buf);
+    cno_buffer_dyn_clear(&conn->continued);
+    conn->continued = CNO_BUFFER_DYN_EMPTY;
+    conn->continued_stream  = 0;
+    conn->continued_promise = 0;
     return failed;
 }
 
