@@ -202,7 +202,7 @@ struct cno_connection_t
      *        a request should arrive (or be sent) on that stream shortly.
      *   on_stream_end
      *     -- called when a stream is terminated. if the response was not
-     *        sent/received on that stream yet, this means the request was aborted.
+     *        sent/received on that stream yet, the request was aborted.
      *   on_flow_increase
      *     -- called when the other side is ready to accept some more payload.
      *        there is a global limit and one for each stream; when the global one
@@ -211,18 +211,17 @@ struct cno_connection_t
      *     -- called when a real request/response is received on a stream
      *        (depending on whether this is a server connection or not).
      *        each stream carries exactly one request-response pair.
+     *   on_message_trail
+     *     -- called before on_message_end if the message contains trailers.
      *   on_message_data
      *     -- called each time a new chunk of payload for a previously received message
      *        arrives.
      *   on_message_end
-     *     -- called after all chunks of the payload have arrived.
+     *     -- called after all chunks of the payload (and possibly the trailers) have arrived.
      *   on_message_push
      *     -- called on client side when the server wants to push some data.
-     *        the basic idea is, it sends an "imaginary" request; the client receives
-     *        it, and then everyone just sort of assumes that the client has actually
-     *        sent that request, not the server. so expect an on_message_start
-     *        on this stream shortly.
-     *
+     *        its argument is a fake request the client has been assumed to send;
+     *        a response to that request should arrive soon on the same stream.
      */
     void *cb_data;
     #define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob->cb_data, __VA_ARGS__))
@@ -243,22 +242,21 @@ struct cno_connection_t
 
 /* Lifetime of a connection:
  *
- *  1. open a socket
- *  2. allocate a connection object
- *  3. --- cno_connection_init
- *  4. set callbacks, most importantly on_write and on_message_*
- *  5. optionally:
- *       --- cno_settings_copy, then modify them
- *       --- cno_settings_apply
- *  6. --- cno_connection_made
- *  7. --- cno_connection_data_received while socket is open
- *  8. --- cno_connection_lost
- *  9. --- cno_connection_reset
- *  10. deallocate the object
- *  11. close the socket
- *
- * If any of the steps 3-8 returns an error, call cno_connection_reset and abort.
- * To cleanly shut a connection down, call cno_connection_stop.
+ *  connection = new cno_connection_t
+ *  try {
+ *      cno_connection_init(client ? CNO_CLIENT : CNO_SERVER)
+ *      connection.on_write = ...
+ *      connection.on_message_start = ...
+ *      ...
+ *      cno_connection_made(negotiated http2 ? CNO_HTTP2 : CNO_HTTP1)
+ *      while (i/o is open) {
+ *          cno_connection_data_received
+ *      }
+ *      cno_connection_lost
+ *  } finally {
+ *      cno_connection_reset
+ *      delete connection
+ *  }
  *
  */
 void cno_connection_init          (struct cno_connection_t *conn, enum CNO_CONNECTION_KIND kind);
@@ -267,39 +265,46 @@ int  cno_connection_data_received (struct cno_connection_t *conn, const char *da
 int  cno_connection_lost          (struct cno_connection_t *conn);
 void cno_connection_reset         (struct cno_connection_t *conn);
 int  cno_connection_stop          (struct cno_connection_t *conn);
+/* Returns whether the next message will be sent in HTTP 2 mode.
+ * `cno_write_push` does nothing if this returns false. On the other hand,
+ * you can't switch protocols (e.g. to websockets) if this returns true. */
 int  cno_connection_is_http2      (struct cno_connection_t *conn);
+/* cno_settings_copy loads a struct with current values, cno_settings_apply
+ * either sends updated values to the peer or schedules them to be sent
+ * when the connection enters HTTP 2 mode. */
 void cno_settings_copy            (struct cno_connection_t *conn,       struct cno_settings_t *);
 int  cno_settings_apply           (struct cno_connection_t *conn, const struct cno_settings_t *);
 
 /* (As a client) sending requests:
  *
- *  1. construct a cno_message_t with cno_header_t-s and everything
- *  2. --- cno_stream_next_id
- *  3. --- cno_write_message (with final = 1 iff the request has no payload, 0 otherwise)
- *  4. --- cno_write_data any number of times, the last should have final = 1.
+ *  headers = new cno_header_t[] { {name, value}, ... }
+ *  message = new cno_message_t { 0, method, path, headers, length(headers) }
+ *  stream  = cno_stream_next_id
+ *  cno_write_message where final = 1 if there is no payload
+ *  for (chunk in payload) {
+ *      while (length(chunk) != 0) {
+ *          sent = cno_write_data
+ *          if (sent == 0)
+ *              await on_flow_increase(0) or on_flow_increase(stream)
+ *          chunk = drop(chunk, sent)
+ *      }
+ *  }
  *
  * (As a server) sending responses:
  *
- *  1. same, except the stream is the one on which the request has arrived,
- *     so no need to call cno_stream_next_id.
+ *  Same as sending a request, but specify the status code instead of `0`, leave
+ *  method/path empty, and use the stream id provided by the on_message_{start,data,end}
+ *  events.
  *
  * (Also as a server) pushing resources:
  *
- *  1. same as sending a response, only with cno_write_push, and you're sending
- *     an "imaginary" request with no payload. this request will be dispatched
- *     through the callbacks as a normal one would. (pushing resources in response
- *     to such an imaginary request is a no-op, so don't worry about recursion.)
+ *  Same as sending a request, but use cno_write_push instead of cno_write_message
+ *  and get the stream id from an event, not from cno_stream_next_id.
  *
- * (Either side can do this) aborting a stream:
+ * (As a client again) aborting a push:
  *
- *  1. call cno_write_reset if you do not wish to receive a pushed resource,
- *     or decide against sending a request/response in between calls to cno_write_data.
+ *  Call cno_write_reset with a stream id provided by on_message_push.
  *
- * cno_write_data, if it does not error, returns the number of bytes it has sent.
- * if it returns less than the actual size, you should wait for an `on_flow_increase` event.
- *
- * cno_write_reset may return an error of type DISCONNECT if dropping the stream
- * is only possible by bringing down the whole connection.
  */
 uint32_t cno_stream_next_id (struct cno_connection_t *conn);
 int      cno_write_reset    (struct cno_connection_t *conn, uint32_t stream);

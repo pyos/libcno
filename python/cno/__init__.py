@@ -163,8 +163,6 @@ class Client (StreamedConnection):
         :param scheme: the scheme used to connect to the peer. If not provided, should
                        be sent as a `:scheme` header in all requests.
 
-        TODO:: choose between HTTP 1 and 2 according to the ALPN handshake by default.
-
         TODO:: implement `Upgrade: h2c`.
 
     '''
