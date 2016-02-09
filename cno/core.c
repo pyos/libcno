@@ -1380,6 +1380,11 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         struct cno_header_t *end = msg->headers_len + it;
         int had_connection_header = 0;
 
+        if (final)
+            conn->flags &= ~CNO_CONN_FLAG_WRITING_CHUNKED;
+        else
+            conn->flags |= CNO_CONN_FLAG_WRITING_CHUNKED;
+
         for (; it != end; ++it) {
             if (size && CNO_FIRE(conn, on_write, buffer, size))
                 return CNO_ERROR_UP();
@@ -1398,10 +1403,21 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
                 if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("connection")))
                     had_connection_header = 1;
+
+                else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length"))
+                     ||  cno_buffer_eq(it->name, CNO_BUFFER_STRING("transfer-encoding")))
+                    conn->flags &= ~CNO_CONN_FLAG_WRITING_CHUNKED;
             }
 
             if (size > CNO_MAX_HTTP1_HEADER_SIZE)
                 return CNO_ERROR(ASSERTION, "header too big\r\n");
+        }
+
+        if (conn->flags & CNO_CONN_FLAG_WRITING_CHUNKED) {
+            if (size && CNO_FIRE(conn, on_write, buffer, size))
+                return CNO_ERROR_UP();
+
+            size = snprintf(buffer, sizeof(buffer), "transfer-encoding: chunked\r\n");
         }
 
         if (!had_connection_header) {
@@ -1489,11 +1505,30 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
         return CNO_ERROR(INVALID_STATE, "connection closed");
 
     if (!cno_connection_is_http2(conn)) {
+        int chunked = conn->flags & CNO_CONN_FLAG_WRITING_CHUNKED;
+
         if (stream != 1)
             return CNO_ERROR(INVALID_STREAM, "can only write to stream 1 in HTTP 1 mode");
 
-        if (length && CNO_FIRE(conn, on_write, data, length))
-            return CNO_ERROR_UP();
+        if (length) {
+            if (chunked) {
+                char lenbuf[16];
+
+                if (CNO_FIRE(conn, on_write, lenbuf, snprintf(lenbuf, sizeof(lenbuf), "%zX\r\n", length)))
+                    return CNO_ERROR_UP();
+            }
+
+            if (CNO_FIRE(conn, on_write, data, length))
+                return CNO_ERROR_UP();
+
+            if (chunked && CNO_FIRE(conn, on_write, "\r\n", 2))
+                return CNO_ERROR_UP();
+        }
+
+        if (final && chunked) {
+            if (CNO_FIRE(conn, on_write, "0\r\n\r\n", 5))
+                return CNO_ERROR_UP();
+        }
 
         return length;
     }

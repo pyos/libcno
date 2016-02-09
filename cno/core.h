@@ -51,6 +51,12 @@ enum CNO_CONNECTION_STATE
 };
 
 
+enum CNO_CONNECTION_FLAGS
+{
+    CNO_CONN_FLAG_WRITING_CHUNKED = 0x01,  // Transfer-Encoding, that is
+};
+
+
 enum CNO_STREAM_ACCEPT
 {
     CNO_ACCEPT_NOTHING       = 0x00,
@@ -173,7 +179,7 @@ struct cno_connection_t
 {
     uint8_t /* enum CNO_PEER_KIND        */ client;
     uint8_t /* enum CNO_CONNECTION_STATE */ state;
-    uint8_t /* unused */ flags;
+    uint8_t /* enum CNO_CONNECTION_FLAGS */ flags;
     uint8_t  continued_flags;  // OR the flags of the next CONTINUATION with this.
     uint32_t continued_stream;  // if nonzero, expect a CONTINUATION on that stream.
     uint32_t continued_promise;  // if prev. frame was a PUSH_PROMISE, this is the stream it created.
