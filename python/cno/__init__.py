@@ -1,20 +1,18 @@
+import asyncio
+import urllib.parse
+
 try:
     import ssl
 except ImportError:
     ssl = None
 
-import asyncio
-import urllib.parse
-
 from . import raw
 
 
 class Channel (asyncio.Queue):
-    '''A blocking queue that allows to async-iterate over all pushed items.'''
     EOF = object()
 
-    def eof(self):
-        '''Stop the consumer loop. Further attempts to iterate will do nothing.'''
+    def close(self):
         self.put_nowait(self.EOF)
 
     async def __aiter__(self):
@@ -23,272 +21,207 @@ class Channel (asyncio.Queue):
     async def __anext__(self):
         it = await self.get()
         if it is self.EOF:
-            self.eof()
+            self.close()
             raise StopAsyncIteration
         return it
 
 
 class Request:
-    def __init__(self, method: str, path: str, headers: [(str, str)], stream: object):
-        super().__init__()
-        self.conn     = stream.conn
+    def __init__(self, conn, stream, method, path, headers, payload):
+        self.conn     = conn
         self.stream   = stream
         self.method   = method
         self.path     = path
         self.headers  = headers
-        self.payload  = Channel()
+        self.payload  = payload
 
-    async def write_headers(self, code: int, headers: [(str, str)], final: bool):
-        '''Begin responding to this request.'''
-        self.conn.write_message(self.stream.id, code, "", "", headers, final)
+    async def write_headers(self, code, headers, final):
+        # TODO if this is a pipelined HTTP/1.1 request, wait until the previous one
+        #      is responded to.
+        self.conn.write_message(self.stream, code, "", "", headers, final)
 
-    async def write_data(self, data, final: bool):
-        '''Send the next (and possibly the last) chunk of data.'''
-        if final and not data:
-            self.conn.write_data(self.stream.id, b'', final)
+    async def write_data(self, data, final):
+        await self.conn.write_data(self.stream, data, final)
 
-        while data:
-            i = self.conn.write_data(self.stream.id, data, final)
-            if i:
-                data = data[i:]
-            if data:
-                await self.stream.flow
-
-    async def respond(self, code: int, headers: [(str, str)], data: bytes):
-        '''Send a response over the same stream.
-
-            Don't do this on client side. You'll get an exception.
-
-        '''
+    async def respond(self, code, headers, data):
+        # XXX perhaps imbuing HEAD with a special meaning is a task
+        #     for a web framework instead?
         if data and self.method != 'HEAD':
             await self.write_headers(code, headers, False)
             await self.write_data(data, True)
         else:
-            await self.write_headers(code, headers, False)
+            await self.write_headers(code, headers, True)
 
-    def cancel(self):
-        '''Abort the stream. The handling coroutine will most likely be cancelled.'''
-        self.conn.write_reset(self.stream.id)
-
-    def push(self, method: str, path: str, headers: [(str, str)]):
-        '''Push a request for a resource related to this request.
-
-            The request will be routed through as normal on a new stream.
-
-        '''
-        self.conn.write_push(self.stream.id, method, path, headers)
+    def push(self, method, path, headers=[]):
+        copy = {':authority', ':scheme'} - {k for k in headers}
+        head = [(k, v) for k, v in self.headers if k in copy]
+        head.extend(headers)
+        self.conn.write_push(self.stream, method, path, head)
 
 
 class Response:
-    def __init__(self, code: int, headers: [(str, str)], pushed: Channel, stream: object):
-        super().__init__()
-        self.code    = code
-        self.conn    = stream.conn
+    def __init__(self, conn, stream, code, headers, payload, pushed):
+        self.conn    = conn
         self.stream  = stream
+        self.code    = code
         self.headers = headers
+        self.payload = payload
         self.pushed  = pushed
-        self.payload = Channel()
 
     def cancel(self):
-        '''Abort the stream. This prevents further payload from being received.'''
-        self.conn.write_reset(self.stream.id)
+        self.conn.write_reset(self.stream)
 
 
-class StreamedConnection (raw.Connection):
-    '''An asyncio protocol that handles HTTP 1 and 2 connections.
+class Push:
+    def __init__(self, conn, stream, method, path, headers, promise):
+        self.conn    = conn
+        self.stream  = stream
+        self.method  = method
+        self.path    = path
+        self.headers = headers
+        self.promise = promise
 
-        :param client: whether to run in client mode. [default: True]
-        :param force_http2: whether to use HTTP 2 always. [default: False]
+    @property
+    async def response(self):
+        return (await self.promise)
 
-        NOTE:: do not use this protocol. Create instances of `Client` and `Server` instead.
+    def cancel(self):
+        self.conn.write_reset(self.stream)
 
-    '''
-    def __init__(self, *args, **kwargs):
+
+class Connection (raw.Connection):
+    def __init__(self, loop, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.streams = {}
+        self.loop = loop
+        self.payloads = {}  # id -> StreamReader
+        self.pushreqs = {}  # id -> push channel
+        self.handles  = {}  # id -> request handler (server) or response promise (client)
+        self.flowctl  = {}  # id -> flow open promise
 
     def connection_made(self, transport):
-        sobj = transport.get_extra_info('ssl_object')
-        super().connection_made(transport,
-            sobj is not None and (
-                (ssl.HAS_ALPN and sobj.selected_alpn_protocol() == 'h2') or
-                (ssl.HAS_NPN  and sobj.selected_npn_protocol()  == 'h2')
-            )
-        )
+        socket = transport.get_extra_info('ssl_object')
+        if socket is None:
+            super().connection_made(transport)
+        else:
+            super().connection_made(transport,
+                (ssl.HAS_ALPN and socket.selected_alpn_protocol() == 'h2') or
+                (ssl.HAS_NPN  and socket.selected_npn_protocol()  == 'h2'))
         self.transport = transport
 
-    def on_stream_start(self, i: int):
-        self.streams[i] = self.Stream(self, i)
+    def on_stream_start(self, i):
+        self.payloads[i] = asyncio.StreamReader(loop=self.loop)
+        self.pushreqs[i] = Channel(loop=self.loop)
 
-    def on_stream_end(self, i: int):
-        self.streams.pop(i).abort()
+    def on_message_data(self, i, data):
+        self.payloads[i].feed_data(data)
 
-    def on_message_start(self, i: int, code: int, method: str, path: str, headers: [(str, str)]):
-        self.streams[i].message(code, method, path, headers)
+    def on_message_end(self, i):
+        self.payloads.pop(i).feed_eof()
+        self.pushreqs.pop(i).close()
+        self.on_stream_start(i)
 
-    def on_message_data(self, i: int, data: bytes):
-        self.streams[i].data(data)
+    def on_stream_end(self, i):
+        self.payloads.pop(i).feed_eof()
+        self.pushreqs.pop(i).close()
 
-    def on_message_end(self, i: int):
-        self.streams[i].end()
+        task = self.handles.pop(i, None)
+        if task:
+            task.cancel()
 
-    def on_message_push(self, i: int, parent: int, method: str, path: str, headers: [(str, str)]):
-        self.streams[parent].push(method, path, headers, self.streams[i])
+        flow = self.flowctl.pop(i, None)
+        if flow:
+            flow.cancel()
 
-    def on_flow_increase(self, i: int):
-        if i:
-            return self.streams[i].open_flow()
+    def on_flow_increase(self, i):
+        if i == 0:
+            for flow in self.flowctl.values():
+                flow.set_result(None)
+            self.flowctl.clear()
+        else:
+            flow = self.flowctl.pop(i, None)
+            if flow:
+                flow.set_result(None)
 
-        for s in self.streams.values():
-            s.open_flow()
+    async def write_data(self, i, data, final):
+        if final and not data:
+            # guaranteed to succeed
+            return super().write_data(i, data, final)
 
-    # Other events:
-    #   on_frame      (type: int, flags: int, stream: int, payload: bytes)
-    #   on_frame_send (type: int, flags: int, stream: int, payload: bytes)
+        while data:
+            sent = super().write_data(i, data, final)
+            if sent:
+                data = data[sent:]
+            else:
+                await self.flowctl.setdefault(i, asyncio.Future(loop=self.loop))
 
 
-class Client (StreamedConnection):
-    '''An asyncio protocol implementing an HTTP 2 client.
-
-        :param loop: an asyncio event loop to run on.
-
-        :param force_http2: whether to default to HTTP 2 instead of HTTP 1.
-                            Set this to True if you've already negotiated HTTP 2.
-                            Otherwise, send an `Upgrade: h2c` request in HTTP 1 mode
-                            first.
-
-        :param authority: the hostname of the peer. If not provided, should be sent
-                          as an `:authority` header in all requests.
-
-        :param scheme: the scheme used to connect to the peer. If not provided, should
-                       be sent as a `:scheme` header in all requests.
-
-        TODO:: implement `Upgrade: h2c`.
-
-    '''
-    def __init__(self, loop, force_http2=False, authority=None, scheme=None):
-        super().__init__(force_http2=force_http2)
-        self.loop      = loop
+class Client (Connection):
+    def __init__(self, loop, authority=None, scheme=None, force_http2=False):
+        super().__init__(loop, force_http2=force_http2)
+        #: The hostname + port of the peer. If not provided, should be sent
+        #: as `:authority` in each request.
         self.authority = authority
-        self.scheme    = scheme
+        #: The scheme (http/https) used to connect to the peer. Like `authority`,
+        #: must be sent as `:scheme` if not set here.
+        self.scheme = scheme
 
-    async def request(self, method: str, path: str, headers: [(str, str)], data: bytes):
-        '''Initiate an HTTP request on a new stream.
+    def on_message_push(self, i, parent, method, path, headers):
+        self.handles[i] = promise = asyncio.Future(loop=self.loop)
+        self.pushreqs[parent].put_nowait(Push(self, i, method, path, headers, promise))
 
-            :return: a Response object.
+    def on_message_start(self, i, code, method, path, headers):
+        payload = self.payloads[i]
+        pushreq = self.pushreqs[i]
+        self.handles.pop(i).set_result(Response(self, i, code, headers, payload, pushreq))
 
-        '''
-        headers = list(headers)
+    async def request(self, method, path, headers=[], data=b'') -> Response:
+        head = []
         if self.authority is not None:
-            headers.append((':authority', self.authority))
+            head.append((':authority', self.authority))
         if self.scheme is not None:
-            headers.append((':scheme', self.scheme))
+            head.append((':scheme', self.scheme))
+        head.extend(headers)
 
         stream = self.next_stream
-        self.write_message(stream, 0, method, path, headers, not data)
+        while stream in self.handles:  # this http/1.1 connection is busy.
+            await self.handles[stream]
+            stream = self.next_stream  # might have switched to http 2 in the meantime
 
-        stream = self.streams[stream]
-        while data:
-            i = self.write_data(stream.id, data, True)
-            if i:
-                data = data[i:]
-            if data:
-                await stream.flow
-
-        return (await stream.resp)
-
-    class Stream:
-        def __init__(self, conn, id):
-            self.id   = id
-            self.conn = conn
-            self.flow = asyncio.Future(loop=conn.loop)
-            self.resp = asyncio.Future(loop=conn.loop)
-            self.rsrc = Channel()
-            self.rspo = None
-
-        def open_flow(self):
-            self.flow.set_result(None)
-            self.flow = asyncio.Future()
-
-        def message(self, code, _1, _2, headers):
-            self.rspo = Response(code, headers, self.rsrc, self)
-            self.resp.set_result(self.rspo)
-            self.data = self.rspo.payload.put_nowait
-            self.end  = self.rspo.payload.eof
-            if not self.conn.is_http2:
-                self.rsrc.eof()
-
-        def push(self, method, path, headers, stream):
-            reqo = Request(method, path, headers, stream)
-            reqo.payload.eof()
-            self.rsrc.put_nowait((reqo, stream.resp))
-
-        def abort(self):
-            self.flow.cancel()
-            if self.rspo:
-                self.rsrc.eof()
-                self.rspo.payload.eof()
-            else:
-                self.resp.cancel()
+        self.write_message(stream, 0, method, path, head, not data)
+        self.handles[stream] = promise = asyncio.Future(loop=self.loop)
+        if data:
+            await self.write_data(stream, data, True)
+        return (await promise)
 
 
-class Server (StreamedConnection):
-    '''An asyncio protocol implementing an HTTP 2 server.
+class Server (Connection):
+    def __init__(self, loop, handle):
+        super().__init__(loop, server=True)
+        #: An async function that accepts a single request.
+        self.handle = handle
 
-        :param loop: an asyncio event loop to run on.
+    def on_message_start(self, i, code, method, path, headers):
+        if i in self.handles:
+            # TODO: actually spawn a task, but make `write_headers` block until
+            #       the previous tasks are completed. Or raise ConnectionError
+            #       if there are too many tasks.
+            raise ConnectionError('HTTP/1.1 pipelining not supported (yet)')
 
-        :param handler: an async function to call with each request.
-                        The event loop is also passed as the keyword argument `loop`.
-
-    '''
-    def __init__(self, loop, handler):
-        super().__init__(server=True)
-        self.loop    = loop
-        self.handler = handler
-
-    class Stream:
-        def __init__(self, conn, id):
-            self.id   = id
-            self.conn = conn
-            self.func = conn.handler
-            self.flow = asyncio.Future()
-            self.reqo = None
-            self.task = None
-
-        def open_flow(self):
-            self.flow.set_result(None)
-            self.flow = asyncio.Future()
-
-        def message(self, _, method, path, headers):
-            self.reqo = Request(method, path, headers, self)
-            self.task = asyncio.ensure_future(self.func(self.reqo, loop=self.conn.loop))
-            self.data = self.reqo.payload.put_nowait
-            self.end  = self.reqo.payload.eof
-
-        def abort(self):
-            self.flow.cancel()
-            if self.task:
-                self.task.cancel()
-                self.reqo = None
-                self.task = None
+        req = Request(self, i, method, path, headers, self.payloads[i])
+        self.handles[i] = asyncio.ensure_future(self.handle(req), loop=self.loop)
+        self.handles[i].add_done_callback(lambda _: self.handles.pop(i, None))
 
 
 async def connect(loop, url) -> Client:
-    '''Create an asyncio client connection to a given URL.
-
-        :param url: either a string or an `urlparse`d tuple.
-
-    '''
-    if isinstance(url, str):
-        url = urllib.parse.urlparse(url)
-
     sctx = None
     port = 80
 
+    if isinstance(url, str):
+        url = urllib.parse.urlparse(url)
+
     if url.scheme == 'https':
         if ssl is None:
-            raise NotImplementedError('SSL not supported by Python')
-
+            raise UnsupportedOperationError('SSL not supported by Python')
         sctx = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
         if ssl.HAS_NPN:
             sctx.set_npn_protocols( ['h2', 'http/1.1'])
@@ -302,11 +235,9 @@ async def connect(loop, url) -> Client:
 
 
 async def request(loop, method, url, headers=[], payload=b'') -> Response:
-    '''Send an asyncio request to a given URL.
-
-        :param url: either a string, an `urlparse`d tuple.
-
-    '''
     if isinstance(url, str):
         url = urllib.parse.urlparse(url)
-    return (await (await connect(loop, url)).request(method, url.path, headers, payload))
+
+    conn = await connect(loop, url)
+    resp = await conn.request(method, url.path, headers, payload)
+    return resp

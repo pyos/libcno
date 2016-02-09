@@ -31,16 +31,18 @@ response = await cno.request(event_loop, 'GET', 'https://google.com/',
 response  # :: cno.Response
 response.code     # :: int
 response.headers  # :: [(str, str)]
-async for chunk in response.payload:
-    chunk  # :: bytes
-async for push, pushed_resource_promise in response.pushed:
-    push  # :: cno.Request
-    await pushed_resource_promise  # :: cno.Response
+response.payload  # :: asyncio.StreamReader
+async for push in response.pushed:
+    push.method   # :: str
+    push.path     # :: str
+    push.headers  # :: [(str, str)]
+    await push.response  # :: cno.Response
     # or push.cancel()
 
 response.conn  # :: cno.Client -- implements asyncio.Protocol
+response.conn.loop       # :: asyncio.BaseEventLoop
 response.conn.transport  # :: asyncio.Transport
-response.conn.transport.close()  # terminate the connection
+response.conn.transport.close()
 
 # Slightly-lower-level client API: create a new connection (probably for the purposes
 # of pooling in HTTP 1 mode/multiplexing in HTTP 2 mode.)
@@ -51,7 +53,7 @@ client.scheme    # :: str  -- https
 client.authority # :: str  -- localhost:8000
 
 response = await client.request('POST', '/whatever', [('x-whatever', 'whatever')], b'...')
-response  # :: cno.Response -- described above
+response  # :: cno.Response
 
 # Even-lower-level client API: just the raw asyncio protocol. `authority` and `scheme`
 # are optional, but unless passed to the constructor, they must be sent as
@@ -62,30 +64,26 @@ response  # :: cno.Response -- described above
 protocol = cno.Client(event_loop, authority='localhost:8000', scheme='https')
 
 # Highest-and-lowest-level-possible server API: also a raw protocol.
-async def handler(request, loop):
-    request.method  # :: str
-    request.path    # :: str
-    request.headers # :: [(str, str)]
-    request.conn    # :: cno.Server
-    if not request.conn.is_http2:
-        # Go easy on async stuff, as you may accidentally send HTTP 1 responses
-        # out of order. And that would be bad.
-        pass
-    async for chunk in request.payload:
-        # Reading the payload is 100% safe, though.
-        chunk  # :: bytes
-    # Pushed resources must have the same authority and scheme as the request.
-    # This method does nothing in HTTP 1 mode.
-    request.push('GET', '/index.css', [(':authority', '???'), (':scheme', '???')])
-    # content-length is optional in HTTP 2 mode.
-    await request.respond(200, [('content-length', '4')], b'!!!\n')
-    # Essentially the same as:
-    await request.write_headers(200, [('content-length', '4')], final=False)
-    await request.write_data(b'!!!', final=False)
-    await request.write_data(b'\n', final=True)
-    # Note that sending a response will most likely close the stream, cancelling
-    # this coroutine.
+async def handle(request):
+    request  # :: cno.Request
+    request.method   # :: str
+    request.path     # :: str
+    request.headers  # :: [(str, str)]
+    request.conn     # :: cno.Server
+    request.payload  # :: asyncio.StreamReader
 
-protocol = cno.Server(event_loop, handler)
+    # Pushed resources must have the same :authority and :scheme as the request.
+    request.push('GET', '/index.css', [(':authority', '???'), (':scheme', '???')])
+
+    if verbose_code or fine_grained_control_required:
+        # `content-length` is optional in HTTP 2 mode.
+        await request.write_headers(200, [('content-length', '4')], final=False)
+        await request.write_data(b'!!!', final=False)
+        await request.write_data(b'\n', final=True)
+    else:
+        # `respond` = `write_headers` + `write_data`.
+        await request.respond(200, [('content-length', '4')], b'!!!\n')
+
+protocol = cno.Server(event_loop, handle)
 # server = await event_loop.create_server(lambda: protocol, '', 8000, ssl=...)
 ```
