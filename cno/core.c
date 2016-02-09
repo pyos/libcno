@@ -1140,15 +1140,12 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 size_t length = strtoul(conn->buffer.data, NULL, 16);
                 size_t total  = length + (eol - conn->buffer.data) + 2;  // + crlf after data
 
-                if (total > conn->settings[CNO_LOCAL].max_frame_size)
-                    return CNO_ERROR(TRANSPORT, "HTTP/1.x chunk too big");
-
                 if (conn->buffer.size < total)
                     return CNO_OK;
 
                 cno_buffer_dyn_shift(&conn->buffer, total);
 
-                if (!total)
+                if (!length)
                     conn->http1_remaining = 0;
                 else if (CNO_FIRE(conn, on_message_data, stream->id, eol, length))
                     return CNO_ERROR_UP();
