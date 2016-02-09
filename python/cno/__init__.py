@@ -143,6 +143,11 @@ class Connection (raw.Connection):
                 flow.set_result(None)
 
     async def write_data(self, i, data, final):
+        if isinstance(data, Channel):
+            async for chunk in data:
+                await self.write_data(i, chunk, False)
+            return super().write_data(i, b'', final)
+
         if final and not data:
             # guaranteed to succeed
             return super().write_data(i, data, final)

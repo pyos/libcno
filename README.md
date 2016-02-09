@@ -75,14 +75,15 @@ async def handle(request):
     # Pushed resources must have the same :authority and :scheme as the request.
     request.push('GET', '/index.css', [(':authority', '???'), (':scheme', '???')])
 
-    if verbose_code or fine_grained_control_required:
-        # `content-length` is optional in HTTP 2 mode.
-        await request.write_headers(200, [('content-length', '4')], final=False)
-        await request.write_data(b'!!!', final=False)
-        await request.write_data(b'\n', final=True)
-    else:
-        # `respond` = `write_headers` + `write_data`.
+    if all_data_is_available:
         await request.respond(200, [('content-length', '4')], b'!!!\n')
+    else:
+        # `Channel` is a subclass of `asyncio.Queue`.
+        channel = cno.Channel(max_buffered_chunks, loop=request.conn.loop)
+        await channel.put(b'!!!')  # this should preferably be done in a separate
+        await channel.put(b'\n')   # coroutine, naturally.
+        channel.close()
+        await request.respond(200, [], channel)
 
 protocol = cno.Server(event_loop, handle)
 # server = await event_loop.create_server(lambda: protocol, '', 8000, ssl=...)
