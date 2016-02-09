@@ -23,7 +23,7 @@ async def main(loop, *args, **kwargs):
         task = asyncio.Future(loop=loop)
         loop.add_signal_handler(signal.SIGINT, task.cancel)
         await task
-    except CancelledError:
+    except asyncio.CancelledError:
         pass
     finally:
         server.close()
