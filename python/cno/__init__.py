@@ -13,6 +13,8 @@ class Channel (asyncio.Queue):
     EOF = object()
 
     def close(self):
+        if self.full():
+            self._maxsize += 1
         self.put_nowait(self.EOF)
 
     async def __aiter__(self):

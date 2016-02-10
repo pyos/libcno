@@ -72,8 +72,8 @@ async def handle(request):
     request.conn     # :: cno.Server
     request.payload  # :: asyncio.StreamReader
 
-    # Pushed resources must have the same :authority and :scheme as the request.
-    request.push('GET', '/index.css', [(':authority', '???'), (':scheme', '???')])
+    # Pushed resources inherit :authority and :scheme from the request unless overriden.
+    request.push('GET', '/index.css', [('x-extra-header', 'value')])
 
     if all_data_is_available:
         await request.respond(200, [('content-length', '4')], b'!!!\n')
