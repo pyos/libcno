@@ -1284,7 +1284,7 @@ uint32_t cno_stream_next_id(struct cno_connection_t *conn)
 }
 
 
-int cno_write_reset(struct cno_connection_t *conn, uint32_t stream)
+int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST_STREAM_CODE code)
 {
     if (!cno_connection_is_http2(conn))
         return CNO_ERROR(DISCONNECT, "HTTP/1.x connection rejected");
@@ -1294,7 +1294,7 @@ int cno_write_reset(struct cno_connection_t *conn, uint32_t stream)
     if (!obj)
         return CNO_OK;  // assume it has already been reset
 
-    return cno_frame_write_rst_stream(conn, obj, CNO_RST_CANCEL);
+    return cno_frame_write_rst_stream(conn, obj, code);
 }
 
 

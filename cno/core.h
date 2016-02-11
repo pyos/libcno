@@ -265,21 +265,21 @@ struct cno_connection_t
  *  }
  *
  */
-void cno_connection_init          (struct cno_connection_t *conn, enum CNO_CONNECTION_KIND kind);
-int  cno_connection_made          (struct cno_connection_t *conn, enum CNO_HTTP_VERSION version);
-int  cno_connection_data_received (struct cno_connection_t *conn, const char *data, size_t length);
-int  cno_connection_lost          (struct cno_connection_t *conn);
-void cno_connection_reset         (struct cno_connection_t *conn);
-int  cno_connection_stop          (struct cno_connection_t *conn);
+void cno_connection_init          (struct cno_connection_t *, enum CNO_CONNECTION_KIND);
+int  cno_connection_made          (struct cno_connection_t *, enum CNO_HTTP_VERSION);
+int  cno_connection_data_received (struct cno_connection_t *, const char *, size_t);
+int  cno_connection_lost          (struct cno_connection_t *);
+void cno_connection_reset         (struct cno_connection_t *);
+int  cno_connection_stop          (struct cno_connection_t *);
 /* Returns whether the next message will be sent in HTTP 2 mode.
  * `cno_write_push` does nothing if this returns false. On the other hand,
  * you can't switch protocols (e.g. to websockets) if this returns true. */
-int  cno_connection_is_http2      (struct cno_connection_t *conn);
+int  cno_connection_is_http2      (struct cno_connection_t *);
 /* cno_settings_copy loads a struct with current values, cno_settings_apply
  * either sends updated values to the peer or schedules them to be sent
  * when the connection enters HTTP 2 mode. */
-void cno_settings_copy            (struct cno_connection_t *conn,       struct cno_settings_t *);
-int  cno_settings_apply           (struct cno_connection_t *conn, const struct cno_settings_t *);
+void cno_settings_copy            (struct cno_connection_t *,       struct cno_settings_t *);
+int  cno_settings_apply           (struct cno_connection_t *, const struct cno_settings_t *);
 
 /* (As a client) sending requests:
  *
@@ -309,14 +309,14 @@ int  cno_settings_apply           (struct cno_connection_t *conn, const struct c
  *
  * (As a client again) aborting a push:
  *
- *  Call cno_write_reset with a stream id provided by on_message_push.
+ *  Call cno_write_reset with a stream id provided by on_message_push and code CNO_RST_CANCEL.
  *
  */
-uint32_t cno_stream_next_id (struct cno_connection_t *conn);
-int      cno_write_reset    (struct cno_connection_t *conn, uint32_t stream);
-int      cno_write_push     (struct cno_connection_t *conn, uint32_t stream, const struct cno_message_t *msg);
-int      cno_write_message  (struct cno_connection_t *conn, uint32_t stream, const struct cno_message_t *msg, int final);
-int      cno_write_data     (struct cno_connection_t *conn, uint32_t stream, const char *data, size_t length, int final);
+uint32_t cno_stream_next_id (struct cno_connection_t *);
+int      cno_write_reset    (struct cno_connection_t *, uint32_t /* stream */, enum CNO_RST_STREAM_CODE);
+int      cno_write_push     (struct cno_connection_t *, uint32_t, const struct cno_message_t *);
+int      cno_write_message  (struct cno_connection_t *, uint32_t, const struct cno_message_t *, int final);
+int      cno_write_data     (struct cno_connection_t *, uint32_t, const char *, size_t, int final);
 
 #ifdef __cplusplus
 }  // extern "C"

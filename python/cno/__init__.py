@@ -70,8 +70,8 @@ class Response:
         self.payload = payload
         self.pushed  = pushed
 
-    def cancel(self):
-        self.conn.write_reset(self.stream)
+    def cancel(self, code=raw.CNO_RST_CANCEL):
+        self.conn.write_reset(self.stream, code)
 
 
 class Push:
@@ -87,8 +87,8 @@ class Push:
     async def response(self):
         return (await self.promise)
 
-    def cancel(self):
-        self.conn.write_reset(self.stream)
+    def cancel(self, code=raw.CNO_RST_CANCEL):
+        self.conn.write_reset(self.stream, code)
 
 
 class Connection (raw.Connection):

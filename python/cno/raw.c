@@ -264,11 +264,12 @@ static PyObject * py_connection_lost(struct connection_obj_t *self, PyObject *ar
 static PyObject * py_write_reset(struct connection_obj_t *self, PyObject *args)
 {
     Py_ssize_t stream;
+    int code = CNO_RST_CANCEL;
 
-    if (!PyArg_ParseTuple(args, "n", &stream))
+    if (!PyArg_ParseTuple(args, "n|i", &stream, &code))
         return NULL;
 
-    if (cno_write_reset(&self->conn, (uint32_t) stream))
+    if (cno_write_reset(&self->conn, (uint32_t) stream, code))
         return py_handle_error(self);
 
     Py_RETURN_NONE;
@@ -499,5 +500,19 @@ PyMODINIT_FUNC PyMODINIT_FUNC_NAME(void)
     PyModule_AddIntMacro(m, CNO_FLAG_END_HEADERS);
     PyModule_AddIntMacro(m, CNO_FLAG_PADDED);
     PyModule_AddIntMacro(m, CNO_FLAG_PRIORITY);
+    PyModule_AddIntMacro(m, CNO_RST_NO_ERROR);
+    PyModule_AddIntMacro(m, CNO_RST_PROTOCOL_ERROR);
+    PyModule_AddIntMacro(m, CNO_RST_INTERNAL_ERROR);
+    PyModule_AddIntMacro(m, CNO_RST_FLOW_CONTROL_ERROR);
+    PyModule_AddIntMacro(m, CNO_RST_SETTINGS_TIMEOUT);
+    PyModule_AddIntMacro(m, CNO_RST_STREAM_CLOSED);
+    PyModule_AddIntMacro(m, CNO_RST_FRAME_SIZE_ERROR);
+    PyModule_AddIntMacro(m, CNO_RST_REFUSED_STREAM);
+    PyModule_AddIntMacro(m, CNO_RST_CANCEL);
+    PyModule_AddIntMacro(m, CNO_RST_COMPRESSION_ERROR);
+    PyModule_AddIntMacro(m, CNO_RST_CONNECT_ERROR);
+    PyModule_AddIntMacro(m, CNO_RST_ENHANCE_YOUR_CALM);
+    PyModule_AddIntMacro(m, CNO_RST_INADEQUATE_SECURITY);
+    PyModule_AddIntMacro(m, CNO_RST_HTTP_1_1_REQUIRED);
     return m;
 }
