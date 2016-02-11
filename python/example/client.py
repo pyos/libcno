@@ -5,7 +5,9 @@ import cno
 
 
 async def main(url):
-    await print_response((await cno.request(loop, 'GET', url)))
+    resp = await cno.request(loop, 'GET', url)
+    await print_response(resp)
+    resp.conn.transport.close()
 
 
 async def print_response(rsp):
