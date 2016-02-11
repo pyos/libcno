@@ -101,6 +101,7 @@ class Connection:
 
     def _may_fail(self, ret):
         if ret < 0:
+            cno_connection_reset(self._obj)
             self.transport.close()
             err = cno_error()
             if err.code == 127:
@@ -121,12 +122,12 @@ class Connection:
     def next_stream(self):
         return cno_stream_next_id(self._obj)
 
-    def connection_made(self, transport, http2=False):
-        self.transport = transport
+    def connection_made(self, http2=False):
         return self._may_fail(cno_connection_made(self._obj, http2 or self.force_http2))
 
     def connection_lost(self, exc):
-        return self._may_fail(cno_connection_lost(self._obj))
+        self._may_fail(cno_connection_lost(self._obj))
+        cno_connection_reset(self._obj)
 
     def data_received(self, data):
         return self._may_fail(cno_connection_data_received(self._obj, data, len(data)))
@@ -139,9 +140,6 @@ class Connection:
 
     def resume_writing(self):
         pass
-
-    def on_write(self, data):
-        return self.transport.write(data)
 
     def write_message(self, i, code, method, path, headers, final):
         msg, refs = pack_message(code, method, path, headers)

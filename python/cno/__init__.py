@@ -101,13 +101,14 @@ class Connection (raw.Connection):
         self.flowctl  = {}  # id -> flow open promise
 
     def connection_made(self, transport):
+        self.transport = transport
         socket = transport.get_extra_info('ssl_object')
-        if socket is None:
-            super().connection_made(transport)
-        else:
-            super().connection_made(transport,
-                (ssl.HAS_ALPN and socket.selected_alpn_protocol() == 'h2') or
-                (ssl.HAS_NPN  and socket.selected_npn_protocol()  == 'h2'))
+        super().connection_made(socket is not None and (
+            (ssl.HAS_ALPN and socket.selected_alpn_protocol() == 'h2') or
+            (ssl.HAS_NPN  and socket.selected_npn_protocol()  == 'h2')))
+
+    def on_write(self, data):
+        return self.transport.write(data)
 
     def on_stream_start(self, i):
         self.payloads[i] = asyncio.StreamReader(loop=self.loop)
