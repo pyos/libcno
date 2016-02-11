@@ -60,6 +60,27 @@ struct cno_buffer_dyn_t
 };
 
 
+struct cno_list_t
+{
+    struct cno_list_t *prev;
+    struct cno_list_t *next;
+};
+
+
+#define cno_list_link_t(T)               \
+  { union {                              \
+      struct cno_list_t cno_list_handle; \
+      struct { T *prev, *next; };        \
+  }; }
+
+
+#define cno_list_root_t(T)               \
+  { union {                              \
+      struct cno_list_t cno_list_handle; \
+      struct { T *last, *first; };       \
+  }; }
+
+
 /* Return some information about the last error in the current thread. */
 const struct cno_error_t * cno_error(void);
 
@@ -77,9 +98,17 @@ int cno_error_upd(const char *file, int line);
 #define CNO_ERROR_UP_NULL() (CNO_ERROR_UP(), NULL)
 
 
+#define cno_list_end(x)       ((void *) &(x)->cno_list_handle)
+#define cno_list_init(x)      cno_list_gen_init(&(x)->cno_list_handle)
+#define cno_list_append(x, y) cno_list_gen_append(&(x)->cno_list_handle, &(y)->cno_list_handle)
+#define cno_list_remove(x)    cno_list_gen_remove(&(x)->cno_list_handle)
+
+
 static const struct cno_buffer_t     CNO_BUFFER_EMPTY     = { NULL, 0 };
 static const struct cno_buffer_dyn_t CNO_BUFFER_DYN_EMPTY = {{{NULL, 0}}, 0, 0};
 
+
+#if !CFFI_CDEF_MODE  // cffi does not compile inline functions
 
 static inline struct cno_buffer_t CNO_BUFFER_STRING(const char *s)
 {
@@ -152,33 +181,6 @@ static inline int cno_buffer_dyn_concat(struct cno_buffer_dyn_t *a, const struct
 }
 
 
-struct cno_list_t
-{
-    struct cno_list_t *prev;
-    struct cno_list_t *next;
-};
-
-
-#define cno_list_link_t(T)               \
-  { union {                              \
-      struct cno_list_t cno_list_handle; \
-      struct { T *prev, *next; };        \
-  }; }
-
-
-#define cno_list_root_t(T)               \
-  { union {                              \
-      struct cno_list_t cno_list_handle; \
-      struct { T *last, *first; };       \
-  }; }
-
-
-#define cno_list_end(x)       ((void *) &(x)->cno_list_handle)
-#define cno_list_init(x)      cno_list_gen_init(&(x)->cno_list_handle)
-#define cno_list_append(x, y) cno_list_gen_append(&(x)->cno_list_handle, &(y)->cno_list_handle)
-#define cno_list_remove(x)    cno_list_gen_remove(&(x)->cno_list_handle)
-
-
 static inline void cno_list_gen_init(struct cno_list_t *x)
 {
     *x = (struct cno_list_t) { x, x };
@@ -199,4 +201,5 @@ static inline void cno_list_gen_remove(struct cno_list_t *x)
     x->prev->next = x->next;
 }
 
+#endif  // !CFFI_CDEF_MODE
 #endif

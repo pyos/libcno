@@ -55,6 +55,8 @@ int cno_hpack_decode(struct cno_hpack_t *, struct cno_buffer_t, struct cno_heade
  * the buffer may contain partially encoded data. Clear it yourself. */
 int cno_hpack_encode(struct cno_hpack_t *, struct cno_buffer_dyn_t *, const struct cno_header_t *, size_t n);
 
+#if !CFFI_CDEF_MODE
+
 /* Carefully deallocate buffers used to construct a header. (Some of them may be shared.) */
 static inline void cno_hpack_free_header(struct cno_header_t *h)
 {
@@ -67,5 +69,5 @@ static inline void cno_hpack_free_header(struct cno_header_t *h)
     *h = CNO_HEADER_EMPTY;
 }
 
-
+#endif  // !CFFI_CDEF_MODE
 #endif

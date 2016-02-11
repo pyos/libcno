@@ -170,7 +170,7 @@ struct cno_settings_t
             uint32_t max_frame_size;
             uint32_t max_header_list_size;
         };
-        uint32_t array[CNO_SETTINGS_UNDEFINED - 1];
+        uint32_t array[6];
     };
 };
 
