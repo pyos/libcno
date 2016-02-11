@@ -108,7 +108,6 @@ class Connection (raw.Connection):
             super().connection_made(transport,
                 (ssl.HAS_ALPN and socket.selected_alpn_protocol() == 'h2') or
                 (ssl.HAS_NPN  and socket.selected_npn_protocol()  == 'h2'))
-        self.transport = transport
 
     def on_stream_start(self, i):
         self.payloads[i] = asyncio.StreamReader(loop=self.loop)
@@ -148,10 +147,9 @@ class Connection (raw.Connection):
         if isinstance(data, Channel):
             async for chunk in data:
                 await self.write_data(i, chunk, False)
-            return super().write_data(i, b'', final)
+            data = b''
 
         if final and not data:
-            # guaranteed to succeed
             return super().write_data(i, data, final)
 
         while data:
