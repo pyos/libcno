@@ -9,67 +9,72 @@ from Python. Also, because why not?
 
 `make obj/libcno.a`
 
-Just read core.h. All useful functions are at the end of it, and the types are right
-above them. Well, except for one: a `cno_buffer_t` (defined in common.h) is just
-a `{ char *, size_t }` pair. `CNO_BUFFER_EMPTY` is a zero-initialized one, and
-`CNO_BUFFER_STRING(s)` creates one from a null-terminated string. (You'll need this
-to construct messages.)
+Just read core.h. Basically, you create a `cno_connection_t`, then follow a simple
+chain of `cno_connection_init` -> connect some callbacks -> `cno_connection_made` ->
+`cno_connection_data_received` -> (repeat while I/O is still possible) ->
+`cno_connection_lost` -> `cno_connection_reset`, skipping to the last step if
+anything returns an error and using `cno_write_message` + `cno_write_data` or
+`cno_write_push` or `cno_write_reset` to send some stuff of your own.
+
+Oh, and here's one thing missing from core.h. You'll need it.
+
+```c
+struct cno_buffer_t { char *data; size_t size; };
+struct cno_buffer_t CNO_BUFFER_EMPTY;
+struct cno_buffer_t CNO_BUFFER_STRING(char *str /* null-terminated */);
+```
 
 ### Python API
 
-`pip3 install git+https://github.com/pyos/libcno`
+```bash
+pip3 install cffi
+pip3 install git+https://github.com/pyos/libcno
+```
 
-Requires Python 3.5+, uses asyncio.
+| C constant   | Python constant      |
+| ------------ | -------------------- |
+| `CNO_CLIENT` | `cno.raw.CNO_CLIENT` |
+| etc.         | ...                  |
+
+`cno.raw.Connection` is an almost complete 1:1 mapping to C API functions.
+
+| C function                                       | `cno.raw.Connection` method                                   |
+| ------------------------------------------------ | ------------------------------------------------------------- |
+| `cno_connection_init(c, CNO_SERVER)`             | `c = cno.raw.Connection(server=True)`                         |
+| `cno_connection_reset(c)`                        | `del c`                                                       |
+| `cno_connection_made(c, CNO_HTTP2)`              | `c.connection_made(http2=True)`                               |
+| `cno_connection_lost(c)`                         | `c.connection_lost()`                                         |
+| `cno_connection_data_received(c, data, length)`  | `c.data_received(data)`                                       |
+| `cno_connection_is_http2(c)`                     | `c.is_http2`                                                  |
+| `cno_stream_next_id(c)`                          | `c.next_stream`                                               |
+| `cno_write_reset(c, stream, code)`               | `c.write_reset(stream, code)`                                 |
+| `cno_write_push(c, stream, msg)`                 | `c.write_push(stream, method, path, headers)`                 |
+| `cno_write_message(c, stream, msg, final)`       | `c.write_message(stream, code, method, path, headers, final)` |
+| `cno_write_data(c, stream, data, length, final)` | `c.write_data(stream, data, final)`                           |
+
+Event receivers must be defined as methods of `Connection` subclasses.
+
+| C event                                 | `cno.raw.Connection` method                                        |
+| --------------------------------------- | ------------------------------------------------------------------ |
+| `on_write(data, length)`                | `def on_write(self, data)`                                         |
+| `on_stream_start(stream)`               | `def on_stream_start(self, stream)`                                |
+| `on_stream_end(stream)`                 | `def on_stream_end(self, stream)`                                  |
+| `on_flow_increase(stream)`              | `def on_flow_increase(self, stream)`                               |
+| `on_message_start(stream, msg)`         | `def on_message_start(self, stream, code, method, path, headers)`  |
+| `on_message_trail(stream, msg)`         | `def on_message_trail(self, stream, trailers)`                     |
+| `on_message_data(stream, data, length)` | `def on_message_data(self, stream, data)`                          |
+| `on_message_push(stream, msg, parent)`  | `def on_message_push(self, stream, parent, method, path, headers)` |
+| `on_message_end(stream)`                | `def on_message_end(self, stream)`                                 |
+
+
+On Python 3.5+, higher-level asyncio bindings are also available. Server:
 
 ```python
-import cno
-
-# Extra-high-level client API: simply make a request on a new connection.
-# (headers & payload are optional.)
-response = await cno.request(event_loop, 'GET', 'https://google.com/',
-                             [('user-agent', 'libcno/0.1')], payload=b'')
-response  # :: cno.Response
-response.code     # :: int
-response.headers  # :: [(str, str)]
-response.payload  # :: asyncio.StreamReader
-async for push in response.pushed:
-    push.method   # :: str
-    push.path     # :: str
-    push.headers  # :: [(str, str)]
-    await push.response  # :: cno.Response
-    # or push.cancel()
-
-response.conn  # :: cno.Client -- implements asyncio.Protocol
-response.conn.loop       # :: asyncio.BaseEventLoop
-response.conn.transport  # :: asyncio.Transport
-response.conn.transport.close()
-
-# Slightly-lower-level client API: create a new connection (probably for the purposes
-# of pooling in HTTP 1 mode/multiplexing in HTTP 2 mode.)
-client = await cno.connect(event_loop, 'https://localhost:8000/')
-client  # :: cno.Client
-client.is_http2  # :: bool
-client.scheme    # :: str  -- https
-client.authority # :: str  -- localhost:8000
-
-response = await client.request('POST', '/whatever', [('x-whatever', 'whatever')], b'...')
-response  # :: cno.Response
-
-# Even-lower-level client API: just the raw asyncio protocol. `authority` and `scheme`
-# are optional, but unless passed to the constructor, they must be sent as
-# `:authority` and `:scheme` headers in every request. (This does not actually
-# establish a connection to anywhere -- call `event_loop.create_connection`.)
-# If the transport is an SSL socket, the protocol is chosen based on ALPN/NPN data.
-# Otherwise, pass `force_http2=True` to upgrade through prior knowledge.
-protocol = cno.Client(event_loop, authority='localhost:8000', scheme='https')
-
-# Highest-and-lowest-level-possible server API: also a raw protocol.
-async def handle(request):
-    request  # :: cno.Request
+async def handle(request: cno.Request):
     request.method   # :: str
     request.path     # :: str
     request.headers  # :: [(str, str)]
-    request.conn     # :: cno.Server
+    request.conn     # :: cno.Server -- `protocol` (below)
     request.payload  # :: asyncio.StreamReader
 
     # Pushed resources inherit :authority and :scheme from the request unless overriden.
@@ -87,4 +92,39 @@ async def handle(request):
 
 protocol = cno.Server(event_loop, handle)
 # server = await event_loop.create_server(lambda: protocol, '', 8000, ssl=...)
+```
+
+Client:
+
+```python
+client = await cno.connect(event_loop, 'https://example.com/')
+client.loop       # :: asyncio.BaseEventLoop -- `event_loop`
+client.transport  # :: asyncio.Transport
+client.is_http2   # :: bool
+client.scheme     # :: str  -- https
+client.authority  # :: str  -- example.com
+
+response = await client.request('GET', '/', [('user-agent', 'libcno/0.1')])  # cno.Response
+response.code     # :: int
+response.headers  # :: [(str, str)]
+response.payload  # :: asyncio.StreamReader
+async for push in response.pushed:
+    push.method   # :: str
+    push.path     # :: str
+    push.headers  # :: [(str, str)]
+    await push.response  # :: cno.Response
+    # or push.cancel()
+
+response = await client.request('POST', '/whatever', [], b'payload')
+# `request`, like `respond`, also accepts `cno.Channel`s as payload.
+
+client.transport.close()
+
+# `cno.connect` automatically sets up a default SSL context and creates
+# a TCP connection. To simply create an `asyncio.Protocol`:
+client = cno.Client(event_loop, authority='example.com', scheme='https')
+
+# A shorthand for `cno.connect` followed by `client.request`:
+response = await cno.request(event_loop, 'GET', 'https://example.com/path', ...)
+response.conn.transport.close()
 ```
