@@ -40,9 +40,9 @@ pip3 install git+https://github.com/pyos/libcno
 
 | C function                                       | `cno.raw.Connection` method                                   |
 | ------------------------------------------------ | ------------------------------------------------------------- |
-| `cno_connection_init(c, CNO_SERVER)`             | `c = cno.raw.Connection(server=True)`                         |
+| `cno_connection_init(c, CNO_SERVER)`             | `c = cno.raw.Connection(is_server=True)`                      |
 | `cno_connection_reset(c)`                        | `del c`                                                       |
-| `cno_connection_made(c, CNO_HTTP2)`              | `c.connection_made(http2=True)`                               |
+| `cno_connection_made(c, CNO_HTTP2)`              | `c.connection_made(is_http2=True)`                            |
 | `cno_connection_lost(c)`                         | `c.connection_lost()`                                         |
 | `cno_connection_data_received(c, data, length)`  | `c.data_received(data)`                                       |
 | `cno_connection_is_http2(c)`                     | `c.is_http2`                                                  |
@@ -118,7 +118,7 @@ async for push in response.pushed:
 response = await client.request('POST', '/whatever', [], b'payload')
 # `request`, like `respond`, also accepts `cno.Channel`s as payload.
 
-client.transport.close()
+client.close()
 
 # `cno.connect` automatically sets up a default SSL context and creates
 # a TCP connection. To simply create an `asyncio.Protocol`:
@@ -126,5 +126,5 @@ client = cno.Client(event_loop, authority='example.com', scheme='https')
 
 # A shorthand for `cno.connect` followed by `client.request`:
 response = await cno.request(event_loop, 'GET', 'https://example.com/path', ...)
-response.conn.transport.close()
+response.conn.close()
 ```

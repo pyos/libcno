@@ -1,6 +1,5 @@
-from . import raw
+import sys
 
-try:
+if sys.hexversion >= 0x03050000:
     from .asyncio import *
-except (ImportError, SyntaxError):
-    pass
+from . import raw

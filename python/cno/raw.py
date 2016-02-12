@@ -1,19 +1,16 @@
-from .ffi import CALLBACKS
 from ._ffi import ffi
 from ._ffi.lib import *
 
 try:
-    import threading
+    from threading import local as _thread_local
 except ImportError:
-    import dummy_threading as threading
-
-
-_thread_local = threading.local()
+    class _thread_local: pass  # there's only one thread anyway
+_thread_local = _thread_local()
 
 
 def set_error(t, v, tb):
     _thread_local.err = v.with_traceback(tb)
-    return cno_error_set(b'???', 1, 127, '{}: {}'.format(t.__name__, v).encode('utf-8'))
+    return cno_error_set(b'/dev/null', 1, 127, b'Python exception')
 
 
 def unpack_string(b):
@@ -50,43 +47,62 @@ def pack_message(code, method, path, headers):
     return m, refs
 
 
-for name in CALLBACKS:
-    if name == 'on_write':
-        def callback(self, data, length):
-            ffi.from_handle(self).on_write(ffi.buffer(data, length)[:])
-            return 0
-    elif name == 'on_message_start':
-        def callback(self, stream, msg):
-            method, path, headers = unpack_message(msg)
-            ffi.from_handle(self).on_message_start(stream, msg.code, method, path, headers)
-            return 0
-    elif name == 'on_message_push':
-        def callback(self, stream, msg, parent):
-            method, path, headers = unpack_message(msg)
-            ffi.from_handle(self).on_message_push(stream, parent, method, path, headers)
-            return 0
-    elif name == 'on_message_data':
-        def callback(self, stream, data, length):
-            ffi.from_handle(self).on_message_data(stream, ffi.buffer(data, length)[:])
-            return 0
-    elif name == 'on_message_trail':
-        def callback(self, stream, msg):
-            _, _, headers = unpack_message(msg)
-            ffi.from_handle(self).on_message_trail(stream, headers)
-            return 0
-    else:
-        def callback(self, *args, name=name):
-            getattr(ffi.from_handle(self), name)(*args)
-            return 0
-    ffi.def_extern(name, onerror=set_error)(callback)
+try:
+    make_callbacks  # don't recreate the callbacks when reloading this module
+except NameError:
+    CALLBACKS = [
+        'on_write',
+        'on_stream_start',
+        'on_stream_end',
+        'on_flow_increase',
+        'on_message_start',
+        'on_message_trail',
+        'on_message_push',
+        'on_message_data',
+        'on_message_end',
+        'on_frame',
+        'on_frame_send',
+        'on_pong',
+    ]
+
+    def make_callbacks():
+        for name in CALLBACKS:
+            if name == 'on_write':
+                def callback(self, data, length):
+                    ffi.from_handle(self).on_write(ffi.buffer(data, length)[:])
+                    return 0
+            elif name == 'on_message_start':
+                def callback(self, stream, msg):
+                    method, path, headers = unpack_message(msg)
+                    ffi.from_handle(self).on_message_start(stream, msg.code, method, path, headers)
+                    return 0
+            elif name == 'on_message_push':
+                def callback(self, stream, msg, parent):
+                    method, path, headers = unpack_message(msg)
+                    ffi.from_handle(self).on_message_push(stream, parent, method, path, headers)
+                    return 0
+            elif name == 'on_message_data':
+                def callback(self, stream, data, length):
+                    ffi.from_handle(self).on_message_data(stream, ffi.buffer(data, length)[:])
+                    return 0
+            elif name == 'on_message_trail':
+                def callback(self, stream, msg):
+                    _, _, headers = unpack_message(msg)
+                    ffi.from_handle(self).on_message_trail(stream, headers)
+                    return 0
+            else:
+                def callback(self, *args, name=name):
+                    getattr(ffi.from_handle(self), name)(*args)
+                    return 0
+            ffi.def_extern(name, onerror=set_error)(callback)
+    make_callbacks()
 
 
 class Connection:
-    def __init__(self, server=False, force_http2=False):
-        self.force_http2 = force_http2
+    def __init__(self, is_server):
         self._obj        = ffi.new('struct cno_connection_t *')
         self._obj_ref    = ffi.new_handle(self)
-        cno_connection_init(self._obj, CNO_SERVER if server else CNO_CLIENT)
+        cno_connection_init(self._obj, CNO_SERVER if is_server else CNO_CLIENT)
 
         self._obj.cb_data = self._obj_ref
         for name in CALLBACKS:
@@ -101,8 +117,7 @@ class Connection:
 
     def _may_fail(self, ret):
         if ret < 0:
-            cno_connection_reset(self._obj)
-            self.transport.close()
+            self.close()
             err = cno_error()
             if err.code == 127:
                 raise _thread_local.err
@@ -110,47 +125,36 @@ class Connection:
                 raise ConnectionError(err.code, ffi.string(err.text).decode('utf-8'))
         return ret
 
+    def close(self):
+        pass
+
     @property
     def is_http2(self):
         return cno_connection_is_http2(self._obj)
 
     @property
-    def is_client(self):
-        return self._obj.client
-
-    @property
     def next_stream(self):
         return cno_stream_next_id(self._obj)
 
-    def connection_made(self, http2=False):
-        return self._may_fail(cno_connection_made(self._obj, http2 or self.force_http2))
+    def connection_made(self, is_http2):
+        return self._may_fail(cno_connection_made(self._obj, CNO_HTTP2 if is_http2 else CNO_HTTP1))
 
-    def connection_lost(self, exc=None):
-        self._may_fail(cno_connection_lost(self._obj))
-        cno_connection_reset(self._obj)
+    def connection_lost(self, error=None):
+        return self._may_fail(cno_connection_lost(self._obj))
 
     def data_received(self, data):
         return self._may_fail(cno_connection_data_received(self._obj, data, len(data)))
 
-    def eof_received(self):
-        pass
-
-    def pause_writing(self):
-        pass
-
-    def resume_writing(self):
-        pass
-
-    def write_message(self, i, code, method, path, headers, final):
+    def write_message(self, i, code, method, path, headers, is_final):
         msg, refs = pack_message(code, method, path, headers)
-        return self._may_fail(cno_write_message(self._obj, i, msg, final))
+        return self._may_fail(cno_write_message(self._obj, i, msg, is_final))
 
     def write_push(self, i, method, path, headers):
         msg, refs = pack_message(0, method, path, headers)
         return self._may_fail(cno_write_push(self._obj, i, msg))
 
+    def write_data(self, i, data, is_final):
+        return self._may_fail(cno_write_data(self._obj, i, data, len(data), is_final))
+
     def write_reset(self, i, code):
         return self._may_fail(cno_write_reset(self._obj, i, code))
-
-    def write_data(self, i, data, final):
-        return self._may_fail(cno_write_data(self._obj, i, data, len(data), final))

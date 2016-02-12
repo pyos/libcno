@@ -10,22 +10,23 @@ from . import raw
 
 
 class Channel (asyncio.Queue):
-    EOF = object()
+    closed = False
 
     def close(self):
-        if self.full():
-            self._maxsize += 1
-        self.put_nowait(self.EOF)
+        self.closed = True
+
+    def put_nowait(self, x):
+        if self.closed:
+            raise BrokenPipeError('this channel is closed')
+        super().put_nowait(x)
 
     async def __aiter__(self):
         return self
 
     async def __anext__(self):
-        it = await self.get()
-        if it is self.EOF:
-            self.close()
+        if self.empty() and self.closed:
             raise StopAsyncIteration
-        return it
+        return (await self.get())
 
 
 class Request:
@@ -37,22 +38,15 @@ class Request:
         self.headers  = headers
         self.payload  = payload
 
-    async def write_headers(self, code, headers, final):
-        # TODO if this is a pipelined HTTP/1.1 request, wait until the previous one
-        #      is responded to.
-        self.conn.write_message(self.stream, code, "", "", headers, final)
-
-    async def write_data(self, data, final):
-        await self.conn.write_data(self.stream, data, final)
-
     async def respond(self, code, headers, data):
         # XXX perhaps imbuing HEAD with a special meaning is a task
         #     for a web framework instead?
-        if data and self.method != 'HEAD':
-            await self.write_headers(code, headers, False)
-            await self.write_data(data, True)
-        else:
-            await self.write_headers(code, headers, True)
+        have_data = data and self.method != 'HEAD'
+        # TODO if this is a pipelined HTTP/1.1 request, wait until the previous one
+        #      is responded to.
+        self.conn.write_message(self.stream, code, '', '', headers, not have_data)
+        if have_data:
+            await self.conn.write_all_data(self.stream, data, True)
 
     def push(self, method, path, headers=[]):
         copy = {':authority', ':scheme'} - {k for k in headers}
@@ -76,28 +70,28 @@ class Response:
 
 class Push:
     def __init__(self, conn, stream, method, path, headers, promise):
-        self.conn    = conn
-        self.stream  = stream
-        self.method  = method
-        self.path    = path
-        self.headers = headers
-        self.promise = promise
+        self.conn     = conn
+        self.stream   = stream
+        self.method   = method
+        self.path     = path
+        self.headers  = headers
+        self.promise  = promise
 
     @property
     async def response(self):
-        return (await self.promise)
+        return (await asyncio.shield(self.promise, loop=self.conn.loop))
 
     def cancel(self, code=raw.CNO_RST_CANCEL):
         self.conn.write_reset(self.stream, code)
 
 
-class Connection (raw.Connection):
-    def __init__(self, loop, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.loop = loop
+class Connection (raw.Connection, asyncio.Protocol):
+    def __init__(self, loop, is_server):
+        super().__init__(is_server)
+        self.loop     = loop
         self.payloads = {}  # id -> StreamReader
         self.pushreqs = {}  # id -> push channel
-        self.handles  = {}  # id -> request handler (server) or response promise (client)
+        self.handles  = {}  # id -> handling task (server) or response promise (client)
         self.flowctl  = {}  # id -> flow open promise
 
     def connection_made(self, transport):
@@ -106,6 +100,9 @@ class Connection (raw.Connection):
         super().connection_made(socket is not None and (
             (ssl.HAS_ALPN and socket.selected_alpn_protocol() == 'h2') or
             (ssl.HAS_NPN  and socket.selected_npn_protocol()  == 'h2')))
+
+    def close(self):
+        self.transport.close()
 
     def on_write(self, data):
         return self.transport.write(data)
@@ -135,7 +132,7 @@ class Connection (raw.Connection):
             flow.cancel()
 
     def on_flow_increase(self, i):
-        if i == 0:
+        if not i:
             for flow in self.flowctl.values():
                 flow.set_result(None)
             self.flowctl.clear()
@@ -144,26 +141,29 @@ class Connection (raw.Connection):
             if flow:
                 flow.set_result(None)
 
-    async def write_data(self, i, data, final):
+    async def write_all_data(self, i, data, is_final):
         if isinstance(data, Channel):
             async for chunk in data:
-                await self.write_data(i, chunk, False)
-            data = b''
+                await self.write_all_data(i, chunk, False)
+            data = b''  # still need to send an empty END_STREAM frame if is_final = true
 
-        if final and not data:
-            return super().write_data(i, data, final)
-
-        while data:
-            sent = super().write_data(i, data, final)
-            if sent:
-                data = data[sent:]
-            else:
+        while True:
+            sent = self.write_data(i, data, is_final)
+            data = data[sent:]
+            if not data:
+                break
+            try:
+                # assert (only one coroutine writes to each stream at a time)
                 await self.flowctl.setdefault(i, asyncio.Future(loop=self.loop))
+            finally:
+                flow = self.flowctl.pop(i, None)
+                if flow:
+                    flow.cancel()
 
 
 class Client (Connection):
-    def __init__(self, loop, authority=None, scheme=None, force_http2=False):
-        super().__init__(loop, force_http2=force_http2)
+    def __init__(self, loop, authority=None, scheme=None):
+        super().__init__(loop, False)
         #: The hostname + port of the peer. If not provided, should be sent
         #: as `:authority` in each request.
         self.authority = authority
@@ -190,28 +190,32 @@ class Client (Connection):
 
         stream = self.next_stream
         while stream in self.handles:  # this http/1.1 connection is busy.
-            await self.handles[stream]
+            await asyncio.shield(self.handles[stream], loop=self.loop)
             stream = self.next_stream  # might have switched to http 2 in the meantime
 
         self.write_message(stream, 0, method, path, head, not data)
         self.handles[stream] = promise = asyncio.Future(loop=self.loop)
         if data:
-            await self.write_data(stream, data, True)
-        return (await promise)
+            await self.write_all_data(stream, data, True)
+        try:
+            return (await promise)
+        except asyncio.CancelledError:
+            self.write_reset(stream, raw.CNO_CANCEL)
+            raise
 
 
 class Server (Connection):
     def __init__(self, loop, handle):
-        super().__init__(loop, server=True)
+        super().__init__(loop, True)
         #: An async function that accepts a single request.
         self.handle = handle
 
     def on_message_start(self, i, code, method, path, headers):
         if i in self.handles:
-            # TODO: actually spawn a task, but make `write_headers` block until
+            # TODO: actually spawn a task, but make `respond` block until
             #       the previous tasks are completed. Or raise ConnectionError
             #       if there are too many tasks.
-            raise ConnectionError('HTTP/1.1 pipelining not supported (yet)')
+            raise NotImplementedError('HTTP/1.1 pipelining not supported (yet)')
 
         req = Request(self, i, method, path, headers, self.payloads[i])
         self.handles[i] = asyncio.ensure_future(self.handle(req), loop=self.loop)
@@ -227,12 +231,12 @@ async def connect(loop, url) -> Client:
 
     if url.scheme == 'https':
         if ssl is None:
-            raise UnsupportedOperationError('SSL not supported by Python')
-        sctx = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
+            raise NotImplementedError('SSL not supported by Python')
+        sctx = ssl.create_default_context()
         if ssl.HAS_NPN:
-            sctx.set_npn_protocols( ['h2', 'http/1.1'])
+            sctx.set_npn_protocols(['http/1.1', 'h2'])
         if ssl.HAS_ALPN:
-            sctx.set_alpn_protocols(['h2', 'http/1.1'])
+            sctx.set_alpn_protocols(['http/1.1', 'h2'])
         port = 443
 
     proto = Client(loop, authority=url.netloc, scheme=url.scheme)
