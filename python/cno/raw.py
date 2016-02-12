@@ -125,7 +125,7 @@ class Connection:
     def connection_made(self, http2=False):
         return self._may_fail(cno_connection_made(self._obj, http2 or self.force_http2))
 
-    def connection_lost(self, exc):
+    def connection_lost(self, exc=None):
         self._may_fail(cno_connection_lost(self._obj))
         cno_connection_reset(self._obj)
 
