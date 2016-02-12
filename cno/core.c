@@ -1265,6 +1265,9 @@ int cno_connection_lost(struct cno_connection_t *conn)
                 return CNO_ERROR_UP();
 
     cno_buffer_dyn_clear(&conn->buffer);
+    cno_buffer_dyn_clear(&conn->continued);
+    cno_hpack_clear(&conn->encoder);
+    cno_hpack_clear(&conn->decoder);
     return CNO_OK;
 }
 
