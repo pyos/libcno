@@ -237,9 +237,9 @@ async def connect(loop, url) -> Client:
             raise NotImplementedError('SSL not supported by Python')
         sctx = ssl.create_default_context()
         if ssl.HAS_NPN:
-            sctx.set_npn_protocols(['http/1.1', 'h2'])
+            sctx.set_npn_protocols(['h2', 'http/1.1'])
         if ssl.HAS_ALPN:
-            sctx.set_alpn_protocols(['http/1.1', 'h2'])
+            sctx.set_alpn_protocols(['h2', 'http/1.1'])
         port = 443
 
     proto = Client(loop, authority=url.netloc, scheme=url.scheme)
