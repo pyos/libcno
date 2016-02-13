@@ -1,5 +1,5 @@
-from ._ffi import ffi
-from ._ffi.lib import *
+from .ffi import ffi
+from .ffi.lib import *
 
 try:
     from threading import local as _thread_local
@@ -50,7 +50,7 @@ def pack_message(code, method, path, headers):
 try:
     make_callbacks  # don't recreate the callbacks when reloading this module
 except NameError:
-    CALLBACKS = [
+    CALLBACKS = {
         'on_write',
         'on_stream_start',
         'on_stream_end',
@@ -63,7 +63,7 @@ except NameError:
         'on_frame',
         'on_frame_send',
         'on_pong',
-    ]
+    }
 
     def make_callbacks():
         for name in CALLBACKS:
@@ -103,14 +103,10 @@ class Connection:
         self._obj        = ffi.new('struct cno_connection_t *')
         self._obj_ref    = ffi.new_handle(self)
         cno_connection_init(self._obj, CNO_SERVER if is_server else CNO_CLIENT)
-
         self._obj.cb_data = self._obj_ref
-        for name in CALLBACKS:
-            try:
-                getattr(self, name)
-                setattr(self._obj, name, globals()[name])
-            except AttributeError:
-                pass
+
+        for name in CALLBACKS & set(dir(self)):
+            setattr(self._obj, name, globals()[name])
 
     def __del__(self):
         cno_connection_reset(self._obj)
