@@ -35,9 +35,10 @@ def pack_string(b, s):
 def pack_message(code, method, path, headers):
     m = ffi.new('struct cno_message_t *')
     m.code = code
-    m.headers = ffi.new('struct cno_header_t[%s]' % len(headers))
+    m.headers = headers_ref = ffi.new('struct cno_header_t[%s]' % len(headers))
     m.headers_len = len(headers)
     refs = [
+        headers_ref,
         pack_string(m.method, method),
         pack_string(m.path,   path)
     ]
