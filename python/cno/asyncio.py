@@ -54,6 +54,9 @@ class Request:
         head.extend(headers)
         self.conn.write_push(self.stream, method, path, head)
 
+    def cancel(self, code=raw.CNO_RST_INTERNAL_ERROR):
+        self.conn.write_reset(self.stream, code)
+
 
 class Response:
     def __init__(self, conn, stream, code, headers, payload, pushed):
