@@ -96,6 +96,7 @@ class Connection (raw.Connection, asyncio.Protocol):
         self.pushreqs = {}  # id -> push channel
         self.handles  = {}  # id -> handling task (server) or response promise (client)
         self.flowctl  = {}  # id -> flow open promise
+        self._paused  = False
 
     def connection_made(self, transport):
         self.transport = transport
@@ -134,6 +135,13 @@ class Connection (raw.Connection, asyncio.Protocol):
         if flow:
             flow.cancel()
 
+    def pause_writing(self):
+        self._paused = True
+
+    def resume_writing(self):
+        self._paused = False
+        self.on_flow_increase(0)
+
     def on_flow_increase(self, i):
         if not i:
             for flow in self.flowctl.values():
@@ -151,10 +159,11 @@ class Connection (raw.Connection, asyncio.Protocol):
             data = b''  # still need to send an empty END_STREAM frame if is_final = true
 
         while True:
-            sent = self.write_data(i, data, is_final)
-            data = data[sent:]
-            if not data:
-                break
+            if not self._paused:
+                sent = self.write_data(i, data, is_final)
+                data = data[sent:]
+                if not data:
+                    break
             try:
                 # assert (only one coroutine writes to each stream at a time)
                 await self.flowctl.setdefault(i, asyncio.Future(loop=self.loop))
