@@ -14,6 +14,9 @@ class Channel (asyncio.Queue):
 
     def close(self):
         self.closed = True
+        for g in self._getters:
+            if not g.done():
+                g.set_exception(StopAsyncIteration())
 
     def put_nowait(self, x):
         if self.closed:
