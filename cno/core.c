@@ -861,9 +861,12 @@ static int cno_settings_diff(const struct cno_connection_t *conn,
     const uint32_t *ax = a->array;
     const uint32_t *bx = b->array;
 
-    for (; ++i < CNO_SETTINGS_UNDEFINED; ++ax, ++bx)
-        if (*ax != *bx)
-            memcpy(ptr++, PACK(I16(i), I32(*bx)));
+    for (; ++i < CNO_SETTINGS_UNDEFINED; ++ax, ++bx) {
+        if (*ax != *bx) {
+            struct cno_buffer_t b = { PACK(I16(i), I32(*bx)) };
+            memcpy(ptr++, b.data, b.size);
+        }
+    }
 
     struct cno_frame_t frame = { CNO_FRAME_SETTINGS, 0, 0, { (char *) payload, (ptr - payload) * 6 } };
     return cno_frame_write(conn, NULL, &frame);

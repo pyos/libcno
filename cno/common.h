@@ -107,8 +107,8 @@ int cno_error_upd(const char *file, int line);
 static const struct cno_buffer_t     CNO_BUFFER_EMPTY     = { NULL, 0 };
 static const struct cno_buffer_dyn_t CNO_BUFFER_DYN_EMPTY = {{{NULL, 0}}, 0, 0};
 
-
-#if !CFFI_CDEF_MODE  // cffi does not compile inline functions
+// cffi does not compile inline functions
+#if !CFFI_CDEF_MODE
 
 static inline struct cno_buffer_t CNO_BUFFER_STRING(const char *s)
 {
