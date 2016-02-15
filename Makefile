@@ -2,7 +2,7 @@ CC       ?= gcc
 CFLAGS   ?= -O3
 PYTHON   ?= python3
 
-COMPILE = $(CC) $(CFLAGS) -std=c11 -Wall -Wextra -Werror -fPIC -o
+COMPILE = $(CC) -std=c11 -Wall -Wextra -fPIC $(CFLAGS) -o
 DYNLINK = $(CC) -shared -o
 ARCHIVE = ar rcs
 
