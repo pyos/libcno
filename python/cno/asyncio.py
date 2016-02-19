@@ -264,5 +264,8 @@ async def request(loop, method, url, headers=[], payload=b'') -> Response:
         url = urllib.parse.urlparse(url)
 
     conn = await connect(loop, url)
-    resp = await conn.request(method, url.path, headers, payload)
-    return resp
+    try:
+        return await conn.request(method, url.path, headers, payload)
+    except BaseException as err:
+        conn.close()
+        raise
