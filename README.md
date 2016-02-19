@@ -90,8 +90,8 @@ async def handle(request: cno.Request):
         channel.close()
         await request.respond(200, [], channel)
 
-protocol = cno.Server(event_loop, handle)
-# server = await event_loop.create_server(lambda: protocol, '', 8000, ssl=...)
+make_protocol = lambda: cno.Server(event_loop, handle)
+# server = await event_loop.create_server(make_protocol, '', 8000, ssl=...)
 ```
 
 Client:
