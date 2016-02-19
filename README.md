@@ -91,7 +91,10 @@ async def handle(request: cno.Request):
         await request.respond(200, [], channel)
 
 make_protocol = lambda: cno.Server(event_loop, handle)
-# server = await event_loop.create_server(make_protocol, '', 8000, ssl=...)
+# When using TLS, don't forget to tell clients you support HTTP 2:
+# ssl_context.set_alpn_protocols(['h2', 'http/1.1'])
+# ssl_context.set_npn_protocols(['h2', 'http/1.1'])
+# server = await event_loop.create_server(make_protocol, '', 8000, ssl=ssl_context)
 ```
 
 Client:
