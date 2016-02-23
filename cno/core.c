@@ -413,8 +413,8 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
 
     int failed = cno_frame_handle_message(conn, stream, frame, &msg);
 
-    for (struct cno_header_t *it = headers + msg.headers_len; it != headers;)
-        cno_hpack_free_header(--it);
+    for (unsigned i = 0; i < msg.headers_len; i++)
+        cno_hpack_free_header(&headers[i]);
 
     cno_buffer_dyn_clear(&conn->continued);
     conn->continued = CNO_BUFFER_DYN_EMPTY;
@@ -863,8 +863,8 @@ static int cno_settings_diff(const struct cno_connection_t *conn,
 
     for (; ++i < CNO_SETTINGS_UNDEFINED; ++ax, ++bx) {
         if (*ax != *bx) {
-            struct cno_buffer_t b = { PACK(I16(i), I32(*bx)) };
-            memcpy(ptr++, b.data, b.size);
+            struct cno_buffer_t buf = { PACK(I16(i), I32(*bx)) };
+            memcpy(ptr++, buf.data, buf.size);
         }
     }
 
@@ -932,11 +932,9 @@ void cno_connection_reset(struct cno_connection_t *conn)
     cno_hpack_clear(&conn->encoder);
     cno_hpack_clear(&conn->decoder);
 
-    struct cno_stream_t **s;
-
-    for (s = &conn->streams[0]; s != &conn->streams[CNO_STREAM_BUCKETS]; s++)
-        while (*s)
-            cno_stream_destroy(conn, *s);
+    for (int i = 0; i < CNO_STREAM_BUCKETS; i++)
+        while (conn->streams[i])
+            cno_stream_destroy(conn, conn->streams[i]);
 }
 
 
@@ -1043,9 +1041,11 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     0
                 };
 
-                char * ptr = (char *) it->name.data;
-                char * end = (char *) it->name.data + it->name.size;
-                for (; ptr != end; ptr++) *ptr = tolower(*ptr);
+                {
+                    char * ptr = (char *) it->name.data;
+                    char * end = (char *) it->name.data + it->name.size;
+                    for (; ptr != end; ptr++) *ptr = tolower(*ptr);
+                }
 
                 if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("http2-settings"))) {
                     // TODO decode & emit on_frame

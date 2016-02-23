@@ -152,7 +152,7 @@ static int cno_hpack_decode_uint(struct cno_buffer_dyn_t *source, uint8_t mask, 
             if (size == sizeof(size_t))
                 return CNO_ERROR(COMPRESSION, "uint literal too large");
 
-            *out += (*src & 0x7F) << (7 * size++ - 7);
+            *out += (*src & 0x7Ful) << (7 * size++ - 7);
         } while (*src++ & 0x80);
 
     cno_buffer_dyn_shift(source, size);
@@ -225,7 +225,7 @@ static int cno_hpack_decode_one(struct cno_hpack_t      *state,
         return CNO_ERROR(COMPRESSION, "expected header, got EOF");
 
     size_t index = 0;
-    size_t flags = 0;
+    uint8_t flags = 0;
 
     if (*source->data & 0x80) {
         // 1....... -- name & value taken from the table
@@ -307,7 +307,7 @@ int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t s,
             return CNO_ERROR(COMPRESSION, "header list too long");
 
         if (cno_hpack_decode_one(state, &buf, ptr)) {
-            while (ptr != rs)
+            while (ptr > rs)
                 cno_hpack_free_header(--ptr);
 
             return CNO_ERROR_UP();
@@ -388,19 +388,13 @@ huffman_inefficient:
 static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf, const struct cno_header_t *h)
 {
     int index = cno_hpack_index_of(state, h);
+    if (index < 0)
+        return cno_hpack_encode_uint(buf, 0x80, 0x7F, -index);
 
-    if (h->flags & CNO_HEADER_NOT_INDEXED) {
-        // "not indexed" means not added to the dynamic table. if there's already a header
-        // with the same name there, we should still use its index for compression.
-        if (cno_hpack_encode_uint(buf, 0x10, 0xF, abs(index)))
+    if (h->flags & CNO_HEADER_NOT_INDEXED
+        ? cno_hpack_encode_uint(buf, 0x10, 0x0F, index)
+        : cno_hpack_encode_uint(buf, 0x40, 0x3F, index) || cno_hpack_index(state, h))
             return CNO_ERROR_UP();
-    } else {
-        if (index < 0)
-            return cno_hpack_encode_uint(buf, 0x80, 0x7F, -index);
-
-        if (cno_hpack_encode_uint(buf, 0x40, 0x3F, index) || cno_hpack_index(state, h))
-            return CNO_ERROR_UP();
-    }
 
     if (!index)
         if (cno_hpack_encode_string(buf, h->name))
