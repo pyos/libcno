@@ -40,16 +40,20 @@ class Request:
         self.path     = path
         self.headers  = headers
         self.payload  = payload
+        self._prev_rq = None
+        self._this_rq = None
 
     async def respond(self, code, headers, data):
+        if self._prev_rq:
+            await self._prev_rq
         # XXX perhaps imbuing HEAD with a special meaning is a task
         #     for a web framework instead?
         have_data = data and self.method != 'HEAD'
-        # TODO if this is a pipelined HTTP/1.1 request, wait until the previous one
-        #      is responded to.
         self.conn.write_message(self.stream, code, '', '', headers, not have_data)
         if have_data:
             await self.conn.write_all_data(self.stream, data, True)
+        if self._this_rq and not self._this_rq.cancelled():
+            self._this_rq.set_result(None)
 
     def push(self, method, path, headers=[]):
         copy = {':authority', ':scheme'} - {k for k in headers}
@@ -159,6 +163,7 @@ class Connection (raw.Connection, asyncio.Protocol):
         if isinstance(data, Channel):
             async for chunk in data:
                 await self.write_all_data(i, chunk, False)
+                data.task_done()
             data = b''  # still need to send an empty END_STREAM frame if is_final = true
 
         while True:
@@ -224,17 +229,22 @@ class Server (Connection):
         super().__init__(loop, True)
         #: An async function that accepts a single request.
         self.handle = handle
+        self._pipelined = [None]
 
     def on_message_start(self, i, code, method, path, headers):
-        if i in self.handles:
-            # TODO: actually spawn a task, but make `respond` block until
-            #       the previous tasks are completed. Or raise ConnectionError
-            #       if there are too many tasks.
-            raise NotImplementedError('HTTP/1.1 pipelining not supported (yet)')
-
         req = Request(self, i, method, path, headers, self.payloads[i])
-        self.handles[i] = asyncio.ensure_future(self.handle(req), loop=self.loop)
-        self.handles[i].add_done_callback(lambda _: self.handles.pop(i, None))
+        handle = self.handles[i] = asyncio.ensure_future(self.handle(req), loop=self.loop)
+        handle.add_done_callback(lambda _: self.handles.pop(i, None))
+
+        if not self.is_http2:
+            req._this_rq = asyncio.Future(loop=self.loop)
+            req._prev_rq = self._pipelined[-1]
+            self._pipelined.append(req._this_rq)
+
+            @handle.add_done_callback
+            def on_done(_):
+                req._this_rq.cancel()
+                self._pipelined.remove(req._this_rq)
 
 
 async def connect(loop, url) -> Client:
