@@ -46,13 +46,15 @@ class Request:
     async def respond(self, code, headers, data):
         if self._prev_rq:
             await self._prev_rq
+        if self._this_rq and self._this_rq.done():
+            raise ConnectionError('already responded')
         # XXX perhaps imbuing HEAD with a special meaning is a task
         #     for a web framework instead?
         have_data = data and self.method != 'HEAD'
         self.conn.write_message(self.stream, code, '', '', headers, not have_data)
         if have_data:
             await self.conn.write_all_data(self.stream, data, True)
-        if self._this_rq and not self._this_rq.cancelled():
+        if self._this_rq:
             self._this_rq.set_result(None)
 
     def push(self, method, path, headers=[]):
@@ -62,7 +64,12 @@ class Request:
         self.conn.write_push(self.stream, method, path, head)
 
     def cancel(self, code=raw.CNO_RST_INTERNAL_ERROR):
-        self.conn.write_reset(self.stream, code)
+        try:
+            self.conn.write_reset(self.stream, code)
+        except ConnectionError as err:
+            if err.errno != raw.CNO_ERRNO_DISCONNECT:
+                raise
+            self.conn.transport.close()
 
 
 class Response:
