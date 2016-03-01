@@ -88,6 +88,7 @@ async def handle(request: cno.Request):
         await channel.put(b'!!!')  # this should preferably be done in a separate
         await channel.put(b'\n')   # coroutine, naturally.
         channel.close()
+        # Or you can use any async iterable instead.
         await request.respond(200, [], channel)
 
 make_protocol = lambda: cno.Server(event_loop, handle)

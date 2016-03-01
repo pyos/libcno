@@ -1,6 +1,8 @@
 import asyncio
 import urllib.parse
 
+from collections.abc import AsyncIterable
+
 try:
     import ssl
 except ImportError:
@@ -167,10 +169,9 @@ class Connection (raw.Connection, asyncio.Protocol):
                 flow.set_result(None)
 
     async def write_all_data(self, i, data, is_final):
-        if isinstance(data, Channel):
+        if isinstance(data, AsyncIterable):
             async for chunk in data:
                 await self.write_all_data(i, chunk, False)
-                data.task_done()
             data = b''  # still need to send an empty END_STREAM frame if is_final = true
 
         while True:
