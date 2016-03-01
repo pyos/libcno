@@ -944,7 +944,8 @@ int cno_connection_is_http2(struct cno_connection_t *conn)
 {
     return conn->state != CNO_CONNECTION_HTTP1_INIT &&
            conn->state != CNO_CONNECTION_HTTP1_READY &&
-           conn->state != CNO_CONNECTION_HTTP1_READING;
+           conn->state != CNO_CONNECTION_HTTP1_READING &&
+           conn->state != CNO_CONNECTION_UNDEFINED;
 }
 
 
