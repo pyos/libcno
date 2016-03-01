@@ -1239,7 +1239,7 @@ int cno_connection_made(struct cno_connection_t *conn, enum CNO_HTTP_VERSION ver
 int cno_connection_data_received(struct cno_connection_t *conn, const char *data, size_t length)
 {
     if (conn->state == CNO_CONNECTION_UNDEFINED)
-        return CNO_ERROR(INVALID_STATE, "connection closed");
+        return CNO_ERROR(DISCONNECT, "connection closed");
 
     if (cno_buffer_dyn_concat(&conn->buffer, (struct cno_buffer_t) { data, length }))
         return CNO_ERROR_UP();
@@ -1308,7 +1308,7 @@ int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST
 int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct cno_message_t *msg)
 {
     if (conn->state == CNO_CONNECTION_UNDEFINED)
-        return CNO_ERROR(INVALID_STATE, "connection closed");
+        return CNO_ERROR(DISCONNECT, "connection closed");
 
     if (conn->client)
         return CNO_ERROR(ASSERTION, "clients can't push");
@@ -1364,7 +1364,7 @@ payload_generation_error:
 int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const struct cno_message_t *msg, int final)
 {
     if (conn->state == CNO_CONNECTION_UNDEFINED)
-        return CNO_ERROR(INVALID_STATE, "connection closed");
+        return CNO_ERROR(DISCONNECT, "connection closed");
 
     if (!cno_connection_is_http2(conn)) {
         if (stream != 1)
@@ -1509,7 +1509,7 @@ payload_generation_error:
 int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *data, size_t length, int final)
 {
     if (conn->state == CNO_CONNECTION_UNDEFINED)
-        return CNO_ERROR(INVALID_STATE, "connection closed");
+        return CNO_ERROR(DISCONNECT, "connection closed");
 
     if (!cno_connection_is_http2(conn)) {
         int chunked = conn->flags & CNO_CONN_FLAG_WRITING_CHUNKED;
