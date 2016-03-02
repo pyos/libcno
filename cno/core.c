@@ -1092,13 +1092,8 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 } else
 
                 if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("transfer-encoding"))) {
-                    if (!cno_buffer_eq(it->value, CNO_BUFFER_STRING("chunked")))
-                        return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: unknown transfer-encoding");
-
-                    if (conn->http1_remaining)
-                        return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: chunked encoding w/ fixed length");
-
-                    conn->http1_remaining = (uint32_t) -1;
+                    if (!cno_buffer_eq(it->value, CNO_BUFFER_STRING("identity")))
+                        conn->http1_remaining = (uint32_t) -1;
                 }
             }
 
