@@ -1,3 +1,4 @@
+import socket
 import asyncio
 import urllib.parse
 
@@ -116,10 +117,13 @@ class Connection (raw.Connection, asyncio.Protocol):
 
     def connection_made(self, transport):
         self.transport = transport
-        socket = transport.get_extra_info('ssl_object')
-        super().connection_made(socket is not None and (
-            (ssl.HAS_ALPN and socket.selected_alpn_protocol() == 'h2') or
-            (ssl.HAS_NPN  and socket.selected_npn_protocol()  == 'h2')))
+        sock = transport.get_extra_info('socket')
+        if sock:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        sslobj = transport.get_extra_info('ssl_object')
+        super().connection_made(sslobj is not None and (
+            (ssl.HAS_ALPN and sslobj.selected_alpn_protocol() == 'h2') or
+            (ssl.HAS_NPN  and sslobj.selected_npn_protocol()  == 'h2')))
 
     def close(self):
         self.transport.close()
