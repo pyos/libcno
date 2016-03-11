@@ -14,7 +14,7 @@
 /* Max. length of an outbound header in HTTP/1.1 mode. If a header longer than this is
  * passed to `cno_write_message`, it will return an assertion error. Does not affect
  * inbound messages and HTTP 2. Controls stack space usage. */
-#define CNO_MAX_HTTP1_HEADER_SIZE 4096
+#define CNO_MAX_HTTP1_HEADER_SIZE 2048
 #endif
 
 #ifndef CNO_MAX_HEADERS
