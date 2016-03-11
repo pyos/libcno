@@ -162,16 +162,15 @@ static inline int cno_buffer_dyn_concat(struct cno_buffer_dyn_t *a, const struct
         return CNO_OK;
     }
 
-    size_t new_size = (a->size + b.size + CNO_BUFFER_ALLOC_INCR - 1) / CNO_BUFFER_ALLOC_INCR * CNO_BUFFER_ALLOC_INCR;
+    size_t new_size = (a->size + b.size + CNO_BUFFER_ALLOC_INCR - 1) / CNO_BUFFER_ALLOC_INCR
+                                                                     * CNO_BUFFER_ALLOC_INCR;
 
     char *m = (char *) malloc(new_size);
-
     if (m == NULL)
         return CNO_ERROR(NO_MEMORY, "%zu bytes", new_size);
 
     if (a->data != NULL)
         memcpy(m, a->data, a->size);
-
     memcpy(m + a->size, b.data, b.size);
     free(a->data);
     a->data    = m;
