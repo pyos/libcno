@@ -131,7 +131,7 @@ class Connection:
 
     @property
     def next_stream(self):
-        return cno_stream_next_id(self._obj)
+        return cno_connection_next_stream(self._obj)
 
     def connection_made(self, is_http2):
         return self._may_fail(cno_connection_made(self._obj, CNO_HTTP2 if is_http2 else CNO_HTTP1))

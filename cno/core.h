@@ -284,7 +284,7 @@ int  cno_connection_set_config    (struct cno_connection_t *, const struct cno_s
  *
  *  headers = new cno_header_t[] { {name, value}, ... }
  *  message = new cno_message_t { 0, method, path, headers, length(headers) }
- *  stream  = cno_stream_next_id
+ *  stream  = cno_connection_next_stream
  *  cno_write_message where final = 1 if there is no payload
  *  for (chunk in payload) {
  *      while (length(chunk) != 0) {
@@ -304,18 +304,18 @@ int  cno_connection_set_config    (struct cno_connection_t *, const struct cno_s
  * (Also as a server) pushing resources:
  *
  *  Same as sending a request, but use cno_write_push instead of cno_write_message
- *  and get the stream id from an event, not from cno_stream_next_id.
+ *  and get the stream id from an event, not from cno_connection_next_stream.
  *
  * (As a client again) aborting a push:
  *
  *  Call cno_write_reset with a stream id provided by on_message_push and code CNO_RST_CANCEL.
  *
  */
-uint32_t cno_stream_next_id (struct cno_connection_t *);
-int      cno_write_reset    (struct cno_connection_t *, uint32_t /* stream */, enum CNO_RST_STREAM_CODE);
-int      cno_write_push     (struct cno_connection_t *, uint32_t, const struct cno_message_t *);
-int      cno_write_message  (struct cno_connection_t *, uint32_t, const struct cno_message_t *, int final);
-int      cno_write_data     (struct cno_connection_t *, uint32_t, const char *, size_t, int final);
+uint32_t cno_connection_next_stream (struct cno_connection_t *);
+int cno_write_reset    (struct cno_connection_t *, uint32_t /* stream */, enum CNO_RST_STREAM_CODE);
+int cno_write_push     (struct cno_connection_t *, uint32_t, const struct cno_message_t *);
+int cno_write_message  (struct cno_connection_t *, uint32_t, const struct cno_message_t *, int final);
+int cno_write_data     (struct cno_connection_t *, uint32_t, const char *, size_t, int final);
 
 #ifdef __cplusplus
 }  // extern "C"

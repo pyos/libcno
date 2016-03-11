@@ -1121,7 +1121,7 @@ int cno_connection_lost(struct cno_connection_t *conn)
 }
 
 
-uint32_t cno_stream_next_id(struct cno_connection_t *conn)
+uint32_t cno_connection_next_stream(struct cno_connection_t *conn)
 {
     if (!cno_connection_is_http2(conn))
         return 1;
@@ -1162,7 +1162,7 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
     if (!(streamobj->accept & CNO_ACCEPT_WRITE_PUSH))
         return CNO_OK;  // pushed requests are safe, so whether we send one doesn't matter
 
-    uint32_t child = cno_stream_next_id(conn);
+    uint32_t child = cno_connection_next_stream(conn);
 
     struct cno_stream_t *childobj = cno_stream_new(conn, child, CNO_LOCAL);
 
