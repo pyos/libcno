@@ -1,3 +1,5 @@
+### What.
+
 Socketless HTTP 2.
 
 ### Why.
@@ -7,22 +9,17 @@ from Python. Also, because why not?
 
 ### C API
 
-`make obj/libcno.a`
+```bash
+make obj/libcno.a
+```
 
-Just read core.h. Basically, you create a `cno_connection_t`, then follow a simple
+Just read core.h. And common.h, for buffers and error handling. And hpack.h for headers.
+Basically, you create a `cno_connection_t`, then follow a simple
 chain of `cno_connection_init` -> connect some callbacks -> `cno_connection_made` ->
 `cno_connection_data_received` -> (repeat while I/O is still possible) ->
 `cno_connection_lost` -> `cno_connection_reset`, skipping to the last step if
 anything returns an error and using `cno_write_message` + `cno_write_data` or
 `cno_write_push` or `cno_write_reset` to send some stuff of your own.
-
-Oh, and here's one thing missing from core.h. You'll need it.
-
-```c
-struct cno_buffer_t { char *data; size_t size; };
-struct cno_buffer_t CNO_BUFFER_EMPTY;
-struct cno_buffer_t CNO_BUFFER_STRING(char *str /* null-terminated */);
-```
 
 ### Python API
 
