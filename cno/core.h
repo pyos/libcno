@@ -64,7 +64,8 @@ enum CNO_STREAM_ACCEPT
     CNO_ACCEPT_DATA          = 0x02,
     CNO_ACCEPT_PUSH          = 0x04,
     CNO_ACCEPT_TRAILERS      = 0x08,
-    CNO_ACCEPT_INBOUND       = 0x0F,
+    CNO_ACCEPT_NOP_HEADERS   = 0x10,  // decompress but discard header blocks on reset streams
+    CNO_ACCEPT_INBOUND       = 0x1F,
     CNO_ACCEPT_WRITE_PUSH    = 0x20,
     CNO_ACCEPT_WRITE_HEADERS = 0x40,
     CNO_ACCEPT_WRITE_DATA    = 0x80,
@@ -154,7 +155,6 @@ struct cno_stream_t
     uint32_t id;
      int32_t window_recv;
      int32_t window_send;
-    uint8_t closed;
     uint8_t /* enum CNO_STREAM_ACCEPT */ accept;
 };
 
@@ -275,11 +275,10 @@ int  cno_connection_stop          (struct cno_connection_t *);
  * `cno_write_push` does nothing if this returns false. On the other hand,
  * you can't switch protocols (e.g. to websockets) if this returns true. */
 int  cno_connection_is_http2      (struct cno_connection_t *);
-/* cno_settings_copy loads a struct with current values, cno_settings_apply
- * either sends updated values to the peer or schedules them to be sent
- * when the connection enters HTTP 2 mode. */
-void cno_settings_copy            (struct cno_connection_t *,       struct cno_settings_t *);
-int  cno_settings_apply           (struct cno_connection_t *, const struct cno_settings_t *);
+/* Send a new configuration/schedule it to be sent when upgrading to HTTP 2.
+ * The current configuration can be read through `conn->settings[CNO_LOCAL]`.
+ * DO NOT modify `conn->settings` directly -- it is used to compute the delta. */
+int  cno_connection_set_config    (struct cno_connection_t *, const struct cno_settings_t *);
 
 /* (As a client) sending requests:
  *

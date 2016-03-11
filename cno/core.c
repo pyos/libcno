@@ -15,7 +15,7 @@ static inline uint32_t read4(const uint8_t *p) { return p[0] << 24 | p[1] << 16 
 static inline uint32_t read3(const uint8_t *p) { return read4(p) >> 8; }
 
 
-// pack several bytes into an array, return it and its length.
+/* construct a stack-allocated array of bytes in place. expands to (pointer, length) */
 #define PACK(...) (char *) (uint8_t []) { __VA_ARGS__ }, sizeof((uint8_t []) { __VA_ARGS__ })
 #define I8(x)  x
 #define I16(x) x >> 8, x
@@ -23,61 +23,33 @@ static inline uint32_t read3(const uint8_t *p) { return read4(p) >> 8; }
 #define I32(x) x >> 24, x >> 16, x >> 8, x
 
 
+/* fake http "request" sent by the client at the beginning of a connection */
 static const struct cno_buffer_t CNO_PREFACE = { "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24 };
+
+/* standard-defined pre-initial-SETTINGS values */
 static const struct cno_settings_t CNO_SETTINGS_STANDARD = {{{ 4096, 1, -1,   65536, 16384, -1 }}};
+
+/* actual values to send in the first SETTINGS frame */
 static const struct cno_settings_t CNO_SETTINGS_INITIAL  = {{{ 4096, 1, 1024, 65536, 65536, -1 }}};
 
 
-/* check whether a stream is initiated by us, not our peer.
- *
- * even-numbered streams are initiated by the server.
- */
 static int cno_stream_is_local(const struct cno_connection_t *conn, uint32_t id)
 {
     return id % 2 == conn->client;
 }
 
 
-/* deallocate a stream object *without firing a callback*.
+/* each stream carries a single request-response pair, plus push promises.
  *
- * this is a fallback routine. since creating a stream always fires on_stream_start,
- * it should only be used if the state doesn't matter anymore.
- */
-static void cno_stream_destroy(struct cno_connection_t *conn, struct cno_stream_t *stream)
-{
-    conn->stream_count[cno_stream_is_local(conn, stream->id)]--;
-
-    struct cno_stream_t **s = &conn->streams[stream->id % CNO_STREAM_BUCKETS];
-    while (*s != stream) s = &(*s)->next;
-    *s = stream->next;
-
-    free(stream);
-}
-
-
-/* deallocate a stream object.
+ * local:: 1 (== CNO_LOCAL) if this side is initiating the stream.
  *
- * fires: on_stream_end.
- */
-static int cno_stream_destroy_clean(struct cno_connection_t *conn, struct cno_stream_t *stream)
-{
-    uint32_t id = stream->id;
-    cno_stream_destroy(conn, stream);
-    return CNO_FIRE(conn, on_stream_end, id);
-}
-
-
-/* allocate resources for a new stream.
+ * throws::
  *
- * third argument should be 1 (== CNO_LOCAL) iff we're initiating this stream.
+ *     INVALID_STREAM if stream id is unacceptable.
+ *     WOULD_BLOCK    if this side has initiated too many streams.
+ *     TRANSPORT      if the other side has initiated too many streams.
+ *     NO_MEMORY      streams are heap-allocated
  *
- * fires: on_stream_start.
- * throws:
- *   INVALID_STREAM if third argument is invalid.
- *   INVALID_STREAM if stream id is lower than that of some existing stream.
- *   WOULD_BLOCK    if we've already initiated too many streams.
- *   TRANSPORT      if the peer has gone over our limit on concurrent streams.
- *   NO_MEMORY
  */
 static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint32_t id, int local)
 {
@@ -92,7 +64,6 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
                      : CNO_ERROR_NULL(TRANSPORT,   "peer exceeded stream limit");
 
     struct cno_stream_t *stream = malloc(sizeof(struct cno_stream_t));
-
     if (!stream)
         return CNO_ERROR_NULL(NO_MEMORY, "%zu bytes", sizeof(struct cno_stream_t));
 
@@ -117,10 +88,6 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
 }
 
 
-/* retrieve a stream object by id, or NULL if not found.
- *
- * (that's a simple closed-hash prime-order map with integer keys.)
- */
 static struct cno_stream_t * cno_stream_find(const struct cno_connection_t *conn, uint32_t id)
 {
     struct cno_stream_t *s = conn->streams[id % CNO_STREAM_BUCKETS];
@@ -129,31 +96,35 @@ static struct cno_stream_t * cno_stream_find(const struct cno_connection_t *conn
 }
 
 
-/* forbid sending any more data over this stream.
- *
- * inbound data will still be accepted. abort the stream (see cno_write_reset)
- * if that data is undesired.
- *
- * fires: on_stream_end if the stream is closed in the other direction as well.
- */
-static int cno_stream_close(struct cno_connection_t *conn, struct cno_stream_t *stream)
+static void cno_stream_free(struct cno_connection_t *conn, struct cno_stream_t *stream)
 {
-    if (!(stream->accept &= ~CNO_ACCEPT_OUTBOUND))
-        return cno_stream_destroy_clean(conn, stream);
+    conn->stream_count[cno_stream_is_local(conn, stream->id)]--;
 
-    return CNO_OK;
+    struct cno_stream_t **s = &conn->streams[stream->id % CNO_STREAM_BUCKETS];
+    while (*s != stream) s = &(*s)->next;
+    *s = stream->next;
+
+    free(stream);
 }
 
 
-/* send a single frame. no flow control accounting is done.
+static int cno_stream_rst(struct cno_connection_t *conn, struct cno_stream_t *stream)
+{
+    uint32_t id = stream->id;
+    cno_stream_free(conn, stream);
+    return CNO_FIRE(conn, on_stream_end, id);
+}
+
+
+/* send a single non-flow-controlled frame, splitting DATA/HEADERS if they are too big.
  *
- * fires: on_write, on_frame_send.
- * throws:
- *   ASSERTION   if a non-DATA frame exceeds the size limit (how)
- *   ASSERTION   if a padded frame exceeds the size limit (FIXME)
+ * throws::
+ *
+ *     ASSERTION   if a non-DATA frame exceeds the size limit (how)
+ *     ASSERTION   if a padded frame exceeds the size limit (FIXME)
+ *
  */
 static int cno_frame_write(const struct cno_connection_t *conn,
-                           const struct cno_stream_t     *stream,
                            const struct cno_frame_t      *frame)
 {
     size_t length = frame->payload.size;
@@ -186,7 +157,7 @@ static int cno_frame_write(const struct cno_connection_t *conn,
     part.payload.size = limit;
 
     while (length > limit) {
-        if (cno_frame_write(conn, stream, &part))
+        if (cno_frame_write(conn, &part))
             return CNO_ERROR_UP();
 
         length -= limit;
@@ -199,67 +170,67 @@ static int cno_frame_write(const struct cno_connection_t *conn,
 
     part.flags |= frame->flags & carry_on_last;
     part.payload.size = length;
-    return cno_frame_write(conn, stream, &part);
+    return cno_frame_write(conn, &part);
 }
 
 
-/* send an RST_STREAM frame (and close the stream for both input and output.)
- *
- * fires: on_write, on_frame_send, maybe on_stream_end.
- * throws: ASSERTION if attempted to reset stream 0
- */
+static int cno_frame_write_settings(const struct cno_connection_t *conn,
+                                    const struct cno_settings_t *previous,
+                                    const struct cno_settings_t *current)
+{
+    size_t i = 0;
+    uint8_t payload[CNO_SETTINGS_UNDEFINED - 1][6], (*ptr)[6] = payload;
+    const uint32_t *ax = previous->array;
+    const uint32_t *bx = current->array;
+
+    for (; ++i < CNO_SETTINGS_UNDEFINED; ++ax, ++bx) {
+        if (*ax != *bx) {
+            struct cno_buffer_t buf = { PACK(I16(i), I32(*bx)) };
+            memcpy(ptr++, buf.data, buf.size);
+        }
+    }
+
+    struct cno_frame_t frame = { CNO_FRAME_SETTINGS, 0, 0, { (char *) payload, (ptr - payload) * 6 } };
+    return cno_frame_write(conn, &frame);
+}
+
+
 static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
                                       struct cno_stream_t     *stream,
                                       uint32_t /* enum CNO_RST_STREAM_CODE */ code)
 {
     struct cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, stream->id, { PACK(I32(code)) } };
 
-    if (cno_frame_write(conn, stream, &error))
+    if (cno_frame_write(conn, &error))
         return CNO_ERROR_UP();
-
-    // a stream in closed state can still accept headers/data.
-    // headers will be decompressed; other than that, everything is ignored.
-    stream->closed  = 1;
-    stream->accept &= ~CNO_ACCEPT_OUTBOUND;
 
     if (!(stream->accept & CNO_ACCEPT_HEADERS))
         // since headers were already handled, this stream can be safely destroyed.
-        return cno_stream_destroy_clean(conn, stream);
+        // i sure hope there are no trailers, though.
+        return cno_stream_rst(conn, stream);
 
+    // still have to decompress headers to maintain shared compression state.
+    // FIXME headers may never arrive if the peer receives RST_STREAM before sending them.
+    stream->accept &= ~CNO_ACCEPT_OUTBOUND;
+    stream->accept |=  CNO_ACCEPT_NOP_HEADERS;
     return CNO_OK;
 }
 
 
-/* send a GOAWAY frame.
- *
- * fires: on_write, on_frame_send.
- *
- * TODO: send some opaque data?
- */
-static int cno_frame_write_goaway(struct cno_connection_t *conn, uint32_t /* enum CNO_RST_STREAM_CODE */ code)
+static int cno_frame_write_goaway(struct cno_connection_t *conn,
+                                  uint32_t /* enum CNO_RST_STREAM_CODE */ code)
 {
     uint32_t last = conn->last_stream[CNO_REMOTE];
     struct cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, { PACK(I32(last), I32(code)) } };
-    return cno_frame_write(conn, NULL, &error);
+    return cno_frame_write(conn, &error);
 }
 
 
-/* close a connection due to an error.
- *
- * fires: on_write, on_frame_send.
- * throws: TRANSPORT, always.
- */
-#define cno_frame_write_error(conn, type, ...)           \
-    (cno_frame_write_goaway(conn, type) ? CNO_ERROR_UP() \
-                                        : CNO_ERROR(TRANSPORT, __VA_ARGS__))
+/* shut down a connection and *then* throw a TRANSPORT error. */
+#define cno_frame_write_error(conn, type, ...) \
+    (cno_frame_write_goaway(conn, type) ? CNO_ERROR_UP() : CNO_ERROR(TRANSPORT, __VA_ARGS__))
 
 
-/* handle a frame that carries an END_STREAM flag.
- *
- * fires:
- *   on_message_end
- *   on_stream_end   if the stream is now closed in both directions.
- */
 static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
                                        struct cno_stream_t     *stream)
 {
@@ -272,15 +243,10 @@ static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
     if (half_open)
         return CNO_OK;
 
-    return cno_stream_destroy_clean(conn, stream);
+    return cno_stream_rst(conn, stream);
 }
 
 
-/* ensure that an HTTP 2 message satisfies the rules regarding headers and their arragment;
- * if it does, pass it on to the application layer; otherwise, reset the stream.
- *
- * emits: on_message_start, on_message_trail, on_push_promise, maybe on_message_end/on_stream_end
- */
 static int cno_frame_handle_message(struct cno_connection_t *conn,
                                     struct cno_stream_t     *stream,
                                     struct cno_frame_t      *frame,
@@ -356,6 +322,10 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
     }
 
     if (stream->accept & CNO_ACCEPT_TRAILERS) {
+        if (!(frame->flags & CNO_FLAG_END_STREAM))
+            // there is no data after trailers.
+            goto invalid_message;
+
         stream->accept &= ~CNO_ACCEPT_INBOUND;
 
         if (CNO_FIRE(conn, on_message_trail, stream->id, msg))
@@ -374,8 +344,9 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
     stream->accept &= ~CNO_ACCEPT_HEADERS;
     stream->accept |=  CNO_ACCEPT_TRAILERS | CNO_ACCEPT_DATA;
 
-    if (stream->closed)
-        return cno_stream_destroy_clean(conn, stream);
+    if (stream->accept & CNO_ACCEPT_NOP_HEADERS)
+        // hpack compression is now in sync, there's no use for this stream anymore.
+        return cno_stream_rst(conn, stream);
 
     if (CNO_FIRE(conn, on_message_start, stream->id, msg))
         return CNO_ERROR_UP();
@@ -390,14 +361,6 @@ invalid_message:
 }
 
 
-/* handle a frame that carries an END_HEADERS flag.
- *
- * fires:
- *   on_message_push   if the frame is PUSH_PROMISE.
- *   on_message_start  if the frame is HEADERS and the stream was not reset.
- *
- * throws: TRANSPORT if header block is corrupt.
- */
 static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
                                         struct cno_stream_t     *stream,
                                         struct cno_frame_t      *frame)
@@ -424,15 +387,11 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
 }
 
 
-/* trim padding, if any, off a frame.
-
- * throws: PROTOCOL if the padding spec is malformed.
- */
 static int cno_frame_handle_padding(struct cno_connection_t *conn, struct cno_frame_t *frame)
 {
     if (frame->flags & CNO_FLAG_PADDED) {
         if (frame->payload.size == 0)
-            return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "no padding");
+            return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "no padding found");
 
         size_t padding = read1((const uint8_t *) frame->payload.data) + 1;
 
@@ -447,13 +406,6 @@ static int cno_frame_handle_padding(struct cno_connection_t *conn, struct cno_fr
 }
 
 
-/* handle a HEADERS frame.
- *
- * fires:
- *   on_message_start  if the frame has END_HEADERS set.
- *   on_message_end    if the frame has END_STREAM set.
- *   on_stream_end     if the frame has END_STREAM and the stream was unidirectional.
- */
 static int cno_frame_handle_headers(struct cno_connection_t *conn,
                                     struct cno_stream_t     *stream,
                                     struct cno_frame_t      *frame)
@@ -463,10 +415,10 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
 
     if (stream == NULL) {
         if (conn->client)
+            // servers cannot initiate streams.
             return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected HEADERS");
 
         stream = cno_stream_new(conn, frame->stream, CNO_REMOTE);
-
         if (stream == NULL)
             return CNO_ERROR_UP();
 
@@ -486,7 +438,7 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
         if (frame->payload.size < 5)
             return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "no priority spec");
 
-        // can do nothing with this data without access to the transport layer :((
+        // TODO implement stream prioritization
         frame->payload.data += 5;
         frame->payload.size -= 5;
     }
@@ -506,10 +458,6 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
 }
 
 
-/* handle a PUSH_PROMISE frame.
- *
- * fires: on_message_push if the frame has END_HEADERS set.
- */
 static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
                                          struct cno_stream_t     *stream,
                                          struct cno_frame_t      *frame)
@@ -524,34 +472,27 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
         return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "PUSH_PROMISE too short");
 
     uint32_t promised = read4((const uint8_t *) frame->payload.data);
-    frame->payload.data += 4;
-    frame->payload.size -= 4;
 
-    struct cno_stream_t *pushed = cno_stream_new(conn, promised, CNO_REMOTE);
-
-    if (pushed == NULL)
+    struct cno_stream_t *child = cno_stream_new(conn, promised, CNO_REMOTE);
+    if (child == NULL)
         return CNO_ERROR_UP();
 
-    pushed->accept = CNO_ACCEPT_HEADERS;
+    child->accept = CNO_ACCEPT_HEADERS;
     conn->continued_flags = 0;  // PUSH_PROMISE cannot have END_STREAM
     conn->continued_stream = stream->id;
     conn->continued_promise = promised;
 
-    if (cno_buffer_dyn_concat(&conn->continued, frame->payload))
-        // another compression error. we're screwed.
+    if (cno_buffer_dyn_concat(&conn->continued, (struct cno_buffer_t) { frame->payload.data + 4,
+                                                                        frame->payload.size - 4 }))
+        // a compression error. unrecoverable.
         return CNO_ERROR_UP();
 
     if (frame->flags & CNO_FLAG_END_HEADERS)
         return cno_frame_handle_end_headers(conn, stream, frame);
-
     return CNO_OK;
 }
 
 
-/* handle a CONTINUATION.
- *
- * fires: same as *_headers or *_push_promise, depending on what is continued.
- */
 static int cno_frame_handle_continuation(struct cno_connection_t *conn,
                                          struct cno_stream_t     *stream,
                                          struct cno_frame_t      *frame)
@@ -559,10 +500,8 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
     if (!stream || !conn->continued_stream)
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected CONTINUATION");
 
-    // we don't actually count CONTINUATIONs, but this is a good estimate. especially
-    // if the other side decides to send the message as a bunch of small frames.
+    // we don't actually count CONTINUATIONs, but this is an ok estimate.
     size_t max_buf_size = (CNO_MAX_CONTINUATIONS + 1) * conn->settings[CNO_LOCAL].max_frame_size;
-
     if (frame->payload.size + conn->continued.size > max_buf_size)
         // finally a chance to use that error code.
         return cno_frame_write_error(conn, CNO_RST_ENHANCE_YOUR_CALM, "too many HEADERS");
@@ -571,10 +510,8 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
 
     frame->flags |= conn->continued_flags;
-
     if (frame->flags & CNO_FLAG_END_HEADERS)
         return cno_frame_handle_end_headers(conn, stream, frame);
-
     return CNO_OK;
 }
 
@@ -582,23 +519,16 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
 /* ignore non-HEADERS frames on reset streams, as the spec requires. unfortunately,
  * these are indistinguishable from streams that were never opened, but hey, what
  * can i do, keep a set of uint32_t-s? memory doesn't grow on trees, you know. */
-static int cno_frame_invalid_stream(struct cno_connection_t *conn, struct cno_frame_t *frame)
+static int cno_frame_handle_invalid_stream(struct cno_connection_t *conn,
+                                           struct cno_frame_t *frame)
 {
-    if (0 < frame->stream && frame->stream <= conn->last_stream[cno_stream_is_local(conn, frame->stream)])
-        return CNO_OK;
-
-    // definitely idle
-    return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "invalid stream");
+    if (!frame->stream || frame->stream > conn->last_stream[cno_stream_is_local(conn, frame->stream)])
+        // definitely idle
+        return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "invalid stream");
+    return CNO_OK;
 }
 
 
-/* handle a DATA frame. this includes sending a WINDOW_UPDATE to compensate for its size.
- *
- * fires:
- *   on_message_data
- *   on_message_end   if carries END_STREAM
- *   on_stream_end    if carries END_STREAM and the stream is (was) unidirectional
- */
 static int cno_frame_handle_data(struct cno_connection_t *conn,
                                  struct cno_stream_t     *stream,
                                  struct cno_frame_t      *frame)
@@ -609,17 +539,15 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
 
     if (length) {
-        // XXX do frames sent to closed streams count against connection-wide flow control?
+        // TODO allow manual flow control
         struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, { PACK(I32(length)) } };
 
-        if (cno_frame_write(conn, NULL, &update))
+        if (cno_frame_write(conn, &update))
             return CNO_ERROR_UP();
-
-        // TODO update window_recv, should it ever become used.
     }
 
     if (!stream)
-        return cno_frame_invalid_stream(conn, frame);
+        return cno_frame_handle_invalid_stream(conn, frame);
 
     if (!(stream->accept & CNO_ACCEPT_DATA))
         return cno_frame_write_rst_stream(conn, stream, CNO_RST_STREAM_CLOSED);
@@ -634,14 +562,10 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
         return CNO_OK;
 
     struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, stream->id, { PACK(I32(length)) } };
-    return cno_frame_write(conn, stream, &update);
+    return cno_frame_write(conn, &update);
 }
 
 
-/* handle a PING frame, maybe by sending a pong.
- *
- * fires: on_pong technically, never, as there is no way to send a ping for now.
- */
 static int cno_frame_handle_ping(struct cno_connection_t *conn,
                                  struct cno_stream_t     *stream __attribute__((unused)),
                                  struct cno_frame_t      *frame)
@@ -656,16 +580,10 @@ static int cno_frame_handle_ping(struct cno_connection_t *conn,
         return CNO_FIRE(conn, on_pong, frame->payload.data);
 
     struct cno_frame_t response = { CNO_FRAME_PING, CNO_FLAG_ACK, 0, frame->payload };
-    return cno_frame_write(conn, NULL, &response);
+    return cno_frame_write(conn, &response);
 }
 
 
-/* handle a GOAWAY frame, at least when the error code is nonzero.
- * when it is, i have no idea what to do.
- *
- * fires: nothing.
- * throws: TRANSPORT if this frame is due to an error on our part.
- */
 static int cno_frame_handle_goaway(struct cno_connection_t *conn,
                                    struct cno_stream_t     *stream __attribute__((unused)),
                                    struct cno_frame_t      *frame)
@@ -677,40 +595,27 @@ static int cno_frame_handle_goaway(struct cno_connection_t *conn,
         return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "bad GOAWAY");
 
     const uint32_t error = read4((const uint8_t *) frame->payload.data + 4);
-
     if (error != CNO_RST_NO_ERROR)
         return CNO_ERROR(TRANSPORT, "disconnected with error %u", error);
-
     return CNO_OK;
 }
 
 
-/* handle an RST_STREAM frame by destroying an appropriate object.
- *
- * fires: on_stream_end.
- */
 static int cno_frame_handle_rst_stream(struct cno_connection_t *conn,
                                        struct cno_stream_t     *stream,
                                        struct cno_frame_t      *frame)
 {
     if (!stream)
-        return cno_frame_invalid_stream(conn, frame);
+        return cno_frame_handle_invalid_stream(conn, frame);
 
     if (frame->payload.size != 4)
         return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "bad RST_STREAM");
 
     // TODO parse the error code and do something with it.
-    return cno_stream_destroy_clean(conn, stream);
+    return cno_stream_rst(conn, stream);
 }
 
 
-/* do not handle a PRIORITY frame. prioritizing streams requires knowledge about
- * the transport layer (essentially, a normal write buffer should be transformed into
- * a priority queue of frames to send), which we do not have. we simply assume that
- * everything sent through on_write is transmitted instantly, so there's no contention.
- *
- * fires: also nothing.
- */
 static int cno_frame_handle_priority(struct cno_connection_t *conn,
                                      struct cno_stream_t     *stream __attribute__((unused)),
                                      struct cno_frame_t      *frame)
@@ -721,14 +626,11 @@ static int cno_frame_handle_priority(struct cno_connection_t *conn,
     if (frame->payload.size != 5)
         return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "bad PRIORITY");
 
+    // TODO implement prioritization
     return CNO_OK;
 }
 
 
-/* handle a SETTINGS frame and apply everything it says to our connection.
- *
- * fires: on_flow_increase if the frame carries a new flow control window size.
- */
 static int cno_frame_handle_settings(struct cno_connection_t *conn,
                                      struct cno_stream_t     *stream __attribute__((unused)),
                                      struct cno_frame_t      *frame)
@@ -736,10 +638,11 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
     if (frame->stream)
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "SETTINGS on a stream");
 
-    if (frame->flags & CNO_FLAG_ACK)
-        return frame->payload.size == 0
-             ? CNO_OK
-             : cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "bad SETTINGS ack");
+    if (frame->flags & CNO_FLAG_ACK) {
+        if (frame->payload.size)
+            return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "bad SETTINGS ack");
+        return CNO_OK;
+    }
 
     if (frame->payload.size % 6)
         return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "bad SETTINGS");
@@ -771,14 +674,10 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
     // TODO update stream flow control windows.
 
     struct cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK, 0, CNO_BUFFER_EMPTY };
-    return cno_frame_write(conn, NULL, &ack);
+    return cno_frame_write(conn, &ack);
 }
 
 
-/* handle a WINDOW_UPDATE frame. if there is data to send, the app should retry `write_data`.
- *
- * fires: on_flow_increase.
- */
 static int cno_frame_handle_window_update(struct cno_connection_t *conn,
                                           struct cno_stream_t     *stream,
                                           struct cno_frame_t      *frame)
@@ -799,7 +698,7 @@ static int cno_frame_handle_window_update(struct cno_connection_t *conn,
         // TODO maybe emit an event for each stream with nonzero window instead?
     } else {
         if (stream == NULL)
-            return cno_frame_invalid_stream(conn, frame);
+            return cno_frame_handle_invalid_stream(conn, frame);
 
         if (stream->window_send > 0x7fffffff - (int32_t) increment)
             return cno_frame_write_rst_stream(conn, stream, CNO_RST_FLOW_CONTROL_ERROR);
@@ -846,49 +745,7 @@ static int cno_frame_handle(struct cno_connection_t *conn, struct cno_frame_t *f
 }
 
 
-/* send a SETTINGS frame containing the delta from one configuration to the other.
- *
- * fires:
- *   on_write
- *   on_frame_send
- */
-static int cno_settings_diff(const struct cno_connection_t *conn,
-                             const struct cno_settings_t *a,
-                             const struct cno_settings_t *b)
-{
-    size_t i = 0;
-    uint8_t payload[CNO_SETTINGS_UNDEFINED - 1][6], (*ptr)[6] = payload;
-    const uint32_t *ax = a->array;
-    const uint32_t *bx = b->array;
-
-    for (; ++i < CNO_SETTINGS_UNDEFINED; ++ax, ++bx) {
-        if (*ax != *bx) {
-            struct cno_buffer_t buf = { PACK(I16(i), I32(*bx)) };
-            memcpy(ptr++, buf.data, buf.size);
-        }
-    }
-
-    struct cno_frame_t frame = { CNO_FRAME_SETTINGS, 0, 0, { (char *) payload, (ptr - payload) * 6 } };
-    return cno_frame_write(conn, NULL, &frame);
-}
-
-
-/* copy the current local settings into a provided struct. modify that struct
- * then call cno_settings_apply to change the configuration. */
-void cno_settings_copy(struct cno_connection_t *conn, struct cno_settings_t *target)
-{
-    memcpy(target, &conn->settings[CNO_LOCAL], sizeof(*target));
-}
-
-
-/* check the new config and apply it to the local end of the connection.
- * (there's also the remote version of the configuration which we can't affect. each
- * side has to conform to the other's config, e.g. a server should only send push
- * promises if the client allows it even if the server itself has set enable_push to 0.)
- *
- * throws: ASSERTION if one of the parameters was set incorrectly.
- */
-int cno_settings_apply(struct cno_connection_t *conn, const struct cno_settings_t *settings)
+int cno_connection_set_config(struct cno_connection_t *conn, const struct cno_settings_t *settings)
 {
     if (settings->enable_push != 0 && settings->enable_push != 1)
         return CNO_ERROR(ASSERTION, "enable_push neither 0 nor 1");
@@ -898,7 +755,7 @@ int cno_settings_apply(struct cno_connection_t *conn, const struct cno_settings_
 
     if (conn->state != CNO_CONNECTION_INIT && cno_connection_is_http2(conn))
         // If not yet in HTTP2 mode, `cno_connection_upgrade` will send the SETTINGS frame.
-        if (cno_settings_diff(conn, &conn->settings[CNO_LOCAL], settings))
+        if (cno_frame_write_settings(conn, &conn->settings[CNO_LOCAL], settings))
             return CNO_ERROR_UP();
 
     memcpy(&conn->settings[CNO_LOCAL], settings, sizeof(*settings));
@@ -934,12 +791,10 @@ void cno_connection_reset(struct cno_connection_t *conn)
 
     for (int i = 0; i < CNO_STREAM_BUCKETS; i++)
         while (conn->streams[i])
-            cno_stream_destroy(conn, conn->streams[i]);
+            cno_stream_free(conn, conn->streams[i]);
 }
 
 
-/* return 1 iff the requests/responses will be sent as http 2. note that there
- * may still be an http 1 request in the buffer. */
 int cno_connection_is_http2(struct cno_connection_t *conn)
 {
     return conn->state != CNO_CONNECTION_HTTP1_INIT &&
@@ -949,20 +804,15 @@ int cno_connection_is_http2(struct cno_connection_t *conn)
 }
 
 
-/* switch the outbound communication to http 2 mode. */
 static int cno_connection_upgrade(struct cno_connection_t *conn)
 {
     if (conn->client && CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size))
         return CNO_ERROR_UP();
 
-    return cno_settings_diff(conn, &CNO_SETTINGS_STANDARD, &conn->settings[CNO_LOCAL]);
+    return cno_frame_write_settings(conn, &CNO_SETTINGS_STANDARD, &conn->settings[CNO_LOCAL]);
 }
 
 
-/* consume as much of the buffered data as possible. yep, this is a dfa!
- *
- * fires: EVERYTHING.
- */
 static int cno_connection_proceed(struct cno_connection_t *conn)
 {
     while (1) switch (conn->state) {
@@ -998,7 +848,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 conn->last_stream[CNO_REMOTE] = 0;
                 conn->last_stream[CNO_LOCAL]  = 0;
 
-                if (cno_stream_destroy_clean(conn, cno_stream_find(conn, 1)))
+                if (cno_stream_rst(conn, cno_stream_find(conn, 1)))
                     return CNO_ERROR_UP();
                 break;
             }
@@ -1260,7 +1110,7 @@ int cno_connection_lost(struct cno_connection_t *conn)
 
     for (s = &conn->streams[0]; s != &conn->streams[CNO_STREAM_BUCKETS]; s++)
         while (*s)
-            if (cno_stream_destroy_clean(conn, *s))
+            if (cno_stream_rst(conn, *s))
                 return CNO_ERROR_UP();
 
     cno_buffer_dyn_clear(&conn->buffer);
@@ -1277,12 +1127,7 @@ uint32_t cno_stream_next_id(struct cno_connection_t *conn)
         return 1;
 
     uint32_t last = conn->last_stream[CNO_LOCAL];
-
-    if (last || !conn->client)
-        return last + 2;
-
-    // client-initiated streams are odd-numbered, but right now, `last` is 0.
-    return 1;
+    return conn->client && !last ? 1 : last + 2;
 }
 
 
@@ -1292,10 +1137,8 @@ int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST
         return CNO_ERROR(DISCONNECT, "HTTP/1.x connection rejected");
 
     struct cno_stream_t *obj = cno_stream_find(conn, stream);
-
     if (!obj)
         return CNO_OK;  // assume it has already been reset
-
     return cno_frame_write_rst_stream(conn, obj, code);
 }
 
@@ -1342,7 +1185,7 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
 
     frame.payload = payload.as_static;
 
-    if (cno_frame_write(conn, streamobj, &frame))
+    if (cno_frame_write(conn, &frame))
         goto payload_generation_error;
 
     cno_buffer_dyn_clear(&payload);
@@ -1483,16 +1326,20 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
     frame.payload = payload.as_static;
 
-    if (cno_frame_write(conn, streamobj, &frame))
+    if (cno_frame_write(conn, &frame))
         goto payload_generation_error;
 
     cno_buffer_dyn_clear(&payload);
 
-    if (final)
-        return cno_stream_close(conn, streamobj);
+    if (!final) {
+        streamobj->accept &= ~CNO_ACCEPT_WRITE_HEADERS;
+        streamobj->accept |=  CNO_ACCEPT_WRITE_DATA;
+        return CNO_OK;
+    }
 
-    streamobj->accept &= ~CNO_ACCEPT_WRITE_HEADERS;
-    streamobj->accept |=  CNO_ACCEPT_WRITE_DATA;
+    if (!(streamobj->accept &= ~CNO_ACCEPT_OUTBOUND))
+        return cno_stream_rst(conn, streamobj);
+
     return CNO_OK;
 
 payload_generation_error:
@@ -1561,14 +1408,16 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
 
     struct cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, stream, { data, length } };
 
-    if (cno_frame_write(conn, streamobj, &frame))
+    if (cno_frame_write(conn, &frame))
         return CNO_ERROR_UP();
 
     conn->window_send -= length;
     streamobj->window_send -= length;
 
-    if (final && cno_stream_close(conn, streamobj))
-        return CNO_ERROR_UP();
+    if (final)
+        if (!(streamobj->accept &= ~CNO_ACCEPT_OUTBOUND))
+            if (cno_stream_rst(conn, streamobj))
+                return CNO_ERROR_UP();
 
     return length;
 }
