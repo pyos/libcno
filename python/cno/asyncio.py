@@ -241,7 +241,7 @@ class Server (Connection):
         super().__init__(loop, True)
         #: An async function that accepts a single request.
         self.handle = handle
-        self._pipelined = [None]
+        self._pipelined = None
 
     def on_message_start(self, i, code, method, path, headers):
         req = Request(self, i, method, path, headers, self.payloads[i])
@@ -249,14 +249,14 @@ class Server (Connection):
         handle.add_done_callback(lambda _: self.handles.pop(i, None))
 
         if not self.is_http2:
-            req._this_rq = asyncio.Future(loop=self.loop)
-            req._prev_rq = self._pipelined[-1]
-            self._pipelined.append(req._this_rq)
+            req._prev_rq = self._pipelined
+            req._this_rq = self._pipelined = asyncio.Future(loop=self.loop)
 
             @handle.add_done_callback
             def on_done(_):
                 req._this_rq.cancel()
-                self._pipelined.remove(req._this_rq)
+                if self._pipelined is req._this_rq:
+                    self._pipelined = None
 
 
 async def connect(loop, url) -> Client:
