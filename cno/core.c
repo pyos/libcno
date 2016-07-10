@@ -517,8 +517,8 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
 
 
 /* ignore non-HEADERS frames on reset streams, as the spec requires. unfortunately,
- * these are indistinguishable from streams that were never opened, but hey, what
- * can i do, keep a set of uint32_t-s? memory doesn't grow on trees, you know. */
+   these are indistinguishable from streams that were never opened, but hey, what
+   can i do, keep a set of uint32_t-s? memory doesn't grow on trees, you know. */
 static int cno_frame_handle_invalid_stream(struct cno_connection_t *conn,
                                            struct cno_frame_t *frame)
 {

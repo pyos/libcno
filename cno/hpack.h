@@ -47,12 +47,12 @@ void cno_hpack_setlimit (struct cno_hpack_t *, uint32_t limit);
 void cno_hpack_clear    (struct cno_hpack_t *);
 
 /* Decode at most `*n` headers from a buffer into a provided array.
- * `*n` is set to the actual number of headers decoded afterwards.
- * Note: the buffer must not be free-d until all headers are also free-d. */
+   `*n` is set to the actual number of headers decoded afterwards.
+   Note: the buffer must not be free-d until all headers are also free-d. */
 int cno_hpack_decode(struct cno_hpack_t *, struct cno_buffer_t, struct cno_header_t *, size_t *n);
 
 /* Encode exactly `n` headers into a dynamic buffer. Note: if it errors,
- * the buffer may contain partially encoded data. Clear it yourself. */
+   the buffer may contain partially encoded data. Clear it yourself. */
 int cno_hpack_encode(struct cno_hpack_t *, struct cno_buffer_dyn_t *, const struct cno_header_t *, size_t n);
 
 #if !CFFI_CDEF_MODE

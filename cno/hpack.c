@@ -113,7 +113,7 @@ static int cno_hpack_lookup(struct cno_hpack_t *state, size_t index, struct cno_
 
 
 /* Calculate the index of a header in the table. Return value is the index,
- * 0 if not found, negative if both name and value match. */
+   0 if not found, negative if both name and value match. */
 static int cno_hpack_index_of(struct cno_hpack_t *state, const struct cno_header_t *needle)
 {
     size_t i = 1, possible = 0;

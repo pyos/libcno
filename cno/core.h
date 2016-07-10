@@ -272,12 +272,12 @@ int  cno_connection_lost          (struct cno_connection_t *);
 void cno_connection_reset         (struct cno_connection_t *);
 int  cno_connection_stop          (struct cno_connection_t *);
 /* Returns whether the next message will be sent in HTTP 2 mode.
- * `cno_write_push` does nothing if this returns false. On the other hand,
- * you can't switch protocols (e.g. to websockets) if this returns true. */
+   `cno_write_push` does nothing if this returns false. On the other hand,
+   you can't switch protocols (e.g. to websockets) if this returns true. */
 int  cno_connection_is_http2      (struct cno_connection_t *);
 /* Send a new configuration/schedule it to be sent when upgrading to HTTP 2.
- * The current configuration can be read through `conn->settings[CNO_LOCAL]`.
- * DO NOT modify `conn->settings` directly -- it is used to compute the delta. */
+   The current configuration can be read through `conn->settings[CNO_LOCAL]`.
+   DO NOT modify `conn->settings` directly -- it is used to compute the delta. */
 int  cno_connection_set_config    (struct cno_connection_t *, const struct cno_settings_t *);
 
 /* (As a client) sending requests:
