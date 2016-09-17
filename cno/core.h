@@ -243,7 +243,7 @@ struct cno_connection_t
     int (*on_frame         )(void *, const struct cno_frame_t *);
     int (*on_frame_send    )(void *, const struct cno_frame_t *);
     int (*on_pong          )(void *, const char[8]);
-} cno_connection_t;
+};
 
 
 /* Lifetime of a connection:
