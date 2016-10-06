@@ -1421,3 +1421,8 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
 
     return length;
 }
+
+// (the difference is that `conn` is non-const.)
+int cno_write_frame(struct cno_connection_t *conn, const struct cno_frame_t *frame) {
+    return cno_frame_write(conn, frame);
+}
