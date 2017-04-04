@@ -15,7 +15,7 @@ def make_ffi(root):
         library_dirs=[root + '/obj']
     )
     ffi.cdef(
-        subprocess.check_output(['cpp', '-I' + root, '-std=c11', '-P'], input=b'''
+        subprocess.check_output(['gcc', '-I' + root, '-std=c11', '-E', '-'], input=b'''
             #define CFFI_CDEF_MODE 1
             #define __attribute__(...)
             #include <cno/core.h>
