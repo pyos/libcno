@@ -1,3 +1,4 @@
+import ssl
 import sys
 import asyncio
 
@@ -5,7 +6,10 @@ import cno
 
 
 async def main(url):
-    resp = await cno.request(loop, 'GET', url)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    resp = await cno.request(loop, 'GET', url, ssl_ctx=ctx)
     await print_response(resp)
     resp.conn.close()
 
