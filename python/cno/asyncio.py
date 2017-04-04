@@ -9,6 +9,11 @@ try:
 except ImportError:
     ssl = None
 
+try:
+    import certifi
+except ImportError:
+    certifi = None
+
 from . import raw
 
 
@@ -259,7 +264,7 @@ class Server (Connection):
                     self._pipelined = None
 
 
-async def connect(loop, url) -> Client:
+async def connect(loop, url, ssl_ctx=None) -> Client:
     sctx = None
     port = 80
 
@@ -269,23 +274,24 @@ async def connect(loop, url) -> Client:
     if url.scheme == 'https':
         if ssl is None:
             raise NotImplementedError('SSL not supported by Python')
-        sctx = ssl.create_default_context()
+        if ssl_ctx is None:
+            ssl_ctx = ssl.create_default_context(capath=None if certifi is None else certifi.where())
         if ssl.HAS_NPN:
-            sctx.set_npn_protocols(['h2', 'http/1.1'])
+            ssl_ctx.set_npn_protocols(['h2', 'http/1.1'])
         if ssl.HAS_ALPN:
-            sctx.set_alpn_protocols(['h2', 'http/1.1'])
+            ssl_ctx.set_alpn_protocols(['h2', 'http/1.1'])
         port = 443
 
     proto = Client(loop, authority=url.netloc, scheme=url.scheme)
-    await loop.create_connection(lambda: proto, url.hostname, url.port or port, ssl=sctx)
+    await loop.create_connection(lambda: proto, url.hostname, url.port or port, ssl=ssl_ctx)
     return proto
 
 
-async def request(loop, method, url, headers=[], payload=b'') -> Response:
+async def request(loop, method, url, headers=[], payload=b'', ssl_ctx=None) -> Response:
     if isinstance(url, str):
         url = urllib.parse.urlparse(url)
 
-    conn = await connect(loop, url)
+    conn = await connect(loop, url, ssl_ctx=ssl_ctx)
     try:
         return await conn.request(method, url.path, headers, payload)
     except BaseException as err:
