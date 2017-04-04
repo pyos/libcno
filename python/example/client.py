@@ -11,9 +11,9 @@ async def main(url):
 
 
 async def print_response(rsp):
-    print('>>> \033[1;3{}m{}\033[39m'.format(
+    print('>>> \033[1;3{}m{} (http/{})\033[39m'.format(
         2 if 200 <= rsp.code < 300 else
-        1 if 400 <= rsp.code < 600 else 2, rsp.code))
+        1 if 400 <= rsp.code < 600 else 2, rsp.code, 2 if rsp.conn.is_http2 else 1))
     for k, v in rsp.headers:
         print('    \033[1;34m{}\033[0m: {}'.format(k, v))
 
