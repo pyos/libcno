@@ -200,5 +200,5 @@ static inline void cno_list_gen_remove(struct cno_list_t *x)
     x->prev->next = x->next;
 }
 
-#endif  // !CFFI_CDEF_MODE
+#endif
 #endif
