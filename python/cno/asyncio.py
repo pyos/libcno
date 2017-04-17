@@ -238,7 +238,7 @@ class Client (Connection):
         try:
             return (await promise)
         except asyncio.CancelledError:
-            self.write_reset(stream, raw.CNO_CANCEL)
+            self.write_reset(stream, raw.CNO_RST_CANCEL)
             raise
 
 
