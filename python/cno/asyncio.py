@@ -111,7 +111,7 @@ class Push:
 
 
 class Connection (raw.Connection, asyncio.Protocol):
-    def __init__(self, loop, is_server):
+    def __init__(self, loop, is_server, force_http2=False):
         super().__init__(is_server)
         self.loop     = loop
         self.payloads = {}  # id -> StreamReader
@@ -119,6 +119,7 @@ class Connection (raw.Connection, asyncio.Protocol):
         self.handles  = {}  # id -> handling task (server) or response promise (client)
         self.flowctl  = {}  # id -> flow open promise
         self._paused  = False
+        self._force2  = force_http2
 
     def connection_made(self, transport):
         self.transport = transport
@@ -126,9 +127,9 @@ class Connection (raw.Connection, asyncio.Protocol):
         if sock:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         sslobj = transport.get_extra_info('ssl_object')
-        super().connection_made(sslobj is not None and (
+        super().connection_made(self._force2 or (sslobj is not None and (
             (ssl.HAS_ALPN and sslobj.selected_alpn_protocol() == 'h2') or
-            (ssl.HAS_NPN  and sslobj.selected_npn_protocol()  == 'h2')))
+            (ssl.HAS_NPN  and sslobj.selected_npn_protocol()  == 'h2'))))
 
     def close(self):
         self.transport.close()
@@ -199,8 +200,8 @@ class Connection (raw.Connection, asyncio.Protocol):
 
 
 class Client (Connection):
-    def __init__(self, loop, authority=None, scheme=None):
-        super().__init__(loop, False)
+    def __init__(self, loop, authority=None, scheme=None, **kwargs):
+        super().__init__(loop, False, **kwargs)
         #: The hostname + port of the peer. If not provided, should be sent
         #: as `:authority` in each request.
         self.authority = authority
@@ -264,13 +265,11 @@ class Server (Connection):
                     self._pipelined = None
 
 
-async def connect(loop, url, ssl_ctx=None) -> Client:
+async def connect(loop, url, ssl_ctx=None, **kwargs) -> Client:
     sctx = None
     port = 80
-
     if isinstance(url, str):
         url = urllib.parse.urlparse(url)
-
     if url.scheme == 'https':
         if ssl is None:
             raise NotImplementedError('SSL not supported by Python')
@@ -281,17 +280,17 @@ async def connect(loop, url, ssl_ctx=None) -> Client:
         if ssl.HAS_ALPN:
             ssl_ctx.set_alpn_protocols(['h2', 'http/1.1'])
         port = 443
-
-    proto = Client(loop, authority=url.netloc, scheme=url.scheme)
+    else:
+        ssl_ctx = None
+    proto = Client(loop, authority=url.netloc, scheme=url.scheme, **kwargs)
     await loop.create_connection(lambda: proto, url.hostname, url.port or port, ssl=ssl_ctx)
     return proto
 
 
-async def request(loop, method, url, headers=[], payload=b'', ssl_ctx=None) -> Response:
+async def request(loop, method, url, headers=[], payload=b'', **kwargs) -> Response:
     if isinstance(url, str):
         url = urllib.parse.urlparse(url)
-
-    conn = await connect(loop, url, ssl_ctx=ssl_ctx)
+    conn = await connect(loop, url, **kwargs)
     try:
         return await conn.request(method, url.path, headers, payload)
     except BaseException as err:
