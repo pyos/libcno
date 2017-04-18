@@ -339,7 +339,7 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
 
     if (conn->continued_promise)
         // accept pushes even on reset streams.
-        return CNO_FIRE(conn, on_message_push, conn->continued_promise, msg, stream->id);
+        return CNO_FIRE(conn, on_message_push, stream->id, msg, conn->continued_stream);
 
     stream->accept &= ~CNO_ACCEPT_HEADERS;
     stream->accept |=  CNO_ACCEPT_TRAILERS | CNO_ACCEPT_DATA;
@@ -488,7 +488,7 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
 
     if (frame->flags & CNO_FLAG_END_HEADERS)
-        return cno_frame_handle_end_headers(conn, stream, frame);
+        return cno_frame_handle_end_headers(conn, child, frame);
     return CNO_OK;
 }
 
