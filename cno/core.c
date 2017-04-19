@@ -27,10 +27,10 @@ static inline uint32_t read3(const uint8_t *p) { return read4(p) >> 8; }
 static const struct cno_buffer_t CNO_PREFACE = { "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24 };
 
 /* standard-defined pre-initial-SETTINGS values */
-static const struct cno_settings_t CNO_SETTINGS_STANDARD = {{{ 4096, 1, -1,   65536, 16384, -1 }}};
+static const struct cno_settings_t CNO_SETTINGS_STANDARD = {{{ 4096, 1, -1,   65535, 16384, -1 }}};
 
 /* actual values to send in the first SETTINGS frame */
-static const struct cno_settings_t CNO_SETTINGS_INITIAL  = {{{ 4096, 1, 1024, 65536, 65536, -1 }}};
+static const struct cno_settings_t CNO_SETTINGS_INITIAL  = {{{ 4096, 1, 1024, 65535, 65536, -1 }}};
 
 
 static int cno_stream_is_local(const struct cno_connection_t *conn, uint32_t id)
