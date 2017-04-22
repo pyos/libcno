@@ -1,23 +1,21 @@
 import socket
 import asyncio
 import urllib.parse
-
-from collections.abc import AsyncIterable
+import collections.abc
 
 try:
     import ssl
+    try:
+        import certifi
+    except ImportError:
+        certifi = None
 except ImportError:
     ssl = None
-
-try:
-    import certifi
-except ImportError:
-    certifi = None
 
 from . import raw
 
 
-class Channel (asyncio.Queue):
+class Channel (collections.abc.AsyncIterator, asyncio.Queue):
     closed = False
 
     def close(self):
@@ -30,9 +28,6 @@ class Channel (asyncio.Queue):
         if self.closed:
             raise BrokenPipeError('this channel is closed')
         super().put_nowait(x)
-
-    async def __aiter__(self):
-        return self
 
     async def __anext__(self):
         if self.empty() and self.closed:
@@ -54,30 +49,20 @@ class Request:
     async def respond(self, code, headers, data):
         if self._prev_rq:
             await self._prev_rq
-        if self._this_rq and self._this_rq.done():
-            raise ConnectionError('already responded')
         # XXX perhaps imbuing HEAD with a special meaning is a task
         #     for a web framework instead?
         have_data = data and self.method != 'HEAD'
         self.conn.write_message(self.stream, code, '', '', headers, not have_data)
         if have_data:
-            await self.conn.write_all_data(self.stream, data, True)
+            await self.conn.write_all_data(self.stream, data)
         if self._this_rq:
             self._this_rq.set_result(None)
 
     def push(self, method, path, headers=[]):
-        copy = {':authority', ':scheme'} - {k for k in headers}
+        copy = {':authority', ':scheme'} - {k for k, _ in headers}
         head = [(k, v) for k, v in self.headers if k in copy]
         head.extend(headers)
         self.conn.write_push(self.stream, method, path, head)
-
-    def cancel(self, code=raw.CNO_RST_INTERNAL_ERROR):
-        try:
-            self.conn.write_reset(self.stream, code)
-        except ConnectionError as err:
-            if err.errno != raw.CNO_ERRNO_DISCONNECT:
-                raise
-            self.conn.transport.close()
 
 
 class Response:
@@ -100,115 +85,106 @@ class Push:
         self.method   = method
         self.path     = path
         self.headers  = headers
-        self.promise  = promise
+        self._promise = promise
 
     @property
     async def response(self):
-        return (await asyncio.shield(self.promise, loop=self.conn.loop))
+        return (await asyncio.shield(self._promise, loop=self.conn.loop))
 
     def cancel(self, code=raw.CNO_RST_CANCEL):
         self.conn.write_reset(self.stream, code)
 
 
 class Connection (raw.Connection, asyncio.Protocol):
-    def __init__(self, loop, is_server, force_http2=False):
-        super().__init__(is_server)
-        self.loop     = loop
-        self.payloads = {}  # id -> StreamReader
-        self.pushreqs = {}  # id -> push channel
-        self.handles  = {}  # id -> handling task (server) or response promise (client)
-        self.flowctl  = {}  # id -> flow open promise
-        self._paused  = False
-        self._force2  = force_http2
+    def __init__(self, loop, server, force_http2=False):
+        super().__init__(server)
+        self.loop = loop
+        self._data = {} # stream id -> asyncio.StreamReader for current message body
+        self._push = {} # stream id -> Channel for push requests
+        self._coro = {} # stream id -> handling task (server) or response future (client)
+        self._flow = {} # stream id -> flow control future
+        self._stop = False
+        self._force_h2 = force_http2
 
     def connection_made(self, transport):
         self.transport = transport
         sock = transport.get_extra_info('socket')
+        sctx = transport.get_extra_info('ssl_object')
         if sock:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        sslobj = transport.get_extra_info('ssl_object')
-        super().connection_made(self._force2 or (sslobj is not None and (
-            (ssl.HAS_ALPN and sslobj.selected_alpn_protocol() == 'h2') or
-            (ssl.HAS_NPN  and sslobj.selected_npn_protocol()  == 'h2'))))
+        h2a = sctx and ssl.HAS_ALPN and sctx.selected_alpn_protocol() == 'h2'
+        h2n = sctx and ssl.HAS_NPN  and sctx.selected_npn_protocol()  == 'h2'
+        super().connection_made(self._force_h2 or h2a or h2n)
 
     def close(self):
         self.transport.close()
 
     def on_write(self, data):
-        return self.transport.write(data)
+        self.transport.write(data)
 
     def on_stream_start(self, i):
-        self.payloads[i] = asyncio.StreamReader(loop=self.loop)
-        self.pushreqs[i] = Channel(loop=self.loop)
+        self._data[i] = asyncio.StreamReader(loop=self.loop)
+        self._push[i] = Channel(loop=self.loop)
 
     def on_message_data(self, i, data):
-        self.payloads[i].feed_data(data)
+        self._data[i].feed_data(data)
 
     def on_message_end(self, i):
-        self.payloads.pop(i).feed_eof()
-        self.pushreqs.pop(i).close()
-        self.on_stream_start(i)
+        self._data.pop(i).feed_eof()
+        self._push.pop(i).close()
+        if not self.is_http2:
+            self.on_stream_start(i)
 
     def on_stream_end(self, i):
-        self.payloads.pop(i).feed_eof()
-        self.pushreqs.pop(i).close()
-
-        task = self.handles.pop(i, None)
-        if task:
-            task.cancel()
-
-        flow = self.flowctl.pop(i, None)
-        if flow:
-            flow.cancel()
+        data = self._data.pop(i, None)
+        push = self._push.pop(i, None)
+        task = self._coro.pop(i, None)
+        flow = self._flow.pop(i, None)
+        data and data.feed_eof()
+        push and push.close()
+        task and task.cancel()
+        flow and flow.cancel()
 
     def pause_writing(self):
-        self._paused = True
+        self._stop = True
 
     def resume_writing(self):
-        self._paused = False
+        self._stop = False
         self.on_flow_increase(0)
 
     def on_flow_increase(self, i):
-        if not i:
-            for flow in self.flowctl.values():
+        if i == 0:
+            for flow in self._flow.values():
                 flow.set_result(None)
-            self.flowctl.clear()
-        else:
-            flow = self.flowctl.pop(i, None)
-            if flow:
-                flow.set_result(None)
+            self._flow.clear()
+        elif i in self._flow:
+            self._flow.pop(i).set_result(None)
 
-    async def write_all_data(self, i, data, is_final):
-        if isinstance(data, AsyncIterable):
+    async def write_all_data(self, i, data, final=True):
+        if isinstance(data, collections.abc.AsyncIterable):
             async for chunk in data:
                 await self.write_all_data(i, chunk, False)
-            data = b''  # still need to send an empty END_STREAM frame if is_final = true
-
+            return self.write_data(i, b'', True)
+        view = memoryview(data)
         while True:
-            if not self._paused:
-                sent = self.write_data(i, data, is_final)
-                data = data[sent:]
-                if not data:
+            if not self._stop:
+                view = view[self.write_data(i, view, final):]
+                if not view:
                     break
             try:
-                # assert (only one coroutine writes to each stream at a time)
-                await self.flowctl.setdefault(i, asyncio.Future(loop=self.loop))
+                await self._flow.setdefault(i, asyncio.Future(loop=self.loop))
             finally:
-                flow = self.flowctl.pop(i, None)
-                if flow:
-                    flow.cancel()
+                self._flow.pop(i, None)
 
 
 class Client (Connection):
     def __init__(self, loop, authority=None, scheme=None, **kwargs):
         super().__init__(loop, False, **kwargs)
-        #: The hostname + port of the peer. If not provided, should be sent
-        #: as `:authority` in each request.
+        #: The hostname + port of the peer. If not provided, should be sent as `:authority` in each request.
         self.authority = authority
-        #: The scheme (http/https) used to connect to the peer. Like `authority`,
-        #: must be sent as `:scheme` if not set here.
+        #: The scheme (http/https) used to connect to the peer. Must be sent as `:scheme` if not set here.
         self.scheme = scheme
-        #: Emitted whenever a stream is finished (=> can issue at least one more request).
+        #: Unset whenever the stream limit is reached, set again whenever a stream is closed.
         self._have_free_streams = asyncio.Event(loop=loop)
         self._have_free_streams.set()
 
@@ -221,13 +197,11 @@ class Client (Connection):
         return super().on_stream_end(i)
 
     def on_message_push(self, i, parent, method, path, headers):
-        self.handles[i] = promise = asyncio.Future(loop=self.loop)
-        self.pushreqs[parent].put_nowait(Push(self, i, method, path, headers, promise))
+        self._coro[i] = asyncio.Future(loop=self.loop)
+        self._push[parent].put_nowait(Push(self, i, method, path, headers, self._coro[i]))
 
     def on_message_start(self, i, code, method, path, headers):
-        payload = self.payloads[i]
-        pushreq = self.pushreqs[i]
-        self.handles.pop(i).set_result(Response(self, i, code, headers, payload, pushreq))
+        self._coro.pop(i).set_result(Response(self, i, code, headers, self._data[i], self._push[i]))
 
     async def request(self, method, path, headers=[], data=b'') -> Response:
         head = []
@@ -237,12 +211,10 @@ class Client (Connection):
             head.append((':scheme', self.scheme))
         head.extend(headers)
 
-        while True:
-            await self._have_free_streams.wait()
+        while not self.is_http2 and self._coro:
+            await asyncio.shield(self._coro[self.next_stream], loop=self.loop)
+        while (await self._have_free_streams.wait()):
             stream = self.next_stream
-            while stream in self.handles:  # this http/1.1 connection is busy.
-                await asyncio.shield(self.handles[stream], loop=self.loop)
-                stream = self.next_stream  # might have switched to http 2 in the meantime
             try:
                 self.write_message(stream, 0, method, path, head, not data)
                 break
@@ -250,11 +222,11 @@ class Client (Connection):
                 if e.errno != raw.CNO_ERRNO_WOULD_BLOCK:
                     raise
                 self._have_free_streams.clear()
-        self.handles[stream] = promise = asyncio.Future(loop=self.loop)
-        if data:
-            await self.write_all_data(stream, data, True)
+        self._coro[stream] = f = asyncio.Future(loop=self.loop)
         try:
-            return (await promise)
+            if data:
+                await self.write_all_data(stream, data)
+            return (await f)
         except asyncio.CancelledError:
             self.write_reset(stream, raw.CNO_RST_CANCEL)
             raise
@@ -263,28 +235,19 @@ class Client (Connection):
 class Server (Connection):
     def __init__(self, loop, handle):
         super().__init__(loop, True)
-        #: An async function that accepts a single request.
-        self.handle = handle
-        self._pipelined = None
+        self._func = handle
+        self._prev = None
 
     def on_message_start(self, i, code, method, path, headers):
-        req = Request(self, i, method, path, headers, self.payloads[i])
-        handle = self.handles[i] = asyncio.ensure_future(self.handle(req), loop=self.loop)
-        handle.add_done_callback(lambda _: self.handles.pop(i, None))
-
+        req = Request(self, i, method, path, headers, self._data[i])
+        fut = self._coro[i] = asyncio.ensure_future(self._func(req), loop=self.loop)
         if not self.is_http2:
-            req._prev_rq = self._pipelined
-            req._this_rq = self._pipelined = asyncio.Future(loop=self.loop)
-
-            @handle.add_done_callback
-            def on_done(_):
-                req._this_rq.cancel()
-                if self._pipelined is req._this_rq:
-                    self._pipelined = None
+            req._prev_rq = self._prev
+            req._this_rq = self._prev = asyncio.Future(loop=self.loop)
+            fut.add_done_callback(lambda _: req._this_rq.cancel())
 
 
 async def connect(loop, url, ssl_ctx=None, **kwargs) -> Client:
-    sctx = None
     port = 80
     if isinstance(url, str):
         url = urllib.parse.urlparse(url)
@@ -305,12 +268,12 @@ async def connect(loop, url, ssl_ctx=None, **kwargs) -> Client:
     return proto
 
 
-async def request(loop, method, url, headers=[], payload=b'', **kwargs) -> Response:
+async def request(loop, method, url, headers=[], data=b'', **kwargs) -> Response:
     if isinstance(url, str):
         url = urllib.parse.urlparse(url)
     conn = await connect(loop, url, **kwargs)
     try:
-        return await conn.request(method, url.path, headers, payload)
-    except BaseException as err:
+        return await conn.request(method, url.path, headers, data)
+    except:
         conn.close()
         raise

@@ -119,7 +119,7 @@ class Connection:
         self.__throw(cno_write_push(self.__c, i, msg))
 
     def write_data(self, i, data, is_final):
-        return self.__throw(cno_write_data(self.__c, i, data, len(data), is_final))
+        return self.__throw(cno_write_data(self.__c, i, ffi.from_buffer(data), len(data), is_final))
 
     def write_reset(self, i, code):
         self.__throw(self.__c.state != CNO_CONNECTION_UNDEFINED and cno_write_reset(self.__c, i, code))
