@@ -674,7 +674,9 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
     // TODO update stream flow control windows.
 
     struct cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK, 0, CNO_BUFFER_EMPTY };
-    return cno_frame_write(conn, &ack);
+    if (cno_frame_write(conn, &ack))
+        return CNO_ERROR_UP();
+    return CNO_FIRE(conn, on_settings);
 }
 
 

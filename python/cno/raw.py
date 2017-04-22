@@ -64,6 +64,7 @@ except NameError:
         'on_frame',
         'on_frame_send',
         'on_pong',
+        'on_settings',
     }
 
     def make_callbacks():

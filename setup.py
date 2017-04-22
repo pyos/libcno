@@ -33,6 +33,7 @@ def make_ffi(root):
                 int on_frame         (void *, const struct cno_frame_t *);
                 int on_frame_send    (void *, const struct cno_frame_t *);
                 int on_pong          (void *, const char[8]);
+                int on_settings      (void *);
             }
         ''').decode('utf-8')
     )

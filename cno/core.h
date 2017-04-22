@@ -228,9 +228,11 @@ struct cno_connection_t
      *     -- called on client side when the server wants to push some data.
      *        its argument is a fake request the client has been assumed to send;
      *        a response to that request should arrive soon on the same stream.
+     *   on_settings
+     *     -- called whenever the remote peer sends a new configuration.
      */
     void *cb_data;
-    #define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob->cb_data, __VA_ARGS__))
+    #define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob->cb_data, ##__VA_ARGS__))
     int (*on_write         )(void *, const char * /* data */, size_t /* length */);
     int (*on_stream_start  )(void *, uint32_t /* stream id */);
     int (*on_stream_end    )(void *, uint32_t);
@@ -243,6 +245,7 @@ struct cno_connection_t
     int (*on_frame         )(void *, const struct cno_frame_t *);
     int (*on_frame_send    )(void *, const struct cno_frame_t *);
     int (*on_pong          )(void *, const char[8]);
+    int (*on_settings      )(void *);
 };
 
 
