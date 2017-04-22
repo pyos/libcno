@@ -208,6 +208,17 @@ class Client (Connection):
         #: The scheme (http/https) used to connect to the peer. Like `authority`,
         #: must be sent as `:scheme` if not set here.
         self.scheme = scheme
+        #: Emitted whenever a stream is finished (=> can issue at least one more request).
+        self._have_free_streams = asyncio.Event(loop=loop)
+        self._have_free_streams.set()
+
+    def connection_lost(self, exc):
+        self._have_free_streams.set()
+        return super().connection_lost(exc)
+
+    def on_stream_end(self, i):
+        self._have_free_streams.set()
+        return super().on_stream_end(i)
 
     def on_message_push(self, i, parent, method, path, headers):
         self.handles[i] = promise = asyncio.Future(loop=self.loop)
@@ -226,12 +237,19 @@ class Client (Connection):
             head.append((':scheme', self.scheme))
         head.extend(headers)
 
-        stream = self.next_stream
-        while stream in self.handles:  # this http/1.1 connection is busy.
-            await asyncio.shield(self.handles[stream], loop=self.loop)
-            stream = self.next_stream  # might have switched to http 2 in the meantime
-
-        self.write_message(stream, 0, method, path, head, not data)
+        while True:
+            await self._have_free_streams.wait()
+            stream = self.next_stream
+            while stream in self.handles:  # this http/1.1 connection is busy.
+                await asyncio.shield(self.handles[stream], loop=self.loop)
+                stream = self.next_stream  # might have switched to http 2 in the meantime
+            try:
+                self.write_message(stream, 0, method, path, head, not data)
+                break
+            except ConnectionError as e:
+                if e.errno != raw.CNO_ERRNO_WOULD_BLOCK:
+                    raise
+                self._have_free_streams.clear()
         self.handles[stream] = promise = asyncio.Future(loop=self.loop)
         if data:
             await self.write_all_data(stream, data, True)
