@@ -37,7 +37,7 @@ pip3 install git+https://github.com/pyos/libcno
 
 | C function                                       | `cno.raw.Connection` method                                   |
 | ------------------------------------------------ | ------------------------------------------------------------- |
-| `cno_connection_init(c, CNO_SERVER)`             | `c = cno.raw.Connection(is_server=True)`                      |
+| `cno_connection_init(c, CNO_SERVER)`             | `c = cno.raw.Connection(server=True)`                         |
 | `cno_connection_reset(c)`                        | `del c`                                                       |
 | `cno_connection_made(c, CNO_HTTP2)`              | `c.connection_made(is_http2=True)`                            |
 | `cno_connection_lost(c)`                         | `c.connection_lost()`                                         |
