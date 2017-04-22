@@ -101,6 +101,7 @@ except NameError:
 
 class Connection:
     def __init__(self, is_server):
+        self._lost       = False
         self._obj        = ffi.new('struct cno_connection_t *')
         self._obj_ref    = ffi.new_handle(self)
         cno_connection_init(self._obj, CNO_SERVER if is_server else CNO_CLIENT)
@@ -137,6 +138,7 @@ class Connection:
         return self._may_fail(cno_connection_made(self._obj, CNO_HTTP2 if is_http2 else CNO_HTTP1))
 
     def connection_lost(self, error=None):
+        self._lost = True
         return self._may_fail(cno_connection_lost(self._obj))
 
     def data_received(self, data):
@@ -154,4 +156,6 @@ class Connection:
         return self._may_fail(cno_write_data(self._obj, i, data, len(data), is_final))
 
     def write_reset(self, i, code):
+        if self._lost:
+            return 0
         return self._may_fail(cno_write_reset(self._obj, i, code))
