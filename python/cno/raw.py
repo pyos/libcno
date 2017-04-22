@@ -116,8 +116,9 @@ class Connection:
 
     def _may_fail(self, ret):
         if ret < 0:
-            self.close()
             err = cno_error()
+            if err.code != CNO_ERRNO_WOULD_BLOCK:
+                self.close()
             if err.code == 127:
                 raise _thread_local.err
             else:
