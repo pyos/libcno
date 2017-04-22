@@ -29,8 +29,11 @@ static const struct cno_buffer_t CNO_PREFACE = { "PRI * HTTP/2.0\r\n\r\nSM\r\n\r
 /* standard-defined pre-initial-SETTINGS values */
 static const struct cno_settings_t CNO_SETTINGS_STANDARD = {{{ 4096, 1, -1,   65535, 16384, -1 }}};
 
+/* a somewhat more conservative version assumed to be used by the remote side at first */
+static const struct cno_settings_t CNO_SETTINGS_CONSERVATIVE = {{{ 4096, 1, 100, 65535, 16384, -1 }}};
+
 /* actual values to send in the first SETTINGS frame */
-static const struct cno_settings_t CNO_SETTINGS_INITIAL  = {{{ 4096, 1, 1024, 65535, 65536, -1 }}};
+static const struct cno_settings_t CNO_SETTINGS_INITIAL = {{{ 4096, 1, 1024, 65535, 65536, -1 }}};
 
 
 static int cno_stream_is_local(const struct cno_connection_t *conn, uint32_t id)
@@ -775,7 +778,7 @@ void cno_connection_init(struct cno_connection_t *conn, enum CNO_CONNECTION_KIND
         .state       = CNO_CONNECTION_UNDEFINED,
         .window_recv = CNO_SETTINGS_STANDARD.initial_window_size,
         .window_send = CNO_SETTINGS_STANDARD.initial_window_size,
-        .settings    = { /* remote = */ CNO_SETTINGS_STANDARD,
+        .settings    = { /* remote = */ CNO_SETTINGS_CONSERVATIVE,
                          /* local  = */ CNO_SETTINGS_INITIAL, },
     };
 
