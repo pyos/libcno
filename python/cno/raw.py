@@ -89,6 +89,7 @@ class Connection:
             if err.code != CNO_ERRNO_WOULD_BLOCK:
                 self.close()
             raise _thread_local.err if err.code == 127 else ConnectionError(err.code, ffi.string(err.text).decode('utf-8'))
+        return ret
 
     def close(self):
         pass
