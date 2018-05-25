@@ -81,7 +81,8 @@ class Connection:
         self.__c.cb_data = self.__p
 
     def __del__(self):
-        cno_connection_reset(self.__c)
+        if hasattr(self, '__c'):
+            cno_connection_reset(self.__c)
 
     def __throw(self, ret):
         if ret < 0:
