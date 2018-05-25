@@ -247,7 +247,7 @@ class Server (Connection):
             fut.add_done_callback(lambda _: req._this_rq.cancel())
 
 
-async def connect(loop, url, ssl_ctx=None, **kwargs) -> Client:
+async def connect(loop, url, ssl_ctx=None, ssl_hostname=None, **kwargs) -> Client:
     port = 80
     if isinstance(url, str):
         url = urllib.parse.urlparse(url)
@@ -264,7 +264,7 @@ async def connect(loop, url, ssl_ctx=None, **kwargs) -> Client:
     else:
         ssl_ctx = None
     proto = Client(loop, authority=url.netloc, scheme=url.scheme, **kwargs)
-    await loop.create_connection(lambda: proto, url.hostname, url.port or port, ssl=ssl_ctx)
+    await loop.create_connection(lambda: proto, url.hostname, url.port or port, ssl=ssl_ctx, server_hostname=ssl_hostname)
     return proto
 
 
