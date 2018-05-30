@@ -882,7 +882,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             if (ok == -1)
                 return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message");
 
-            if ((!conn->client || minor != 0) && minor != 1)
+            if (minor != 0 && minor != 1)
                 return CNO_ERROR(TRANSPORT, "HTTP/1.%d not supported", minor);
 
             struct cno_header_t headers[msg.headers_len];
