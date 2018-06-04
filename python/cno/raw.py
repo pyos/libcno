@@ -33,7 +33,7 @@ def _msgpack(code, method, path, headers):
     m.headers_len = len(headers)
     refs = [ref, _buf(m.method, method), _buf(m.path, path)]
     for h, (k, v) in zip(m.headers[0:m.headers_len], headers):
-        refs.append(_buf(h.name, k))
+        refs.append(_buf(h.name, k.lower()))
         refs.append(_buf(h.value, v))
     return m, refs
 
