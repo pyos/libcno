@@ -827,8 +827,10 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
         case CNO_CONNECTION_HTTP1_INIT:
             conn->state = CNO_CONNECTION_HTTP1_READY;
 
-            if (cno_stream_new(conn, 1, conn->client) == NULL)
+            struct cno_stream_t *stream = cno_stream_new(conn, 1, conn->client);
+            if (stream == NULL)
                 return CNO_ERROR_UP();
+            stream->accept = conn->client ? CNO_ACCEPT_WRITE_HEADERS : CNO_ACCEPT_HEADERS;
 
             break;
 
@@ -843,6 +845,12 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             if (!conn->buffer.size)
                 return CNO_OK;
 
+            struct cno_stream_t *stream = cno_stream_find(conn, 1);
+            if (stream == NULL)
+                return CNO_ERROR(ASSERTION, "connection is HTTP/1.x but stream 1 does not exist");
+            if (!(stream->accept & CNO_ACCEPT_HEADERS))
+                return CNO_ERROR(TRANSPORT, "server sent an HTTP/1.x response, but there was no request");
+
             // the http 2 client preface looks like an http 1 request, but is not.
             // picohttpparser will reject it. (note: CNO_PREFACE is null-terminated.)
             if (!conn->client && !strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size)) {
@@ -853,7 +861,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 conn->last_stream[CNO_REMOTE] = 0;
                 conn->last_stream[CNO_LOCAL]  = 0;
 
-                if (cno_stream_rst(conn, cno_stream_find(conn, 1)))
+                if (cno_stream_rst(conn, stream))
                     return CNO_ERROR_UP();
                 break;
             }
@@ -875,7 +883,6 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             if (ok == -2) {
                 if (conn->buffer.size > CNO_MAX_CONTINUATIONS * conn->settings[CNO_LOCAL].max_frame_size)
                     return CNO_ERROR(TRANSPORT, "HTTP/1.x message too big");
-
                 return CNO_OK;
             }
 
@@ -952,9 +959,8 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 }
             }
 
-            struct cno_stream_t *stream = cno_stream_find(conn, 1);
-
-            stream->accept |= CNO_ACCEPT_WRITE_HEADERS;
+            stream->accept &= ~CNO_ACCEPT_HEADERS;
+            stream->accept |= CNO_ACCEPT_WRITE_HEADERS | CNO_ACCEPT_DATA;
 
             if (conn->state == CNO_CONNECTION_HTTP1_READY)
                 conn->state = CNO_CONNECTION_HTTP1_READING;
@@ -970,15 +976,24 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
         case CNO_CONNECTION_HTTP1_READING:
         case CNO_CONNECTION_HTTP1_READING_UPGRADE: {
             struct cno_stream_t *stream = cno_stream_find(conn, 1);
+            if (!stream)
+                return CNO_ERROR(ASSERTION, "connection in HTTP/1.x mode but stream 1 does not exist");
+            if (!(stream->accept & CNO_ACCEPT_DATA))
+                return CNO_ERROR(ASSERTION, "connection expects HTTP/1.x message body, but stream 1 does not");
 
             if (!conn->http1_remaining) {
+                if (conn->state != CNO_CONNECTION_HTTP1_READING_UPGRADE)
+                    stream->accept |= CNO_ACCEPT_HEADERS; // TODO: trailers?
+                const int destroy = !(stream->accept &= ~CNO_ACCEPT_DATA);
+
                 conn->state = conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE
                     ? CNO_CONNECTION_PREFACE
                     : CNO_CONNECTION_HTTP1_READY;
 
                 if (CNO_FIRE(conn, on_message_end, stream->id))
                     return CNO_ERROR_UP();
-
+                if (destroy && cno_stream_rst(conn, stream))
+                    return CNO_ERROR_UP();
                 break;
             }
 
@@ -1279,6 +1294,8 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
         buffer[size + 0] = '\r';
         buffer[size + 1] = '\n';
+        if (final && conn->client)
+            cno_stream_find(conn, 1)->accept |= CNO_ACCEPT_HEADERS;
         return CNO_FIRE(conn, on_write, buffer, size + 2);
     }
 
