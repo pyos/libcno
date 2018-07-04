@@ -258,6 +258,7 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
     const struct cno_header_t *it  = msg->headers;
     const struct cno_header_t *end = msg->headers + msg->headers_len;
 
+    int has_scheme = 0;
     // >HTTP/2 uses special pseudo-header fields beginning with ':' character
     // >(ASCII 0x3a) [to convey the target URI, ...]
     for (; it != end && cno_buffer_startswith(it->name, CNO_BUFFER_STRING(":")); ++it) {
@@ -303,9 +304,23 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
         }
 
         if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":authority"))) continue;
-        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":scheme"))) continue;
+
+        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":scheme"))) {
+            if (has_scheme)
+                goto invalid_message;
+
+            has_scheme = 1;
+            continue;
+        }
+
         goto invalid_message;
     }
+
+    if (!conn->client && !cno_buffer_eq(msg->method, CNO_BUFFER_STRING("CONNECT"))
+     && (!has_scheme || cno_buffer_eq(msg->path, CNO_BUFFER_EMPTY)))
+        // >All HTTP/2 requests MUST include exactly one valid value for the :method, :scheme,
+        // >and :path pseudo-header fields, unless it is a CONNECT request (Section 8.3).
+        goto invalid_message;
 
     for (; it != end; ++it) {
         // >All pseudo-header fields MUST appear in the header block
