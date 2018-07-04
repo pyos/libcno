@@ -1103,6 +1103,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 return CNO_OK;
 
             struct cno_frame_t frame = { read1(&base[3]), read1(&base[4]), read4(&base[5]), { (const char *) &base[9], m } };
+            frame.stream &= 0x7FFFFFFFUL; // clear the reserved bit
 
             if (conn->state == CNO_CONNECTION_READY_NO_SETTINGS && frame.type != CNO_FRAME_SETTINGS)
                 return CNO_ERROR(TRANSPORT, "invalid HTTP 2 preface: no initial SETTINGS");
