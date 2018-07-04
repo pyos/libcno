@@ -600,7 +600,7 @@ static int cno_frame_handle_goaway(struct cno_connection_t *conn,
     const uint32_t error = read4((const uint8_t *) frame->payload.data + 4);
     if (error != CNO_RST_NO_ERROR)
         return CNO_ERROR(TRANSPORT, "disconnected with error %u", error);
-    return CNO_OK;
+    return CNO_ERROR(DISCONNECT, "disconnected");
 }
 
 
