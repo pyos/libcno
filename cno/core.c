@@ -424,6 +424,21 @@ static int cno_frame_handle_padding(struct cno_connection_t *conn, struct cno_fr
 }
 
 
+static int cno_frame_handle_priority_prefix(struct cno_connection_t *conn,
+                                            struct cno_stream_t     *stream,
+                                            struct cno_frame_t      *frame)
+{
+    const uint32_t target = read4((const uint8_t *) frame->payload.data) & 0x7FFFFFFFUL;
+    if (target == frame->stream) {
+        if (stream)
+            return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
+        return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "PRIORITY depends on itself");
+    }
+    // TODO implement prioritization
+    return CNO_OK;
+}
+
+
 static int cno_frame_handle_headers(struct cno_connection_t *conn,
                                     struct cno_stream_t     *stream,
                                     struct cno_frame_t      *frame)
@@ -456,7 +471,9 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
         if (frame->payload.size < 5)
             return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "no priority spec");
 
-        // TODO implement stream prioritization
+        if (cno_frame_handle_priority_prefix(conn, stream, frame))
+            return CNO_ERROR_UP();
+
         frame->payload.data += 5;
         frame->payload.size -= 5;
     }
@@ -635,7 +652,7 @@ static int cno_frame_handle_rst_stream(struct cno_connection_t *conn,
 
 
 static int cno_frame_handle_priority(struct cno_connection_t *conn,
-                                     struct cno_stream_t     *stream __attribute__((unused)),
+                                     struct cno_stream_t     *stream,
                                      struct cno_frame_t      *frame)
 {
     if (!frame->stream)
@@ -644,8 +661,7 @@ static int cno_frame_handle_priority(struct cno_connection_t *conn,
     if (frame->payload.size != 5)
         return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "bad PRIORITY");
 
-    // TODO implement prioritization
-    return CNO_OK;
+    return cno_frame_handle_priority_prefix(conn, stream, frame);
 }
 
 
