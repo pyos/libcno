@@ -53,7 +53,7 @@ except NameError:
         'on_message_end':   lambda self, id: self.on_message_end(id),
         'on_frame':         lambda self, frame: self.on_frame(frame),
         'on_frame_send':    lambda self, frame: self.on_frame_send(frame),
-        'on_pong':          lambda self, data: self.on_pong(data),
+        'on_pong':          lambda self, data: self.on_pong(ffi.unpack(data, 8)),
         'on_settings':      lambda self: self.on_settings(),
     }
 
@@ -125,3 +125,7 @@ class Connection:
 
     def write_reset(self, i, code):
         self.__throw(self.__c.state != CNO_CONNECTION_UNDEFINED and cno_write_reset(self.__c, i, code))
+
+    def write_ping(self, data):
+        assert len(data) == 8
+        self.__throw(cno_write_ping(self.__c, ffi.from_buffer(data)))

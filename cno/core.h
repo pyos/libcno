@@ -319,6 +319,7 @@ int cno_write_reset    (struct cno_connection_t *, uint32_t /* stream */, enum C
 int cno_write_push     (struct cno_connection_t *, uint32_t, const struct cno_message_t *);
 int cno_write_message  (struct cno_connection_t *, uint32_t, const struct cno_message_t *, int final);
 int cno_write_data     (struct cno_connection_t *, uint32_t, const char *, size_t, int final);
+int cno_write_ping     (struct cno_connection_t *, const char[8]);
 int cno_write_frame    (struct cno_connection_t *conn, const struct cno_frame_t *frame);
 
 #ifdef __cplusplus
