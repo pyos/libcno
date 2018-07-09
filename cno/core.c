@@ -633,6 +633,7 @@ static int cno_frame_handle_goaway(struct cno_connection_t *conn,
     const uint32_t error = read4((const uint8_t *) frame->payload.data + 4);
     if (error != CNO_RST_NO_ERROR)
         return CNO_ERROR(TRANSPORT, "disconnected with error %u", error);
+    // TODO: clean shutdown: reject all streams higher than indicated in the frame
     return CNO_ERROR(DISCONNECT, "disconnected");
 }
 
@@ -867,6 +868,13 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             break;
 
         case CNO_CONNECTION_HTTP1_READY: {
+            if (conn->goaway_sent) {
+                struct cno_stream_t *stream = cno_stream_find(conn, 1);
+                if (stream && cno_stream_rst(conn, stream))
+                    return CNO_ERROR_UP();
+                return CNO_ERROR(SHUTDOWN_READ, "graceful shutdown requested");
+            }
+
             {   // ignore leading crlf-s.
                 char *buf = conn->buffer.data;
                 char *end = conn->buffer.size + buf;
@@ -1189,8 +1197,13 @@ uint32_t cno_connection_next_stream(struct cno_connection_t *conn)
 
 int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST_STREAM_CODE code)
 {
-    if (!cno_connection_is_http2(conn))
+    if (!cno_connection_is_http2(conn)) {
+        if (!stream && code == CNO_RST_NO_ERROR) {
+            conn->goaway_sent = 1; // graceful shutdown
+            return CNO_OK;
+        }
         return CNO_ERROR(DISCONNECT, "HTTP/1.x connection rejected");
+    }
     if (!stream)
         return cno_frame_write_goaway(conn, code);
     struct cno_stream_t *obj = cno_stream_find(conn, stream);

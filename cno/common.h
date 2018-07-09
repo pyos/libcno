@@ -11,12 +11,12 @@ enum CNO_ERRNO
     CNO_ERRNO_ASSERTION       = 1,
     CNO_ERRNO_NO_MEMORY       = 2,
     CNO_ERRNO_NOT_IMPLEMENTED = 3,
-    CNO_ERRNO_TRANSPORT       = 4,
-    CNO_ERRNO_INVALID_STATE   = 5,
-    CNO_ERRNO_INVALID_STREAM  = 6,
-    CNO_ERRNO_WOULD_BLOCK     = 7,
-    CNO_ERRNO_COMPRESSION     = 8,
-    CNO_ERRNO_DISCONNECT      = 9,
+    CNO_ERRNO_TRANSPORT       = 4,  // (irrecoverable) protocol error
+    CNO_ERRNO_INVALID_STREAM  = 6,  // (irrecoverable) cno_write_* with wrong arguments
+    CNO_ERRNO_WOULD_BLOCK     = 7,  // cno_write_message would go above the limit on concurrent messages - wait for a request to complete
+    CNO_ERRNO_COMPRESSION     = 8,  // (irrecoverable) hpack error, compression now in inconsistent state
+    CNO_ERRNO_DISCONNECT      = 9,  // connection has already been closed
+    CNO_ERRNO_SHUTDOWN_READ   = 10, // cno_write_reset terminated the HTTP/1.x connection - close the read side, handle pending events, close the write side
 };
 
 
@@ -201,4 +201,5 @@ static inline void cno_list_gen_remove(struct cno_list_t *x)
 }
 
 #endif
+
 #endif
