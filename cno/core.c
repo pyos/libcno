@@ -223,8 +223,9 @@ static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
 static int cno_frame_write_goaway(struct cno_connection_t *conn,
                                   uint32_t /* enum CNO_RST_STREAM_CODE */ code)
 {
-    uint32_t last = conn->last_stream[CNO_REMOTE];
-    struct cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, { PACK(I32(last), I32(code)) } };
+    if (conn->goaway_sent)
+        conn->goaway_sent = conn->last_stream[CNO_REMOTE];
+    struct cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, { PACK(I32(conn->goaway_sent), I32(code)) } };
     return cno_frame_write(conn, &error);
 }
 
@@ -1104,6 +1105,8 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
 
             struct cno_frame_t frame = { read1(&base[3]), read1(&base[4]), read4(&base[5]), { (const char *) &base[9], m } };
             frame.stream &= 0x7FFFFFFFUL; // clear the reserved bit
+            if (conn->goaway_sent && frame.stream > conn->goaway_sent)
+                break;
 
             if (conn->state == CNO_CONNECTION_READY_NO_SETTINGS && frame.type != CNO_FRAME_SETTINGS)
                 return CNO_ERROR(TRANSPORT, "invalid HTTP 2 preface: no initial SETTINGS");
@@ -1187,7 +1190,8 @@ int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST
 {
     if (!cno_connection_is_http2(conn))
         return CNO_ERROR(DISCONNECT, "HTTP/1.x connection rejected");
-
+    if (!stream)
+        return cno_frame_write_goaway(conn, code);
     struct cno_stream_t *obj = cno_stream_find(conn, stream);
     if (!obj)
         return CNO_OK;  // assume it has already been reset

@@ -187,6 +187,7 @@ struct cno_connection_t
      int32_t window_recv;
      int32_t window_send;
     uint32_t last_stream  [2];  // dereferencable with CNO_REMOTE/CNO_LOCAL
+    uint32_t goaway_sent;
     uint32_t stream_count [2];
     struct cno_settings_t settings[2];
     struct cno_buffer_dyn_t buffer;
