@@ -1022,8 +1022,11 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 return CNO_ERROR(ASSERTION, "connection expects HTTP/1.x message body, but stream 1 does not");
 
             if (!conn->http1_remaining) {
-                if (conn->state != CNO_CONNECTION_HTTP1_READING_UPGRADE)
+                // TODO: && keep-alive is enabled
+                if (conn->state != CNO_CONNECTION_HTTP1_READING_UPGRADE && (!conn->client || --conn->pending_http1_responses))
                     stream->accept |= CNO_ACCEPT_HEADERS; // TODO: trailers?
+                // if still readable, will switch back to `CNO_CONNECTION_HTTP1_READY`;
+                // if still writable, `cno_write_message`/`cno_write_data` will reset it.
                 const int destroy = !(stream->accept &= ~CNO_ACCEPT_DATA);
 
                 conn->state = conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE
@@ -1159,28 +1162,31 @@ int cno_connection_data_received(struct cno_connection_t *conn, const char *data
 
 int cno_connection_stop(struct cno_connection_t *conn)
 {
-    if (cno_connection_is_http2(conn))
-        return cno_frame_write_goaway(conn, CNO_RST_NO_ERROR);
-
-    return CNO_OK;
+    return cno_write_reset(conn, 0, CNO_RST_NO_ERROR);
 }
 
 
 int cno_connection_lost(struct cno_connection_t *conn)
 {
+    if (!cno_connection_is_http2(conn)) {
+        struct cno_stream_t * stream = cno_stream_find(conn, 1);
+        if (stream) {
+            if ((stream->accept & CNO_ACCEPT_DATA)) // the other side did not finish writing the body
+                return CNO_ERROR(TRANSPORT, "unclean http/1.x termination");
+            // if still writable, `cno_write_message`/`cno_write_data` will reset the stream
+            if (!(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_rst(conn, stream))
+                return CNO_ERROR_UP();
+        }
+        return CNO_OK;
+    }
+
     conn->state = CNO_CONNECTION_UNDEFINED;
 
-    struct cno_stream_t **s;
-
-    for (s = &conn->streams[0]; s != &conn->streams[CNO_STREAM_BUCKETS]; s++)
+    for (struct cno_stream_t **s = &conn->streams[0]; s != &conn->streams[CNO_STREAM_BUCKETS]; s++)
         while (*s)
             if (cno_stream_rst(conn, *s))
                 return CNO_ERROR_UP();
 
-    cno_buffer_dyn_clear(&conn->buffer);
-    cno_buffer_dyn_clear(&conn->continued);
-    cno_hpack_clear(&conn->encoder);
-    cno_hpack_clear(&conn->decoder);
     return CNO_OK;
 }
 
@@ -1204,12 +1210,12 @@ int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST
         }
         return CNO_ERROR(DISCONNECT, "HTTP/1.x connection rejected");
     }
+
     if (!stream)
         return cno_frame_write_goaway(conn, code);
+
     struct cno_stream_t *obj = cno_stream_find(conn, stream);
-    if (!obj)
-        return CNO_OK;  // assume it has already been reset
-    return cno_frame_write_rst_stream(conn, obj, code);
+    return obj ? cno_frame_write_rst_stream(conn, obj, code) : CNO_OK; // assume idle streams have already been reset
 }
 
 
@@ -1274,9 +1280,11 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
     if (conn->state == CNO_CONNECTION_UNDEFINED)
         return CNO_ERROR(DISCONNECT, "connection closed");
 
+    struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
+
     if (!cno_connection_is_http2(conn)) {
-        if (stream != 1)
-            return CNO_ERROR(INVALID_STREAM, "can only write to stream 1 in HTTP 1 mode");
+        if (!streamobj)
+            return CNO_ERROR(DISCONNECT, "connection already closed");
 
         char buffer[CNO_MAX_HTTP1_HEADER_SIZE + 3];
         int size;
@@ -1344,79 +1352,74 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
         buffer[size + 0] = '\r';
         buffer[size + 1] = '\n';
-        if (final && conn->client)
-            cno_stream_find(conn, 1)->accept |= CNO_ACCEPT_HEADERS;
-        return CNO_FIRE(conn, on_write, buffer, size + 2);
-    }
-
-    struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
-
-    if (streamobj == NULL) {
-        if (!conn->client)
-            return CNO_ERROR(INVALID_STREAM, "cannot respond to an idle stream");
-
-        streamobj = cno_stream_new(conn, stream, CNO_LOCAL);
-
-        if (streamobj == NULL)
+        if (conn->client) {
+            conn->pending_http1_responses++;
+            streamobj->accept |= CNO_ACCEPT_HEADERS;
+        }
+        if (CNO_FIRE(conn, on_write, buffer, size + 2))
             return CNO_ERROR_UP();
-
-        streamobj->accept = CNO_ACCEPT_HEADERS | CNO_ACCEPT_PUSH | CNO_ACCEPT_WRITE_HEADERS;
-    }
-
-    if (!(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
-        return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
-
-    struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_EMPTY;
-    struct cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_EMPTY };
-
-    if (final)
-        frame.flags |= CNO_FLAG_END_STREAM;
-
-    if (conn->client) {
-        struct cno_header_t head[] = {
-            { CNO_BUFFER_STRING(":method"), msg->method, 0 },
-            { CNO_BUFFER_STRING(":path"),   msg->path,   0 },
-        };
-
-        if (cno_hpack_encode(&conn->encoder, &payload, head, 2))
-            goto payload_generation_error;
     } else {
-        char code[8];
-        snprintf(code, sizeof(code), "%d", msg->code);
+        if (streamobj == NULL) {
+            if (!conn->client)
+                return CNO_ERROR(INVALID_STREAM, "cannot respond to an idle stream");
 
-        struct cno_header_t head[] = {
-            { CNO_BUFFER_STRING(":status"), CNO_BUFFER_STRING(code), 0 }
-        };
+            streamobj = cno_stream_new(conn, stream, CNO_LOCAL);
 
-        if (cno_hpack_encode(&conn->encoder, &payload, head, 1))
-            goto payload_generation_error;
+            if (streamobj == NULL)
+                return CNO_ERROR_UP();
+
+            streamobj->accept = CNO_ACCEPT_HEADERS | CNO_ACCEPT_PUSH | CNO_ACCEPT_WRITE_HEADERS;
+        }
+
+        if (!(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
+            return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
+
+        struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_EMPTY;
+        struct cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_EMPTY };
+
+        if (final)
+            frame.flags |= CNO_FLAG_END_STREAM;
+
+        if (conn->client) {
+            struct cno_header_t head[] = {
+                { CNO_BUFFER_STRING(":method"), msg->method, 0 },
+                { CNO_BUFFER_STRING(":path"),   msg->path,   0 },
+            };
+
+            if (cno_hpack_encode(&conn->encoder, &payload, head, 2))
+                return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
+        } else {
+            char code[8];
+            snprintf(code, sizeof(code), "%d", msg->code);
+
+            struct cno_header_t head[] = {
+                { CNO_BUFFER_STRING(":status"), CNO_BUFFER_STRING(code), 0 }
+            };
+
+            if (cno_hpack_encode(&conn->encoder, &payload, head, 1))
+                return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
+        }
+
+
+        if (cno_hpack_encode(&conn->encoder, &payload, msg->headers, msg->headers_len))
+            return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
+
+        frame.payload = payload.as_static;
+
+        if (cno_frame_write(conn, &frame))
+            return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
+
+        cno_buffer_dyn_clear(&payload);
     }
-
-
-    if (cno_hpack_encode(&conn->encoder, &payload, msg->headers, msg->headers_len))
-        goto payload_generation_error;
-
-    frame.payload = payload.as_static;
-
-    if (cno_frame_write(conn, &frame))
-        goto payload_generation_error;
-
-    cno_buffer_dyn_clear(&payload);
 
     if (!final) {
         streamobj->accept &= ~CNO_ACCEPT_WRITE_HEADERS;
         streamobj->accept |=  CNO_ACCEPT_WRITE_DATA;
-        return CNO_OK;
+    } else if (!(streamobj->accept &= ~CNO_ACCEPT_OUTBOUND)) {
+        return cno_stream_rst(conn, streamobj);
     }
 
-    if (!(streamobj->accept &= ~CNO_ACCEPT_OUTBOUND))
-        return cno_stream_rst(conn, streamobj);
-
     return CNO_OK;
-
-payload_generation_error:
-    cno_buffer_dyn_clear(&payload);
-    return CNO_ERROR_UP();
 }
 
 
@@ -1425,11 +1428,16 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
     if (conn->state == CNO_CONNECTION_UNDEFINED)
         return CNO_ERROR(DISCONNECT, "connection closed");
 
+    struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
+
+    if (streamobj == NULL)
+        return CNO_ERROR(INVALID_STREAM, "stream does not exist");
+
+    if (!(streamobj->accept & CNO_ACCEPT_WRITE_DATA))
+        return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
+
     if (!cno_connection_is_http2(conn)) {
         int chunked = conn->flags & CNO_CONN_FLAG_WRITING_CHUNKED;
-
-        if (stream != 1)
-            return CNO_ERROR(INVALID_STREAM, "can only write to stream 1 in HTTP 1 mode");
 
         if (length) {
             if (chunked) {
@@ -1446,21 +1454,17 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
                 return CNO_ERROR_UP();
         }
 
-        if (final && chunked) {
-            if (CNO_FIRE(conn, on_write, "0\r\n\r\n", 5))
+        if (final) {
+            if (chunked && CNO_FIRE(conn, on_write, "0\r\n\r\n", 5))
+                return CNO_ERROR_UP();
+            if (conn->client)
+                streamobj->accept |= CNO_ACCEPT_WRITE_HEADERS;
+            if (!(streamobj->accept &= ~CNO_ACCEPT_WRITE_DATA) && cno_stream_rst(conn, streamobj))
                 return CNO_ERROR_UP();
         }
 
         return length;
     }
-
-    struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
-
-    if (streamobj == NULL)
-        return CNO_ERROR(INVALID_STREAM, "stream does not exist");
-
-    if (!(streamobj->accept & CNO_ACCEPT_WRITE_DATA))
-        return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
     if (conn->window_send < 0 || streamobj->window_send < 0)
         return 0;
@@ -1486,10 +1490,8 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
     conn->window_send -= length;
     streamobj->window_send -= length;
 
-    if (final)
-        if (!(streamobj->accept &= ~CNO_ACCEPT_OUTBOUND))
-            if (cno_stream_rst(conn, streamobj))
-                return CNO_ERROR_UP();
+    if (final && !(streamobj->accept &= ~CNO_ACCEPT_OUTBOUND) && cno_stream_rst(conn, streamobj))
+        return CNO_ERROR_UP();
 
     return length;
 }

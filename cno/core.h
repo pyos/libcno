@@ -184,6 +184,7 @@ struct cno_connection_t
     uint32_t continued_stream;  // if nonzero, expect a CONTINUATION on that stream.
     uint32_t continued_promise;  // if prev. frame was a PUSH_PROMISE, this is the stream it created.
     uint32_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
+    uint32_t pending_http1_responses;  // client-only - how many more messages to accept
      int32_t window_recv;
      int32_t window_send;
     uint32_t last_stream  [2];  // dereferencable with CNO_REMOTE/CNO_LOCAL
