@@ -1001,6 +1001,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
 
             stream->accept &= ~CNO_ACCEPT_HEADERS;
             stream->accept |= CNO_ACCEPT_WRITE_HEADERS | CNO_ACCEPT_DATA;
+            conn->pending_http1_responses++;
 
             if (conn->state == CNO_CONNECTION_HTTP1_READY)
                 conn->state = CNO_CONNECTION_HTTP1_READING;
@@ -1352,65 +1353,73 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
         buffer[size + 0] = '\r';
         buffer[size + 1] = '\n';
+        if (CNO_FIRE(conn, on_write, buffer, size + 2))
+            return CNO_ERROR_UP();
+
+        if (!final)
+            streamobj->accept |= CNO_ACCEPT_WRITE_DATA;
         if (conn->client) {
             conn->pending_http1_responses++;
             streamobj->accept |= CNO_ACCEPT_HEADERS;
-        }
-        if (CNO_FIRE(conn, on_write, buffer, size + 2))
-            return CNO_ERROR_UP();
-    } else {
-        if (streamobj == NULL) {
-            if (!conn->client)
-                return CNO_ERROR(INVALID_STREAM, "cannot respond to an idle stream");
-
-            streamobj = cno_stream_new(conn, stream, CNO_LOCAL);
-
-            if (streamobj == NULL)
+        } else if (!--conn->pending_http1_responses) {
+            if (!(streamobj->accept &= ~CNO_ACCEPT_WRITE_HEADERS) && !CNO_FIRE(conn, on_stream_end, 1))
                 return CNO_ERROR_UP();
-
-            streamobj->accept = CNO_ACCEPT_HEADERS | CNO_ACCEPT_PUSH | CNO_ACCEPT_WRITE_HEADERS;
         }
 
-        if (!(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
-            return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
-
-        struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_EMPTY;
-        struct cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_EMPTY };
-
-        if (final)
-            frame.flags |= CNO_FLAG_END_STREAM;
-
-        if (conn->client) {
-            struct cno_header_t head[] = {
-                { CNO_BUFFER_STRING(":method"), msg->method, 0 },
-                { CNO_BUFFER_STRING(":path"),   msg->path,   0 },
-            };
-
-            if (cno_hpack_encode(&conn->encoder, &payload, head, 2))
-                return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
-        } else {
-            char code[8];
-            snprintf(code, sizeof(code), "%d", msg->code);
-
-            struct cno_header_t head[] = {
-                { CNO_BUFFER_STRING(":status"), CNO_BUFFER_STRING(code), 0 }
-            };
-
-            if (cno_hpack_encode(&conn->encoder, &payload, head, 1))
-                return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
-        }
-
-
-        if (cno_hpack_encode(&conn->encoder, &payload, msg->headers, msg->headers_len))
-            return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
-
-        frame.payload = payload.as_static;
-
-        if (cno_frame_write(conn, &frame))
-            return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
-
-        cno_buffer_dyn_clear(&payload);
+        return CNO_OK;
     }
+
+    if (streamobj == NULL) {
+        if (!conn->client)
+            return CNO_ERROR(INVALID_STREAM, "cannot respond to an idle stream");
+
+        streamobj = cno_stream_new(conn, stream, CNO_LOCAL);
+
+        if (streamobj == NULL)
+            return CNO_ERROR_UP();
+
+        streamobj->accept = CNO_ACCEPT_HEADERS | CNO_ACCEPT_PUSH | CNO_ACCEPT_WRITE_HEADERS;
+    }
+
+    if (!(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
+        return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
+
+    struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_EMPTY;
+    struct cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_EMPTY };
+
+    if (final)
+        frame.flags |= CNO_FLAG_END_STREAM;
+
+    if (conn->client) {
+        struct cno_header_t head[] = {
+            { CNO_BUFFER_STRING(":method"), msg->method, 0 },
+            { CNO_BUFFER_STRING(":path"),   msg->path,   0 },
+        };
+
+        if (cno_hpack_encode(&conn->encoder, &payload, head, 2))
+            return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
+    } else {
+        char code[8];
+        snprintf(code, sizeof(code), "%d", msg->code);
+
+        struct cno_header_t head[] = {
+            { CNO_BUFFER_STRING(":status"), CNO_BUFFER_STRING(code), 0 }
+        };
+
+        if (cno_hpack_encode(&conn->encoder, &payload, head, 1))
+            return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
+    }
+
+
+    if (cno_hpack_encode(&conn->encoder, &payload, msg->headers, msg->headers_len))
+        return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
+
+    frame.payload = payload.as_static;
+
+    if (cno_frame_write(conn, &frame))
+        return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
+
+    cno_buffer_dyn_clear(&payload);
 
     if (!final) {
         streamobj->accept &= ~CNO_ACCEPT_WRITE_HEADERS;
