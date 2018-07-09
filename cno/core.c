@@ -317,7 +317,7 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
         goto invalid_message;
     }
 
-    if (!conn->client && !cno_buffer_eq(msg->method, CNO_BUFFER_STRING("CONNECT"))
+    if (!(stream->accept & CNO_ACCEPT_TRAILERS) && !conn->client && !cno_buffer_eq(msg->method, CNO_BUFFER_STRING("CONNECT"))
      && (!has_scheme || cno_buffer_eq(msg->path, CNO_BUFFER_EMPTY)))
         // >All HTTP/2 requests MUST include exactly one valid value for the :method, :scheme,
         // >and :path pseudo-header fields, unless it is a CONNECT request (Section 8.3).
