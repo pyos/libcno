@@ -33,7 +33,7 @@ static const struct cno_settings_t CNO_SETTINGS_STANDARD = {{{ 4096, 1, -1,   65
 static const struct cno_settings_t CNO_SETTINGS_CONSERVATIVE = {{{ 4096, 1, 100, 65535, 16384, -1 }}};
 
 /* actual values to send in the first SETTINGS frame */
-static const struct cno_settings_t CNO_SETTINGS_INITIAL = {{{ 4096, 1, 1024, 65535, 65536, -1 }}};
+static const struct cno_settings_t CNO_SETTINGS_INITIAL = {{{ 4096, 1, 1024, 65535, 16384, -1 }}};
 
 
 static int cno_stream_is_local(const struct cno_connection_t *conn, uint32_t id)
@@ -697,7 +697,7 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
     if (cfg->enable_push > 1)
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "enable_push out of bounds");
 
-    if (cfg->initial_window_size > 0x7fffffff)
+    if (cfg->initial_window_size > 0x7fffffffL)
         return cno_frame_write_error(conn, CNO_RST_FLOW_CONTROL_ERROR,
                                      "initial_window_size out of bounds");
 
@@ -724,11 +724,11 @@ static int cno_frame_handle_window_update(struct cno_connection_t *conn,
 
     uint32_t increment = read4((const uint8_t *) frame->payload.data);
 
-    if (increment == 0 || increment > 0x7fffffff)
+    if (increment == 0 || increment > 0x7fffffffL)
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "window increment out of bounds");
 
     if (!frame->stream) {
-        if (conn->window_send > 0x7fffffff - (int32_t) increment)
+        if (conn->window_send > 0x7fffffffL - (int32_t) increment)
             return cno_frame_write_error(conn, CNO_RST_FLOW_CONTROL_ERROR, "window increment too big");
 
         conn->window_send += increment;
@@ -737,7 +737,7 @@ static int cno_frame_handle_window_update(struct cno_connection_t *conn,
         if (stream == NULL)
             return cno_frame_handle_invalid_stream(conn, frame);
 
-        if (stream->window_send > 0x7fffffff - (int32_t) increment)
+        if (stream->window_send > 0x7fffffffL - (int32_t) increment)
             return cno_frame_write_rst_stream(conn, stream, CNO_RST_FLOW_CONTROL_ERROR);
 
         stream->window_send += increment;
