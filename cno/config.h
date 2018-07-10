@@ -4,10 +4,15 @@
 #define CNO_THREADED 1
 #endif
 
-#ifndef CNO_BUFFER_ALLOC_INCR
-/* The increment (in bytes) in which dynamically allocated buffers grow.
+#ifndef CNO_BUFFER_ALLOC_MIN
+/* The minimum size (in bytes) in which dynamically allocated buffers grow.
    Controls the number of heap allocations & amount of wasted heap space. */
-#define CNO_BUFFER_ALLOC_INCR 512
+#define CNO_BUFFER_ALLOC_MIN 256
+#endif
+
+#ifndef CNO_BUFFER_ALLOC_MIN_EXP
+/* The minimum factor by which dynamically allocated buffers grow. */
+#define CNO_BUFFER_ALLOC_MIN_EXP 1.5
 #endif
 
 #ifndef CNO_MAX_HTTP1_HEADER_SIZE

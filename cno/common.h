@@ -56,7 +56,7 @@ struct cno_buffer_dyn_t
         };
     };
     size_t offset;
-    size_t reserve;
+    size_t cap;
 };
 
 
@@ -139,7 +139,41 @@ static inline void cno_buffer_dyn_shift(struct cno_buffer_dyn_t *x, size_t off)
 {
     x->data   += off;
     x->size   -= off;
+    x->cap    -= off;
     x->offset += off;
+}
+
+
+static inline int cno_buffer_dyn_reserve(struct cno_buffer_dyn_t *x, size_t n)
+{
+    if (n <= x->cap)
+        return CNO_OK;
+
+    if (x->offset) {
+        memmove(x->data - x->offset, x->data, x->size);
+        x->data  -= x->offset;
+        x->cap   += x->offset;
+        x->offset = 0;
+    }
+
+    if (n <= x->cap)
+        return CNO_OK;
+
+    if (n < x->cap + CNO_BUFFER_ALLOC_MIN)
+        n = x->cap + CNO_BUFFER_ALLOC_MIN;
+    if (n < x->cap * CNO_BUFFER_ALLOC_MIN_EXP)
+        n = x->cap * CNO_BUFFER_ALLOC_MIN_EXP;
+
+    char *m = (char *) malloc(n);
+    if (m == NULL)
+        return CNO_ERROR(NO_MEMORY, "%zu bytes", n);
+
+    if (x->data != NULL)
+        memcpy(m, x->data, x->size);
+    free(x->data);
+    x->data = m;
+    x->cap  = n;
+    return CNO_OK;
 }
 
 
@@ -148,34 +182,11 @@ static inline int cno_buffer_dyn_concat(struct cno_buffer_dyn_t *a, const struct
     if (b.data == NULL)
         return CNO_OK;
 
-    if (a->offset) {
-        memmove(a->data - a->offset, a->data, a->size);
-        a->data    -= a->offset;
-        a->reserve += a->offset;
-        a->offset   = 0;
-    }
+    if (cno_buffer_dyn_reserve(a, a->size + b.size))
+        return CNO_ERROR_UP();
 
-    if (b.size <= a->reserve) {
-        memcpy(a->data + a->size, b.data, b.size);
-        a->size    += b.size;
-        a->reserve -= b.size;
-        return CNO_OK;
-    }
-
-    size_t new_size = (a->size + b.size + CNO_BUFFER_ALLOC_INCR - 1) / CNO_BUFFER_ALLOC_INCR
-                                                                     * CNO_BUFFER_ALLOC_INCR;
-
-    char *m = (char *) malloc(new_size);
-    if (m == NULL)
-        return CNO_ERROR(NO_MEMORY, "%zu bytes", new_size);
-
-    if (a->data != NULL)
-        memcpy(m, a->data, a->size);
-    memcpy(m + a->size, b.data, b.size);
-    free(a->data);
-    a->data    = m;
-    a->size   += b.size;
-    a->reserve = new_size - a->size;
+    memcpy(a->data + a->size, b.data, b.size);
+    a->size += b.size;
     return CNO_OK;
 }
 
