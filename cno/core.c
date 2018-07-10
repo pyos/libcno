@@ -1505,15 +1505,18 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
     return length;
 }
 
-int cno_write_ping(struct cno_connection_t *conn, const char data[8]) {
+int cno_write_ping(struct cno_connection_t *conn, const char data[8])
+{
     if (!cno_connection_is_http2(conn))
         return CNO_ERROR(ASSERTION, "cannot ping HTTP/1.x endpoints");
+
     struct cno_frame_t ping = { CNO_FRAME_PING, 0, 0, { data, 8 } };
     return cno_frame_write(conn, &ping);
 }
 
 // (the difference is that `conn` is non-const.)
-int cno_write_frame(struct cno_connection_t *conn, const struct cno_frame_t *frame) {
+int cno_write_frame(struct cno_connection_t *conn, const struct cno_frame_t *frame)
+{
     if (!cno_connection_is_http2(conn))
         return CNO_ERROR(ASSERTION, "cannot send HTTP2 frames to HTTP/1.x endpoints");
     return cno_frame_write(conn, frame);
