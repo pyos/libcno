@@ -54,8 +54,12 @@ enum CNO_CONNECTION_STATE
 
 enum CNO_CONNECTION_FLAGS
 {
-    CNO_CONN_FLAG_WRITING_CHUNKED = 0x01,  // Transfer-Encoding, that is
-    CNO_CONN_FLAG_MANUAL_FLOW_CTL = 0x02,
+    // In HTTP/1.x mode, wrap the payload in chunked transfer-encoding. Toggled automatically
+    // depending on whether content-length was present in the last written message head.
+    CNO_CONN_FLAG_WRITING_CHUNKED = 0x01,
+    // Disable automatic sending of stream WINDOW_UPDATEs after receiving DATA;
+    // application must call `cno_increase_flow_window` after processing a chunk from `on_message_data`.
+    CNO_CONN_FLAG_MANUAL_FLOW_CONTROL = 0x02,
 };
 
 
@@ -335,9 +339,7 @@ int cno_write_frame    (struct cno_connection_t *conn, const struct cno_frame_t 
 /* By default, cno assumes that `on_message_data` does not retain the data after returning.
    If it does copy the data somewhere, you should enable manual stream-level flow control,
    then ask to increase the window once the copy is deallocated. */
-void cno_set_manual_flow_control(struct cno_connection_t *, int /* enabled */);
-int  cno_get_manual_flow_control(struct cno_connection_t *);
-int  cno_increase_flow_window(struct cno_connection_t *, uint32_t /*stream*/, size_t /*bytes*/);
+int cno_increase_flow_window(struct cno_connection_t *, uint32_t /*stream*/, size_t /*bytes*/);
 
 #ifdef __cplusplus
 }  // extern "C"

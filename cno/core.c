@@ -594,7 +594,7 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
     if (frame->flags & CNO_FLAG_END_STREAM)
         return cno_frame_handle_end_stream(conn, stream);
 
-    if (!length || !cno_get_manual_flow_control(conn))
+    if (!length || (conn->flags & CNO_CONN_FLAG_MANUAL_FLOW_CONTROL))
         return CNO_OK;
 
     struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, stream->id, { PACK(I32(length)) } };
@@ -855,10 +855,11 @@ static int cno_connection_upgrade(struct cno_connection_t *conn)
 static int cno_connection_proceed(struct cno_connection_t *conn)
 {
     while (1) switch (conn->state) {
-        case CNO_CONNECTION_UNDEFINED:
+        case CNO_CONNECTION_UNDEFINED: {
             return CNO_OK;  // wait until connection_made before processing data
+        }
 
-        case CNO_CONNECTION_HTTP1_INIT:
+        case CNO_CONNECTION_HTTP1_INIT: {
             conn->state = CNO_CONNECTION_HTTP1_READY;
 
             struct cno_stream_t *stream = cno_stream_new(conn, 1, conn->client);
@@ -867,6 +868,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             stream->accept = conn->client ? CNO_ACCEPT_WRITE_HEADERS : CNO_ACCEPT_HEADERS;
 
             break;
+        }
 
         case CNO_CONNECTION_HTTP1_READY: {
             if (conn->goaway_sent) {
@@ -970,15 +972,10 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                         { CNO_BUFFER_STRING("connection"), CNO_BUFFER_STRING("upgrade"), 0 },
                         { CNO_BUFFER_STRING("upgrade"),    CNO_BUFFER_STRING("h2c"),     0 },
                     };
-
                     struct cno_message_t upgrade_msg = { 101, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, upgrade_headers, 2 };
-
-                    if (cno_write_message(conn, 1, &upgrade_msg, 1))
-                        return CNO_ERROR_UP();
-
                     // if we send the preface now, we'll be able to send HTTP 2 frames
                     // while in the HTTP1_READING_UPGRADE state.
-                    if (cno_connection_upgrade(conn))
+                    if (cno_write_message(conn, 1, &upgrade_msg, 1) || cno_connection_upgrade(conn))
                         return CNO_ERROR_UP();
 
                     // technically, server should refuse if HTTP2-Settings are not present.
@@ -986,29 +983,34 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     conn->state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
                 } else
 
+                // payload handling may look a bit complicated, so here's what the standard says:
+                // 1. presence of a body in a request is indicated by transfer-encoding/content-length.
+                // 2. HEAD, 1xx, 204, 304 responses never have bodies; the rest do.
+                // FIXME the "HEAD" part is not implemented
+                if (conn->client && ((100 <= msg.code && msg.code < 200) || msg.code == 204 || msg.code == 304)) {
+                    continue;
+                } else
+
                 if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length"))) {
+                    // 3. content-length is unique, and mutually exclusive with transfer-encoding
                     if (conn->http1_remaining)
                         return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: multiple content-lengths");
-
-                    const char *ptr = it->value.data;
-                    const char *end = it->value.data + it->value.size;
-
-                    while (ptr != end)
-                        if ('0' <= *ptr && *ptr <= '9')
-                            conn->http1_remaining = conn->http1_remaining * 10 + (*ptr++ - '0');
-                        else
+                    for (const char *ptr = it->value.data, *end = ptr + it->value.size; ptr != end; ptr++) {
+                        if (*ptr < '0' || '9' < *ptr)
                             return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: non-int length");
+                        conn->http1_remaining = conn->http1_remaining * 10 + (*ptr - '0');
+                    }
                 } else
 
                 if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("transfer-encoding"))) {
-                    // `chunked` can only be the last encoding
-                    if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("chunked"))
-                     || cno_buffer_endswith(it->value, CNO_BUFFER_STRING(", chunked"))
-                     || cno_buffer_endswith(it->value, CNO_BUFFER_STRING(",chunked")))
+                    // 4. any non-identity transfer-encoding requires chunked (which should also be
+                    //    listed; we don't check for that and simply fail on parsing the format instead)
+                    if (!cno_buffer_eq(it->value, CNO_BUFFER_STRING("identity")))
                         conn->http1_remaining = (uint32_t) -1;
                 }
             }
 
+            // even if there's no payload -- the automaton will (almost) instantly switch back:
             stream->accept &= ~CNO_ACCEPT_HEADERS;
             stream->accept |= CNO_ACCEPT_WRITE_HEADERS | CNO_ACCEPT_DATA;
             conn->pending_http1_responses++;
@@ -1056,15 +1058,19 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
 
             if (conn->http1_remaining == (uint32_t) -1) {
                 char *eol = memchr(conn->buffer.data, '\n', conn->buffer.size);
-
                 if (eol++ == NULL)
                     return CNO_OK;
 
-                size_t length = strtoul(conn->buffer.data, NULL, 16);
-                size_t total  = length + (eol - conn->buffer.data) + 2;  // + crlf after data
+                char *end_of_length;
+                size_t length = strtoul(conn->buffer.data, &end_of_length, 16);
+                if (end_of_length == conn->buffer.data || end_of_length + 2 != eol)
+                    return CNO_ERROR(TRANSPORT, "HTTP/1.x chunked encoding parse error");
 
+                size_t total = length + (eol - conn->buffer.data) + 2;  // + crlf after data
                 if (conn->buffer.size < total)
                     return CNO_OK;
+                if (conn->buffer.data[total - 2] != '\r' || conn->buffer.data[total - 1] != '\n')
+                    return CNO_ERROR(TRANSPORT, "HTTP/1.x chunked encoding parse error");
 
                 cno_buffer_dyn_shift(&conn->buffer, total);
 
@@ -1092,47 +1098,49 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
         case CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE: {
             if (CNO_FIRE(conn, on_upgrade))
                 return CNO_ERROR_UP();
-
+            // might've sent 101 and switched to the next state as a result
             if (conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE)
                 conn->state = CNO_CONNECTION_HTTP1_READING;
-
             break;
         }
 
         case CNO_CONNECTION_UNKNOWN_PROTOCOL: {
+            if (conn->goaway_sent) {
+                struct cno_stream_t *stream = cno_stream_find(conn, 1);
+                if (stream && cno_stream_rst(conn, stream))
+                    return CNO_ERROR_UP();
+                return CNO_ERROR(SHUTDOWN_READ, "graceful shutdown requested");
+            }
+
             if (!conn->buffer.size)
                 return CNO_OK;
 
             struct cno_buffer_t b = conn->buffer.as_static;
             cno_buffer_dyn_shift(&conn->buffer, b.size);
-
             if (CNO_FIRE(conn, on_message_data, 1, b.data, b.size))
                 return CNO_ERROR_UP();
 
             break;
         }
 
-        case CNO_CONNECTION_INIT:
+        case CNO_CONNECTION_INIT: {
             conn->state = CNO_CONNECTION_PREFACE;
-
             if (cno_connection_upgrade(conn))
                 return CNO_ERROR_UP();
-
             break;
+        }
 
-        case CNO_CONNECTION_PREFACE:
+        case CNO_CONNECTION_PREFACE: {
             if (!conn->client) {
                 if (conn->buffer.size < CNO_PREFACE.size)
                     return CNO_OK;
-
                 if (strncmp(conn->buffer.data, CNO_PREFACE.data, CNO_PREFACE.size))
                     return CNO_ERROR(TRANSPORT, "invalid HTTP 2 client preface");
-
                 cno_buffer_dyn_shift(&conn->buffer, CNO_PREFACE.size);
             }
-
             conn->state = CNO_CONNECTION_READY_NO_SETTINGS;
             break;
+        }
 
         case CNO_CONNECTION_READY_NO_SETTINGS:
         case CNO_CONNECTION_READY: {
@@ -1157,14 +1165,10 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             conn->state = CNO_CONNECTION_READY;
             cno_buffer_dyn_shift(&conn->buffer, 9 + m);
 
-            if (conn->goaway_sent && frame.stream > conn->goaway_sent)
-                break;
-
-            if (CNO_FIRE(conn, on_frame, &frame))
-                return CNO_ERROR_UP();
-
-            if (cno_frame_handle(conn, &frame))
-                return CNO_ERROR_UP();
+            // FIXME should at least decompress headers, probably
+            if (!conn->goaway_sent || frame.stream <= conn->goaway_sent)
+                if (CNO_FIRE(conn, on_frame, &frame) || cno_frame_handle(conn, &frame))
+                    return CNO_ERROR_UP();
 
             break;
         }
@@ -1298,21 +1302,14 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
     if (cno_buffer_dyn_concat(&payload, (struct cno_buffer_t) { PACK(I32(child)) })
     ||  cno_hpack_encode(&conn->encoder, &payload, head, 2)
     ||  cno_hpack_encode(&conn->encoder, &payload, msg->headers, msg->headers_len))
-        goto payload_generation_error;
+        return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
 
     frame.payload = payload.as_static;
-
     if (cno_frame_write(conn, &frame))
-        goto payload_generation_error;
+        return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
 
     cno_buffer_dyn_clear(&payload);
-
-    return CNO_FIRE(conn, on_message_start, child, msg)
-        || CNO_FIRE(conn, on_message_end,   child);
-
-payload_generation_error:
-    cno_buffer_dyn_clear(&payload);
-    return CNO_ERROR_UP();
+    return CNO_FIRE(conn, on_message_start, child, msg) || CNO_FIRE(conn, on_message_end, child);
 }
 
 
@@ -1322,6 +1319,9 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         return CNO_ERROR(DISCONNECT, "connection closed");
 
     struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
+
+    if (streamobj && !(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
+        return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
     if (!cno_connection_is_http2(conn)) {
         if (!streamobj)
@@ -1369,6 +1369,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
                 conn->flags &= ~CNO_CONN_FLAG_WRITING_CHUNKED;
 
             else if (cno_buffer_eq(name, CNO_BUFFER_STRING("transfer-encoding"))) {
+                // assuming the request is valid, chunked can only be the last transfer-encoding
                 if (cno_buffer_eq(value, CNO_BUFFER_STRING("chunked")))
                     continue;
                 else if (cno_buffer_endswith(value, CNO_BUFFER_STRING(", chunked")))
@@ -1378,9 +1379,9 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
             }
 
             size = snprintf(buffer, sizeof(buffer), "%.*s: %.*s\r\n",
-                (int) name.size,  name.data, (int) value.size, value.data);
+                (int) name.size, name.data, (int) value.size, value.data);
 
-            if (size > CNO_MAX_HTTP1_HEADER_SIZE)
+            if ((size_t)size > sizeof(buffer))
                 return CNO_ERROR(ASSERTION, "header too big\r\n");
 
             if (size && CNO_FIRE(conn, on_write, buffer, size))
@@ -1400,6 +1401,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
         if (!final)
             streamobj->accept |= CNO_ACCEPT_WRITE_DATA;
+
         if (conn->client) {
             conn->pending_http1_responses++;
             streamobj->accept |= CNO_ACCEPT_HEADERS;
@@ -1418,17 +1420,11 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
     if (streamobj == NULL) {
         if (!conn->client)
             return CNO_ERROR(INVALID_STREAM, "cannot respond to an idle stream");
-
         streamobj = cno_stream_new(conn, stream, CNO_LOCAL);
-
         if (streamobj == NULL)
             return CNO_ERROR_UP();
-
         streamobj->accept = CNO_ACCEPT_HEADERS | CNO_ACCEPT_PUSH | CNO_ACCEPT_WRITE_HEADERS;
     }
-
-    if (!(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
-        return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
     struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_EMPTY;
     struct cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_EMPTY };
@@ -1446,10 +1442,8 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
             return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
     } else {
         char code[8];
-        snprintf(code, sizeof(code), "%d", msg->code);
-
         struct cno_header_t head[] = {
-            { CNO_BUFFER_STRING(":status"), CNO_BUFFER_STRING(code), 0 }
+            { CNO_BUFFER_STRING(":status"), {code, snprintf(code, sizeof(code), "%d", msg->code)}, 0 }
         };
 
         if (cno_hpack_encode(&conn->encoder, &payload, head, 1))
@@ -1508,7 +1502,6 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
         if (length) {
             if (chunked) {
                 char lenbuf[16];
-
                 if (CNO_FIRE(conn, on_write, lenbuf, snprintf(lenbuf, sizeof(lenbuf), "%zX\r\n", length)))
                     return CNO_ERROR_UP();
             }
@@ -1528,7 +1521,6 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
             if (!(streamobj->accept &= ~CNO_ACCEPT_WRITE_DATA) && cno_stream_rst(conn, streamobj))
                 return CNO_ERROR_UP();
         }
-
         return length;
     }
 
@@ -1571,25 +1563,11 @@ int cno_write_ping(struct cno_connection_t *conn, const char data[8])
     return cno_frame_write(conn, &ping);
 }
 
-// (the difference is that `conn` is non-const.)
 int cno_write_frame(struct cno_connection_t *conn, const struct cno_frame_t *frame)
 {
     if (!cno_connection_is_http2(conn))
         return CNO_ERROR(ASSERTION, "cannot send HTTP2 frames to HTTP/1.x endpoints");
     return cno_frame_write(conn, frame);
-}
-
-void cno_set_manual_flow_control(struct cno_connection_t *conn, int enabled)
-{
-    if (enabled)
-        conn->flags |= CNO_CONN_FLAG_MANUAL_FLOW_CTL;
-    else
-        conn->flags &= CNO_CONN_FLAG_MANUAL_FLOW_CTL;
-}
-
-int cno_get_manual_flow_control(struct cno_connection_t *conn)
-{
-    return !!(conn->flags & CNO_CONN_FLAG_MANUAL_FLOW_CTL);
 }
 
 int cno_increase_flow_window(struct cno_connection_t *conn, uint32_t stream, size_t bytes)
