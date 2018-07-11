@@ -128,6 +128,12 @@ static inline int cno_buffer_startswith(const struct cno_buffer_t a, const struc
 }
 
 
+static inline int cno_buffer_endswith(const struct cno_buffer_t a, const struct cno_buffer_t b)
+{
+    return a.size >= b.size && 0 == memcmp(a.data + a.size - b.size, b.data, b.size);
+}
+
+
 static inline void cno_buffer_dyn_clear(struct cno_buffer_dyn_t *x)
 {
     free(x->data - x->offset);

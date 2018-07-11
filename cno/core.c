@@ -994,7 +994,10 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 } else
 
                 if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("transfer-encoding"))) {
-                    if (!cno_buffer_eq(it->value, CNO_BUFFER_STRING("identity")))
+                    // `chunked` can only be the last encoding
+                    if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("chunked"))
+                     || cno_buffer_endswith(it->value, CNO_BUFFER_STRING(", chunked"))
+                     || cno_buffer_endswith(it->value, CNO_BUFFER_STRING(",chunked")))
                         conn->http1_remaining = (uint32_t) -1;
                 }
             }
@@ -1300,6 +1303,9 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         if (size > CNO_MAX_HTTP1_HEADER_SIZE)
             return CNO_ERROR(ASSERTION, "method/path too big");
 
+        if (CNO_FIRE(conn, on_write, buffer, size))
+            return CNO_ERROR_UP();
+
         struct cno_header_t *it  = msg->headers;
         struct cno_header_t *end = msg->headers_len + it;
         int had_connection_header = 0;
@@ -1310,50 +1316,49 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
             conn->flags |= CNO_CONN_FLAG_WRITING_CHUNKED;
 
         for (; it != end; ++it) {
-            if (size && CNO_FIRE(conn, on_write, buffer, size))
-                return CNO_ERROR_UP();
+            struct cno_buffer_t name = it->name;
+            struct cno_buffer_t value = it->value;
 
-            if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":authority")))
-                size = snprintf(buffer, sizeof(buffer), "host: %.*s\r\n",
-                    (int) it->value.size, it->value.data);
+            if (cno_buffer_eq(name, CNO_BUFFER_STRING(":authority")))
+                name = CNO_BUFFER_STRING("host");
 
-            else if (cno_buffer_startswith(it->name, CNO_BUFFER_STRING(":")))
-                size = 0;
+            else if (cno_buffer_startswith(name, CNO_BUFFER_STRING(":")))
+                continue;
 
-            else {
-                size = snprintf(buffer, sizeof(buffer), "%.*s: %.*s\r\n",
-                    (int) it->name.size,  it->name.data,
-                    (int) it->value.size, it->value.data);
+            else if (cno_buffer_eq(name, CNO_BUFFER_STRING("connection")))
+                had_connection_header = 1;
 
-                if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("connection")))
-                    had_connection_header = 1;
+            else if (cno_buffer_eq(name, CNO_BUFFER_STRING("content-length")))
+                conn->flags &= ~CNO_CONN_FLAG_WRITING_CHUNKED;
 
-                else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length"))
-                     ||  cno_buffer_eq(it->name, CNO_BUFFER_STRING("transfer-encoding")))
-                    conn->flags &= ~CNO_CONN_FLAG_WRITING_CHUNKED;
+            else if (cno_buffer_eq(name, CNO_BUFFER_STRING("transfer-encoding"))) {
+                if (cno_buffer_eq(value, CNO_BUFFER_STRING("chunked")))
+                    continue;
+                else if (cno_buffer_endswith(value, CNO_BUFFER_STRING(", chunked")))
+                    value.size -= 9;
+                else if (cno_buffer_endswith(value, CNO_BUFFER_STRING(",chunked")))
+                    value.size -= 8;
             }
+
+            size = snprintf(buffer, sizeof(buffer), "%.*s: %.*s\r\n",
+                (int) name.size,  name.data, (int) value.size, value.data);
 
             if (size > CNO_MAX_HTTP1_HEADER_SIZE)
                 return CNO_ERROR(ASSERTION, "header too big\r\n");
-        }
 
-        if (conn->flags & CNO_CONN_FLAG_WRITING_CHUNKED) {
             if (size && CNO_FIRE(conn, on_write, buffer, size))
                 return CNO_ERROR_UP();
-
-            size = snprintf(buffer, sizeof(buffer), "transfer-encoding: chunked\r\n");
         }
 
-        if (!had_connection_header) {
-            if (size && CNO_FIRE(conn, on_write, buffer, size))
+        if (conn->flags & CNO_CONN_FLAG_WRITING_CHUNKED)
+            if (CNO_FIRE(conn, on_write, "transfer-encoding: chunked\r\n", 28))
                 return CNO_ERROR_UP();
 
-            size = snprintf(buffer, sizeof(buffer), "connection: keep-alive\r\n");
-        }
+        if (!had_connection_header)
+            if (CNO_FIRE(conn, on_write, "connection: keep-alive\r\n", 24))
+                return CNO_ERROR_UP();
 
-        buffer[size + 0] = '\r';
-        buffer[size + 1] = '\n';
-        if (CNO_FIRE(conn, on_write, buffer, size + 2))
+        if (CNO_FIRE(conn, on_write, "\r\n", 2))
             return CNO_ERROR_UP();
 
         if (!final)
