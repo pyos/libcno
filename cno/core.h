@@ -47,6 +47,8 @@ enum CNO_CONNECTION_STATE
     CNO_CONNECTION_HTTP1_READY,
     CNO_CONNECTION_HTTP1_READING,
     CNO_CONNECTION_HTTP1_READING_UPGRADE,  // reading HTTP/1.x request, writing HTTP 2 responses
+    CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE,
+    CNO_CONNECTION_UNKNOWN_PROTOCOL,
     CNO_CONNECTION_UNDEFINED,
 };
 
@@ -233,6 +235,11 @@ struct cno_connection_t
      *        a response to that request should arrive soon on the same stream.
      *   on_settings
      *     -- called whenever the remote peer sends a new configuration.
+     *   on_upgrade
+     *     -- called when the client requests an upgrade from HTTP/1.x to an unknown protocol,
+     *        assuming `on_message_start` did not accept or reject the upgrade. if, upon returning,
+     *        a 101 response is not sent, it is assumed that the upgrade has been rejected, and
+     *        everything proceeds as if the "upgrade" header had no special meaning.
      */
     void *cb_data;
     #define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob->cb_data, ##__VA_ARGS__))
@@ -249,6 +256,7 @@ struct cno_connection_t
     int (*on_frame_send    )(void *, const struct cno_frame_t *);
     int (*on_pong          )(void *, const char[8]);
     int (*on_settings      )(void *);
+    int (*on_upgrade       )(void *);
 };
 
 

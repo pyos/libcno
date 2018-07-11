@@ -835,10 +835,11 @@ void cno_connection_reset(struct cno_connection_t *conn)
 
 int cno_connection_is_http2(struct cno_connection_t *conn)
 {
-    return conn->state != CNO_CONNECTION_HTTP1_INIT &&
-           conn->state != CNO_CONNECTION_HTTP1_READY &&
-           conn->state != CNO_CONNECTION_HTTP1_READING &&
-           conn->state != CNO_CONNECTION_UNDEFINED;
+    return conn->state == CNO_CONNECTION_INIT ||
+           conn->state == CNO_CONNECTION_PREFACE ||
+           conn->state == CNO_CONNECTION_READY ||
+           conn->state == CNO_CONNECTION_READY_NO_SETTINGS ||
+           conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE;
 }
 
 
@@ -954,10 +955,16 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     // TODO decode & emit on_frame
                 } else
 
-                if (!conn->client && cno_buffer_eq(it->name,  CNO_BUFFER_STRING("upgrade"))
-                                  && cno_buffer_eq(it->value, CNO_BUFFER_STRING("h2c"))) {
+                if (!conn->client && cno_buffer_eq(it->name, CNO_BUFFER_STRING("upgrade"))) {
                     if (conn->state != CNO_CONNECTION_HTTP1_READY)
-                        return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: multiple upgrade headers");
+                        continue;
+
+                    if (!cno_buffer_eq(it->value, CNO_BUFFER_STRING("h2c"))) {
+                        // if the application definitely does not support upgrading to anything else, prefer h2
+                        if (conn->on_upgrade)
+                            conn->state = CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE;
+                        continue;
+                    }
 
                     struct cno_header_t upgrade_headers[] = {
                         { CNO_BUFFER_STRING("connection"), CNO_BUFFER_STRING("upgrade"), 0 },
@@ -1069,7 +1076,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 break;
             }
 
-            struct cno_buffer_t b = { conn->buffer.data, conn->buffer.size };
+            struct cno_buffer_t b = conn->buffer.as_static;
 
             if (b.size > conn->http1_remaining)
                 b.size = conn->http1_remaining;
@@ -1079,6 +1086,29 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
 
             if (CNO_FIRE(conn, on_message_data, stream->id, b.data, b.size))
                 return CNO_ERROR_UP();
+            break;
+        }
+
+        case CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE: {
+            if (CNO_FIRE(conn, on_upgrade))
+                return CNO_ERROR_UP();
+
+            if (conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE)
+                conn->state = CNO_CONNECTION_HTTP1_READING;
+
+            break;
+        }
+
+        case CNO_CONNECTION_UNKNOWN_PROTOCOL: {
+            if (!conn->buffer.size)
+                return CNO_OK;
+
+            struct cno_buffer_t b = conn->buffer.as_static;
+            cno_buffer_dyn_shift(&conn->buffer, b.size);
+
+            if (CNO_FIRE(conn, on_message_data, 1, b.data, b.size))
+                return CNO_ERROR_UP();
+
             break;
         }
 
@@ -1175,8 +1205,12 @@ int cno_connection_lost(struct cno_connection_t *conn)
     if (!cno_connection_is_http2(conn)) {
         struct cno_stream_t * stream = cno_stream_find(conn, 1);
         if (stream) {
-            if ((stream->accept & CNO_ACCEPT_DATA)) // the other side did not finish writing the body
+            if (conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL) {
+                if (CNO_FIRE(conn, on_message_end, 1))
+                    return CNO_ERROR_UP();
+            } else if (stream->accept & CNO_ACCEPT_DATA) { // the other side did not finish writing the body
                 return CNO_ERROR(TRANSPORT, "unclean http/1.x termination");
+            }
             // if still writable, `cno_write_message`/`cno_write_data` will reset the stream
             if (!(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_rst(conn, stream))
                 return CNO_ERROR_UP();
@@ -1212,6 +1246,9 @@ int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST
             conn->goaway_sent = 1; // graceful shutdown
             return CNO_OK;
         }
+        struct cno_stream_t *obj = cno_stream_find(conn, stream);
+        if (obj && cno_stream_rst(conn, obj))
+            return CNO_ERROR_UP();
         return CNO_ERROR(DISCONNECT, "HTTP/1.x connection rejected");
     }
 
@@ -1371,6 +1408,10 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
                 return CNO_ERROR_UP();
         }
 
+        if (msg->code == 101 && conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE) {
+            conn->state = CNO_CONNECTION_UNKNOWN_PROTOCOL;
+        }
+
         return CNO_OK;
     }
 
@@ -1449,6 +1490,17 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
 
     if (!(streamobj->accept & CNO_ACCEPT_WRITE_DATA))
         return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
+
+    if (conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL) {
+        if (CNO_FIRE(conn, on_write, data, length))
+            return CNO_ERROR_UP();
+        if (final) {
+            if (!(streamobj->accept &= ~CNO_ACCEPT_WRITE_DATA) && cno_stream_rst(conn, streamobj))
+                return CNO_ERROR_UP();
+            return CNO_ERROR(DISCONNECT, "should now close the transport");
+        }
+        return length;
+    }
 
     if (!cno_connection_is_http2(conn)) {
         int chunked = conn->flags & CNO_CONN_FLAG_WRITING_CHUNKED;
