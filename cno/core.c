@@ -896,7 +896,8 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
 
             // the http 2 client preface looks like an http 1 request, but is not.
             // picohttpparser will reject it. (note: CNO_PREFACE is null-terminated.)
-            if (!conn->client && !strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size)) {
+            if (!conn->client && !(conn->flags & CNO_CONN_FLAG_DISALLOW_H2_PRIOR_KNOWLEDGE)
+             && !strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size)) {
                 if (conn->buffer.size < CNO_PREFACE.size)
                     return CNO_OK;
 
@@ -962,11 +963,14 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                         continue;
 
                     if (!cno_buffer_eq(it->value, CNO_BUFFER_STRING("h2c"))) {
-                        // if the application definitely does not support upgrading to anything else, prefer h2
+                        // if the application definitely does not support upgrading to anything else, prefer h2c
                         if (conn->on_upgrade)
                             conn->state = CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE;
                         continue;
                     }
+
+                    if (conn->flags & CNO_CONN_FLAG_DISALLOW_H2_UPGRADE)
+                        continue;
 
                     struct cno_header_t upgrade_headers[] = {
                         { CNO_BUFFER_STRING("connection"), CNO_BUFFER_STRING("upgrade"), 0 },

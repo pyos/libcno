@@ -60,6 +60,10 @@ enum CNO_CONNECTION_FLAGS
     // Disable automatic sending of stream WINDOW_UPDATEs after receiving DATA;
     // application must call `cno_increase_flow_window` after processing a chunk from `on_message_data`.
     CNO_CONN_FLAG_MANUAL_FLOW_CONTROL = 0x02,
+    // Disable special handling of the "Upgrade: h2c" header in HTTP/1.x mode.
+    CNO_CONN_FLAG_DISALLOW_H2_UPGRADE = 0x04,
+    // Disable special handling of the HTTP2 preface in HTTP/1.x mode.
+    CNO_CONN_FLAG_DISALLOW_H2_PRIOR_KNOWLEDGE = 0x08,
 };
 
 
