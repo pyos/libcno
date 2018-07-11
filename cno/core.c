@@ -575,7 +575,7 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
 
     if (length) {
-        // TODO allow manual flow control
+        // TODO allow manual connection flow control?
         struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, { PACK(I32(length)) } };
 
         if (cno_frame_write(conn, &update))
@@ -594,7 +594,7 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
     if (frame->flags & CNO_FLAG_END_STREAM)
         return cno_frame_handle_end_stream(conn, stream);
 
-    if (!length)
+    if (!length || !cno_get_manual_flow_control(conn))
         return CNO_OK;
 
     struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, stream->id, { PACK(I32(length)) } };
@@ -1525,4 +1525,25 @@ int cno_write_frame(struct cno_connection_t *conn, const struct cno_frame_t *fra
     if (!cno_connection_is_http2(conn))
         return CNO_ERROR(ASSERTION, "cannot send HTTP2 frames to HTTP/1.x endpoints");
     return cno_frame_write(conn, frame);
+}
+
+void cno_set_manual_flow_control(struct cno_connection_t *conn, int enabled)
+{
+    if (enabled)
+        conn->flags |= CNO_CONN_FLAG_MANUAL_FLOW_CTL;
+    else
+        conn->flags &= CNO_CONN_FLAG_MANUAL_FLOW_CTL;
+}
+
+int cno_get_manual_flow_control(struct cno_connection_t *conn)
+{
+    return !!(conn->flags & CNO_CONN_FLAG_MANUAL_FLOW_CTL);
+}
+
+int cno_increase_flow_window(struct cno_connection_t *conn, uint32_t stream, size_t bytes)
+{
+    if (!stream || !cno_connection_is_http2(conn) || !cno_stream_find(conn, stream))
+        return CNO_OK;
+    struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, stream, { PACK(I32(bytes)) } };
+    return cno_frame_write(conn, &update);
 }
