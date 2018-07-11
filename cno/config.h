@@ -1,3 +1,5 @@
+#pragma once
+
 #ifndef CNO_THREADED
 /* Whether to (attempt to) support multithreaded environments.
    Requires C11 _Thread_local. */

@@ -1,8 +1,7 @@
+#pragma once
 // #include <stddef.h>
 // #include <stdlib.h>
 // #include <string.h>
-#ifndef CNO_COMMON_H
-#define CNO_COMMON_H
 
 
 enum CNO_ERRNO
@@ -216,7 +215,5 @@ static inline void cno_list_gen_remove(struct cno_list_t *x)
     x->next->prev = x->prev;
     x->prev->next = x->next;
 }
-
-#endif
 
 #endif

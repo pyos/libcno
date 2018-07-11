@@ -1,10 +1,9 @@
+#pragma once
 // required includes:
 // #include <stddef.h>
 // #include <stdint.h>
 // #include <stdlib.h>
 // #include <string.h>
-#ifndef CNO_CORE_H
-#define CNO_CORE_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -342,6 +341,4 @@ int  cno_increase_flow_window(struct cno_connection_t *, uint32_t /*stream*/, si
 
 #ifdef __cplusplus
 }  // extern "C"
-#endif
-
 #endif

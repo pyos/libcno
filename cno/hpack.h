@@ -1,6 +1,5 @@
+#pragma once
 // #include "common.h"
-#ifndef CNO_HPACK_H
-#define CNO_HPACK_H
 
 
 enum CNO_HEADER_FLAGS
@@ -69,5 +68,4 @@ static inline void cno_hpack_free_header(struct cno_header_t *h)
     *h = CNO_HEADER_EMPTY;
 }
 
-#endif
 #endif
