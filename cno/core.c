@@ -1542,7 +1542,7 @@ int cno_get_manual_flow_control(struct cno_connection_t *conn)
 
 int cno_increase_flow_window(struct cno_connection_t *conn, uint32_t stream, size_t bytes)
 {
-    if (!stream || !cno_connection_is_http2(conn) || !cno_stream_find(conn, stream))
+    if (!bytes || !stream || !cno_connection_is_http2(conn) || !cno_stream_find(conn, stream))
         return CNO_OK;
     struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, stream, { PACK(I32(bytes)) } };
     return cno_frame_write(conn, &update);
