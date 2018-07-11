@@ -733,7 +733,6 @@ static int cno_frame_handle_window_update(struct cno_connection_t *conn,
             return cno_frame_write_error(conn, CNO_RST_FLOW_CONTROL_ERROR, "window increment too big");
 
         conn->window_send += increment;
-        // TODO maybe emit an event for each stream with nonzero window instead?
     } else {
         if (stream == NULL)
             return cno_frame_handle_invalid_stream(conn, frame);
@@ -742,7 +741,6 @@ static int cno_frame_handle_window_update(struct cno_connection_t *conn,
             return cno_frame_write_rst_stream(conn, stream, CNO_RST_FLOW_CONTROL_ERROR);
 
         stream->window_send += increment;
-        // TODO maybe only emit an event if connection-wide window is nonzero?
     }
 
     return CNO_FIRE(conn, on_flow_increase, frame->stream);
