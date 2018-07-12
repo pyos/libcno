@@ -1,20 +1,35 @@
 import ssl
 import sys
 import asyncio
+import itertools
+import urllib.parse
 
 import cno
 
 
-async def main(url):
+def origin(url):
+    parsed = urllib.parse.urlparse(url)
+    return parsed.hostname, parsed.port, parsed.scheme
+
+
+async def main(*urls):
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-    resp = await cno.request(loop, 'GET', url, ssl_ctx=ctx)
-    await print_response([('GET', url)], resp)
-    resp.conn.close()
+
+    tasks = []
+    for _, g in itertools.groupby(sorted(urls, key=origin), key=origin):
+        g = list(g)
+        conn = await cno.connect(loop, g[0], ssl_ctx=ctx)
+        for url in g:
+            path = urllib.parse.urlparse(url).path
+            tasks.append(asyncio.ensure_future(print_response([('GET', url)], conn.request('GET', path))))
+    for task in tasks:
+        await task
 
 
 async def print_response(chain, rsp):
+    rsp = await rsp
     head = ' \033[1;35m->\033[0m '.join('\033[1;35m{}\033[0m {}'.format(method, url) for method, url in chain)
     print('>>>', head, '\033[1;3{}m{} (http/{})\033[39m'.format(
         2 if 200 <= rsp.code < 300 else
@@ -29,11 +44,11 @@ async def print_response(chain, rsp):
         print('>>> \033[1;35mpush {}\033[0m {}'.format(push.method, push.path))
         for k, v in push.headers:
             print('    \033[1;34m{}\033[0m: {}'.format(k, v))
-        await print_response(chain + [(push.method, push.path)], (await push.response))
+        await print_response(chain + [(push.method, push.path)], push.response)
 
 
-if len(sys.argv) != 2:
-    exit('usage: {0} <url>'.format(*sys.argv))
+if len(sys.argv) < 2:
+    exit('usage: {0} <url> ...'.format(sys.argv[0]))
 
 loop = asyncio.get_event_loop()
-loop.run_until_complete(main(sys.argv[1]))
+loop.run_until_complete(main(*sys.argv[1:]))
