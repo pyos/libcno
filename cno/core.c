@@ -256,6 +256,7 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
                                     struct cno_frame_t      *frame,
                                     struct cno_message_t    *msg)
 {
+    int is_response = conn->client && !conn->continued_promise;
     const struct cno_header_t *it  = msg->headers;
     const struct cno_header_t *end = msg->headers + msg->headers_len;
 
@@ -267,61 +268,46 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
             // >Pseudo-header fields MUST NOT appear in trailers.
             goto invalid_message;
 
-        if (conn->client && !conn->continued_promise) {
+        if (is_response) {
             if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":status"))) {
                 if (msg->code)
                     goto invalid_message;
-
                 for (const char *p = it->value.data; p != it->value.data + it->value.size; p++) {
                     if (*p < '0' || '9' < *p)
                         goto invalid_message;
-
                     msg->code = msg->code * 10 + (*p - '0');
                 }
-
+                continue;
+            }
+        } else {
+            if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":path"))) {
+                if (msg->path.data)
+                    goto invalid_message;
+                msg->path = it->value;
                 continue;
             }
 
-            // >Endpoints MUST NOT generate pseudo-header fields
-            // >other than those defined in this document.
-            goto invalid_message;
+            if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":method"))) {
+                if (msg->method.data)
+                    goto invalid_message;
+                msg->method = it->value;
+                continue;
+            }
+
+            if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":authority")))
+                continue;
+
+            if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":scheme"))) {
+                if (has_scheme)
+                    goto invalid_message;
+                has_scheme = 1;
+                continue;
+            }
         }
 
-        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":path"))) {
-            if (msg->path.data)
-                goto invalid_message;
-
-            msg->path = it->value;
-            continue;
-        }
-
-
-        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":method"))) {
-            if (msg->method.data)
-                goto invalid_message;
-
-            msg->method = it->value;
-            continue;
-        }
-
-        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":authority"))) continue;
-
-        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":scheme"))) {
-            if (has_scheme)
-                goto invalid_message;
-
-            has_scheme = 1;
-            continue;
-        }
-
+        // >Endpoints MUST NOT generate pseudo-header fields other than those defined in this document.
         goto invalid_message;
     }
-
-    if (!(stream->accept & CNO_ACCEPT_TRAILERS) && !conn->client && !cno_buffer_eq(msg->method, CNO_BUFFER_STRING("CONNECT"))
-     && (!has_scheme || cno_buffer_eq(msg->path, CNO_BUFFER_EMPTY)))
-        // >All HTTP/2 requests MUST include exactly one valid value for the :method, :scheme,
-        // >and :path pseudo-header fields, unless it is a CONNECT request (Section 8.3).
-        goto invalid_message;
 
     for (; it != end; ++it) {
         // >All pseudo-header fields MUST appear in the header block
@@ -353,7 +339,10 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
         return cno_frame_handle_end_stream(conn, stream);
     }
 
-    if (conn->client && !conn->continued_promise ? !msg->code : !msg->path.data || !msg->method.data)
+    // TODO support CONNECT?
+    if (is_response ? !msg->code : (!msg->path.data || !msg->path.size || !msg->method.data || !msg->method.size || !has_scheme))
+        // >All HTTP/2 requests MUST include exactly one valid value for the :method, :scheme,
+        // >and :path pseudo-header fields, unless it is a CONNECT request (Section 8.3).
         goto invalid_message;
 
     if (conn->continued_promise)
