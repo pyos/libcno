@@ -198,15 +198,20 @@ static int cno_frame_write_settings(const struct cno_connection_t *conn,
 }
 
 
-static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
-                                      struct cno_stream_t     *stream,
-                                      uint32_t /* enum CNO_RST_STREAM_CODE */ code)
+static int cno_stream_rst_by_local(struct cno_connection_t *conn, struct cno_stream_t *stream)
 {
 #if CNO_STREAM_RESET_HISTORY
     conn->recently_reset[conn->recently_reset_next++] = stream->id;
     conn->recently_reset_next %= CNO_STREAM_RESET_HISTORY;
 #endif
+    return cno_stream_rst(conn, stream);
+}
 
+
+static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
+                                      struct cno_stream_t     *stream,
+                                      uint32_t /* enum CNO_RST_STREAM_CODE */ code)
+{
     struct cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, stream->id, { PACK(I32(code)) } };
 
     if (cno_frame_write(conn, &error))
@@ -215,7 +220,7 @@ static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
     if (!(stream->accept & CNO_ACCEPT_HEADERS))
         // since headers were already handled, this stream can be safely destroyed.
         // i sure hope there are no trailers, though.
-        return cno_stream_rst(conn, stream);
+        return cno_stream_rst_by_local(conn, stream);
 
     // still have to decompress headers to maintain shared compression state.
     // FIXME headers may never arrive if the peer receives RST_STREAM before sending them.
@@ -359,7 +364,7 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
 
     if (stream->accept & CNO_ACCEPT_NOP_HEADERS)
         // hpack compression is now in sync, there's no use for this stream anymore.
-        return cno_stream_rst(conn, stream);
+        return cno_stream_rst_by_local(conn, stream);
 
     if (CNO_FIRE(conn, on_message_start, stream->id, msg))
         return CNO_ERROR_UP();
@@ -1312,6 +1317,16 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
 }
 
 
+static int cno_discard_remaining_payload(struct cno_connection_t *conn, struct cno_stream_t *streamobj)
+{
+    if (!(streamobj->accept &= ~CNO_ACCEPT_OUTBOUND))
+        return cno_stream_rst_by_local(conn, streamobj);
+    if (cno_frame_write_rst_stream(conn, streamobj, CNO_RST_NO_ERROR))
+        return CNO_ERROR_UP();
+    return CNO_OK;
+}
+
+
 int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const struct cno_message_t *msg, int final)
 {
     if (conn->state == CNO_CONNECTION_UNDEFINED)
@@ -1467,13 +1482,12 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
     cno_buffer_dyn_clear(&payload);
 
+    if (final)
+        return cno_discard_remaining_payload(conn, streamobj);
+
     if (!is_informational) {
-        if (!final) {
-            streamobj->accept &= ~CNO_ACCEPT_WRITE_HEADERS;
-            streamobj->accept |=  CNO_ACCEPT_WRITE_DATA;
-        } else if (!(streamobj->accept &= ~CNO_ACCEPT_OUTBOUND)) {
-            return cno_stream_rst(conn, streamobj);
-        }
+        streamobj->accept &= ~CNO_ACCEPT_WRITE_HEADERS;
+        streamobj->accept |=  CNO_ACCEPT_WRITE_DATA;
     }
 
     return CNO_OK;
@@ -1556,10 +1570,7 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
     conn->window_send -= length;
     streamobj->window_send -= length;
 
-    if (final && !(streamobj->accept &= ~CNO_ACCEPT_OUTBOUND) && cno_stream_rst(conn, streamobj))
-        return CNO_ERROR_UP();
-
-    return length;
+    return final && cno_discard_remaining_payload(conn, streamobj) ? CNO_ERROR_UP() : (int)length;
 }
 
 int cno_write_ping(struct cno_connection_t *conn, const char data[8])
