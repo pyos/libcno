@@ -43,20 +43,14 @@ class Request:
         self.path     = path
         self.headers  = headers
         self.payload  = payload
-        self._prev_rq = None
-        self._this_rq = None
 
     async def respond(self, code, headers, data):
-        if self._prev_rq:
-            await self._prev_rq
         # XXX perhaps imbuing HEAD with a special meaning is a task
         #     for a web framework instead?
         have_data = data and self.method != 'HEAD'
         self.conn.write_message(self.stream, code, '', '', headers, not have_data)
         if have_data:
             await self.conn.write_all_data(self.stream, data)
-        if self._this_rq:
-            self._this_rq.set_result(None)
 
     def push(self, method, path, headers=[]):
         copy = {':authority', ':scheme'} - {k for k, _ in headers}
@@ -132,8 +126,6 @@ class Connection (raw.Connection, asyncio.Protocol):
     def on_message_end(self, i):
         self._data.pop(i).feed_eof()
         self._push.pop(i).close()
-        if not self.is_http2:
-            self.on_stream_start(i)
 
     def on_stream_end(self, i):
         data = self._data.pop(i, None)
@@ -211,8 +203,6 @@ class Client (Connection):
             head.append((':scheme', self.scheme))
         head.extend(headers)
 
-        while not self.is_http2 and self._coro:
-            await asyncio.shield(self._coro[self.next_stream], loop=self.loop)
         while (await self._have_free_streams.wait()):
             stream = self.next_stream
             try:
@@ -237,14 +227,25 @@ class Server (Connection):
         super().__init__(loop, True)
         self._func = handle
         self._prev = None
+        self._have_buffered_data = False
+
+    def data_received(self, data):
+        self._have_buffered_data = False
+        try:
+            return super().data_received(data)
+        except ConnectionError as e:
+            if e.errno != raw.CNO_ERRNO_WOULD_BLOCK:
+                raise
+            self._have_buffered_data = True
+
+    def on_stream_end(self, i):
+        super().on_stream_end(i)
+        if self._have_buffered_data:
+            self.data_received(b'')
 
     def on_message_start(self, i, code, method, path, headers):
         req = Request(self, i, method, path, headers, self._data[i])
         fut = self._coro[i] = asyncio.ensure_future(self._func(req), loop=self.loop)
-        if not self.is_http2:
-            req._prev_rq = self._prev
-            req._this_rq = self._prev = asyncio.Future(loop=self.loop)
-            fut.add_done_callback(lambda _: req._this_rq.cancel())
 
 
 async def connect(loop, url, ssl_ctx=None, ssl_hostname=None, **kwargs) -> Client:
