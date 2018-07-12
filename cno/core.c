@@ -956,18 +956,24 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     // TODO decode & emit on_frame
                 } else
 
-                if (!conn->client && cno_buffer_eq(it->name, CNO_BUFFER_STRING("upgrade"))) {
+                if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("upgrade"))) {
                     if (conn->state != CNO_CONNECTION_HTTP1_READY)
                         continue;
 
                     if (!cno_buffer_eq(it->value, CNO_BUFFER_STRING("h2c"))) {
-                        // if the application definitely does not support upgrading to anything else, prefer h2c
-                        if (conn->on_upgrade)
-                            conn->state = CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE;
+                        if (conn->client) {
+                            if (msg.code == 101)
+                                conn->state = CNO_CONNECTION_UNKNOWN_PROTOCOL;
+                        } else {
+                            // if the application definitely does not support upgrading to anything else, prefer h2c
+                            if (conn->on_upgrade)
+                                conn->state = CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE;
+                        }
                         continue;
                     }
 
-                    if (conn->flags & CNO_CONN_FLAG_DISALLOW_H2_UPGRADE)
+                    // TODO: client-side h2 upgrade
+                    if (conn->client || conn->flags & CNO_CONN_FLAG_DISALLOW_H2_UPGRADE)
                         continue;
 
                     struct cno_header_t upgrade_headers[] = {
@@ -1334,7 +1340,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
                 return CNO_ERROR_UP();
             streamobj->accept = CNO_ACCEPT_HEADERS | CNO_ACCEPT_PUSH | CNO_ACCEPT_WRITE_HEADERS;
         }
-        if (!(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
+        if (!cno_connection_is_http2(conn) && !(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
             return CNO_ERROR(WOULD_BLOCK, "HTTP/1.x request already in progress");
     } else {
         if (!streamobj || !(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
@@ -1362,7 +1368,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         struct cno_header_t *end = msg->headers_len + it;
         int had_connection_header = 0;
 
-        if (!is_informational && final)
+        if (is_informational || final)
             conn->flags &= ~CNO_CONN_FLAG_WRITING_CHUNKED;
         else
             conn->flags |= CNO_CONN_FLAG_WRITING_CHUNKED;
@@ -1380,7 +1386,8 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
             else if (cno_buffer_eq(name, CNO_BUFFER_STRING("connection")))
                 had_connection_header = 1;
 
-            else if (cno_buffer_eq(name, CNO_BUFFER_STRING("content-length")))
+            else if (cno_buffer_eq(name, CNO_BUFFER_STRING("content-length"))
+                  || cno_buffer_eq(name, CNO_BUFFER_STRING("upgrade")))
                 conn->flags &= ~CNO_CONN_FLAG_WRITING_CHUNKED;
 
             else if (cno_buffer_eq(name, CNO_BUFFER_STRING("transfer-encoding"))) {
@@ -1442,7 +1449,6 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
             if (cno_hpack_encode(&conn->encoder, &payload, head, 1))
                 return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
         }
-
 
         if (cno_hpack_encode(&conn->encoder, &payload, msg->headers, msg->headers_len))
             return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
