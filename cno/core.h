@@ -42,7 +42,6 @@ enum CNO_CONNECTION_STATE
     CNO_CONNECTION_PREFACE,
     CNO_CONNECTION_READY,
     CNO_CONNECTION_READY_NO_SETTINGS,
-    CNO_CONNECTION_HTTP1_INIT,
     CNO_CONNECTION_HTTP1_READY,
     CNO_CONNECTION_HTTP1_READING,
     CNO_CONNECTION_HTTP1_READING_UPGRADE,  // reading HTTP/1.x request, writing HTTP 2 responses
@@ -194,7 +193,6 @@ struct cno_connection_t
     uint32_t continued_stream;  // if nonzero, expect a CONTINUATION on that stream.
     uint32_t continued_promise;  // if prev. frame was a PUSH_PROMISE, this is the stream it created.
     uint32_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
-    uint32_t pending_http1_responses;
      int32_t window_recv;
      int32_t window_send;
     uint32_t last_stream  [2];  // dereferencable with CNO_REMOTE/CNO_LOCAL
