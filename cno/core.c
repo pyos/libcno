@@ -1322,6 +1322,10 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
     if (streamobj && !(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
         return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
+    int is_informational = 100 <= msg->code && msg->code < 200;
+    if (is_informational && final)
+        return CNO_ERROR(ASSERTION, "1xx codes cannot end the stream");
+
     if (!cno_connection_is_http2(conn)) {
         if (!streamobj)
             return CNO_ERROR(DISCONNECT, "connection already closed");
@@ -1346,7 +1350,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         struct cno_header_t *end = msg->headers_len + it;
         int had_connection_header = 0;
 
-        if (final)
+        if (!is_informational && final)
             conn->flags &= ~CNO_CONN_FLAG_WRITING_CHUNKED;
         else
             conn->flags |= CNO_CONN_FLAG_WRITING_CHUNKED;
@@ -1398,19 +1402,22 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         if (CNO_FIRE(conn, on_write, "\r\n", 2))
             return CNO_ERROR_UP();
 
-        if (!final)
-            streamobj->accept |= CNO_ACCEPT_WRITE_DATA;
-
-        if (conn->client) {
-            conn->pending_http1_responses++;
-            streamobj->accept |= CNO_ACCEPT_HEADERS;
-        } else if (!--conn->pending_http1_responses) {
-            if (!(streamobj->accept &= ~CNO_ACCEPT_WRITE_HEADERS) && !CNO_FIRE(conn, on_stream_end, 1))
-                return CNO_ERROR_UP();
-        }
-
         if (msg->code == 101 && conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE) {
             conn->state = CNO_CONNECTION_UNKNOWN_PROTOCOL;
+            is_informational = 0;
+        }
+
+        if (!is_informational) {
+            if (!final)
+                streamobj->accept |= CNO_ACCEPT_WRITE_DATA;
+
+            if (conn->client) {
+                conn->pending_http1_responses++;
+                streamobj->accept |= CNO_ACCEPT_HEADERS;
+            } else if (!--conn->pending_http1_responses) {
+                if (!(streamobj->accept &= ~CNO_ACCEPT_WRITE_HEADERS) && !CNO_FIRE(conn, on_stream_end, 1))
+                    return CNO_ERROR_UP();
+            }
         }
 
         return CNO_OK;
@@ -1460,11 +1467,13 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
     cno_buffer_dyn_clear(&payload);
 
-    if (!final) {
-        streamobj->accept &= ~CNO_ACCEPT_WRITE_HEADERS;
-        streamobj->accept |=  CNO_ACCEPT_WRITE_DATA;
-    } else if (!(streamobj->accept &= ~CNO_ACCEPT_OUTBOUND)) {
-        return cno_stream_rst(conn, streamobj);
+    if (!is_informational) {
+        if (!final) {
+            streamobj->accept &= ~CNO_ACCEPT_WRITE_HEADERS;
+            streamobj->accept |=  CNO_ACCEPT_WRITE_DATA;
+        } else if (!(streamobj->accept &= ~CNO_ACCEPT_OUTBOUND)) {
+            return cno_stream_rst(conn, streamobj);
+        }
     }
 
     return CNO_OK;
