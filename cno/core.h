@@ -206,6 +206,10 @@ struct cno_connection_t
     struct cno_hpack_t decoder;
     struct cno_hpack_t encoder;
     struct cno_stream_t *streams[CNO_STREAM_BUCKETS];
+#if CNO_STREAM_RESET_HISTORY
+    uint32_t recently_reset[CNO_STREAM_RESET_HISTORY];
+    uint8_t  recently_reset_next;
+#endif
 
     /* Events, yay!
      *

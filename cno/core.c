@@ -202,6 +202,11 @@ static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
                                       struct cno_stream_t     *stream,
                                       uint32_t /* enum CNO_RST_STREAM_CODE */ code)
 {
+#if CNO_STREAM_RESET_HISTORY
+    conn->recently_reset[conn->recently_reset_next++] = stream->id;
+    conn->recently_reset_next %= CNO_STREAM_RESET_HISTORY;
+#endif
+
     struct cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, stream->id, { PACK(I32(code)) } };
 
     if (cno_frame_write(conn, &error))
@@ -547,10 +552,13 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
 static int cno_frame_handle_invalid_stream(struct cno_connection_t *conn,
                                            struct cno_frame_t *frame)
 {
-    if (!frame->stream || frame->stream > conn->last_stream[cno_stream_is_local(conn, frame->stream)])
-        // definitely idle
-        return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "invalid stream");
-    return CNO_OK;
+    if (frame->stream && frame->stream <= conn->last_stream[cno_stream_is_local(conn, frame->stream)])
+#if CNO_STREAM_RESET_HISTORY
+        for (uint8_t i = 0; i < CNO_STREAM_RESET_HISTORY; i++)
+            if (conn->recently_reset[i] == frame->stream)
+#endif
+                return CNO_OK;
+    return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "invalid stream");
 }
 
 
