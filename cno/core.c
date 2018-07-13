@@ -1,9 +1,5 @@
 #include <ctype.h>
 #include <stdio.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include "core.h"
 #include "../picohttpparser/picohttpparser.h"

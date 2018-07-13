@@ -1,20 +1,14 @@
 #pragma once
-// required includes:
-// #include <stddef.h>
-// #include <stdint.h>
-// #include <stdlib.h>
-// #include <string.h>
+
+#include "config.h"
+#include "common.h"
+#include "hpack.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 // skip to struct cno_connection_t for useful stuff.
-#include "config.h"
-#include "common.h"
-#include "hpack.h"
-
-
 enum CNO_PEER_KIND
 {
     CNO_REMOTE = 0,

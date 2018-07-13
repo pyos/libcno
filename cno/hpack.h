@@ -1,6 +1,10 @@
 #pragma once
-// #include "common.h"
 
+#include "common.h"
+
+#if __cplusplus
+extern "C" {
+#endif
 
 enum CNO_HEADER_FLAGS
 {
@@ -68,4 +72,8 @@ static inline void cno_hpack_free_header(struct cno_header_t *h)
     *h = CNO_HEADER_EMPTY;
 }
 
+#endif
+
+#if __cplusplus
+}
 #endif

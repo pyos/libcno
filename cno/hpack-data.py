@@ -164,7 +164,7 @@ def huffman_dfa(table, bits_per_step):
 
 with open(os.path.join(os.path.dirname(__file__), 'hpack-data.h'), 'w') as fd:
     fd.write(
-        textwrap.dedent('''
+        '#pragma once\n' + textwrap.dedent('''
         // make cno/hpack-data.h
         struct cno_huffman_item_t {{ uint32_t code; uint8_t bits; }};
         struct cno_huffman_leaf_t {{ uint16_t next; uint8_t byte; uint8_t flags; }};

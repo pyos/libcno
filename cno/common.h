@@ -1,8 +1,12 @@
 #pragma once
-// #include <stddef.h>
-// #include <stdlib.h>
-// #include <string.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
+#if __cplusplus
+extern "C" {
+#endif
 
 enum CNO_ERRNO
 {
@@ -216,4 +220,8 @@ static inline void cno_list_gen_remove(struct cno_list_t *x)
     x->prev->next = x->next;
 }
 
+#endif
+
+#if __cplusplus
+}
 #endif
