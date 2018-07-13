@@ -934,12 +934,16 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             if (minor != 0 && minor != 1)
                 return CNO_ERROR(TRANSPORT, "HTTP/1.%d not supported", minor);
 
+            if (!conn->client)
+                msg.headers_len++; // for :scheme
             struct cno_header_t headers[msg.headers_len];
             struct cno_header_t *it = msg.headers = headers;
+            if (!conn->client)
+                *it++ = (struct cno_header_t) { CNO_BUFFER_STRING(":scheme"), CNO_BUFFER_STRING("unknown"), 0 };
 
             conn->http1_remaining = 0;
 
-            for (size_t i = 0; i < msg.headers_len; i++, it++) {
+            for (size_t i = 0; i < msg.headers_len - !conn->client; i++, it++) {
                 *it = (struct cno_header_t) {
                     { headers_phr[i].name,  headers_phr[i].name_len  },
                     { headers_phr[i].value, headers_phr[i].value_len },
@@ -1015,6 +1019,10 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     //    listed; we don't check for that and simply fail on parsing the format instead)
                     if (!cno_buffer_eq(it->value, CNO_BUFFER_STRING("identity")))
                         conn->http1_remaining = (uint32_t) -1;
+                } else
+
+                if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("host"))) {
+                    it->name = CNO_BUFFER_STRING(":authority");
                 }
             }
 
