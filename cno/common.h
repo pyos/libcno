@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "config.h"
 
 #if __cplusplus
 extern "C" {
