@@ -267,13 +267,18 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
                                     struct cno_message_t    *msg)
 {
     int is_response = conn->client && !conn->continued_promise;
-    const struct cno_header_t *it  = msg->headers;
-    const struct cno_header_t *end = msg->headers + msg->headers_len;
+    struct cno_header_t *it  = msg->headers;
+    struct cno_header_t *end = msg->headers + msg->headers_len;
 
     int has_scheme = 0;
     // >HTTP/2 uses special pseudo-header fields beginning with ':' character
     // >(ASCII 0x3a) [to convey the target URI, ...]
-    for (; it != end && cno_buffer_startswith(it->name, CNO_BUFFER_STRING(":")); ++it) {
+    while (it != end && cno_buffer_startswith(it->name, CNO_BUFFER_STRING(":")))
+        ++it;
+
+    struct cno_header_t *first_non_pseudo = it;
+    struct cno_header_t *into = it;
+    while (it-- != msg->headers) {
         if (stream->accept & CNO_ACCEPT_TRAILERS)
             // >Pseudo-header fields MUST NOT appear in trailers.
             goto invalid_message;
@@ -305,21 +310,33 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
             }
 
             if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":authority")))
-                continue;
+                goto save_header;
 
             if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":scheme"))) {
                 if (has_scheme)
                     goto invalid_message;
                 has_scheme = 1;
-                continue;
+                goto save_header;
             }
         }
 
         // >Endpoints MUST NOT generate pseudo-header fields other than those defined in this document.
         goto invalid_message;
+
+    save_header:
+        // parsed headers get removed; that way the message can be passed right back
+        // into `cno_write_message` of a different connection.
+        if (it != --into) {
+            cno_hpack_free_header(into);
+            memmove(into, it, sizeof(struct cno_header_t));
+            *it = CNO_HEADER_EMPTY;
+        }
     }
 
-    for (; it != end; ++it) {
+    msg->headers_len -= (into - msg->headers);
+    msg->headers = into;
+
+    for (it = first_non_pseudo; it != end; ++it) {
         // >All pseudo-header fields MUST appear in the header block
         // >before regular header fields.
         if (cno_buffer_startswith(it->name, CNO_BUFFER_STRING(":")))
@@ -395,7 +412,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
     int failed = cno_frame_handle_message(conn, stream, frame, &msg);
 
     for (unsigned i = 0; i < msg.headers_len; i++)
-        cno_hpack_free_header(&headers[i]);
+        cno_hpack_free_header(&msg.headers[i]);
 
     cno_buffer_dyn_clear(&conn->continued);
     conn->continued = CNO_BUFFER_DYN_EMPTY;
