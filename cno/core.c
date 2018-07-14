@@ -327,9 +327,10 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
         // parsed headers get removed; that way the message can be passed right back
         // into `cno_write_message` of a different connection.
         if (it != --into) {
-            cno_hpack_free_header(into);
-            memmove(into, it, sizeof(struct cno_header_t));
-            *it = CNO_HEADER_EMPTY;
+            struct cno_header_t tmp;
+            memmove(&tmp, it, sizeof(struct cno_header_t));
+            memmove(it, into, sizeof(struct cno_header_t));
+            memmove(into, &tmp, sizeof(struct cno_header_t));
         }
     }
 
@@ -400,19 +401,20 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
                                         struct cno_stream_t     *stream,
                                         struct cno_frame_t      *frame)
 {
-    struct cno_header_t  headers[CNO_MAX_HEADERS];
-    struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, CNO_MAX_HEADERS };
+    struct cno_header_t headers[CNO_MAX_HEADERS];
+    size_t count = CNO_MAX_HEADERS;
 
-    if (cno_hpack_decode(&conn->decoder, conn->continued.as_static, headers, &msg.headers_len)) {
+    if (cno_hpack_decode(&conn->decoder, conn->continued.as_static, headers, &count)) {
         cno_buffer_dyn_clear(&conn->continued);
         cno_frame_write_goaway(conn, CNO_RST_COMPRESSION_ERROR);
         return CNO_ERROR_UP();
     }
 
+    struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, count };
     int failed = cno_frame_handle_message(conn, stream, frame, &msg);
 
-    for (unsigned i = 0; i < msg.headers_len; i++)
-        cno_hpack_free_header(&msg.headers[i]);
+    for (size_t i = 0; i < count; i++)
+        cno_hpack_free_header(&headers[i]);
 
     cno_buffer_dyn_clear(&conn->continued);
     conn->continued = CNO_BUFFER_DYN_EMPTY;
