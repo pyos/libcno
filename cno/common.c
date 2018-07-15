@@ -5,10 +5,7 @@
 #include "common.h"
 
 
-#if CNO_THREADED
-    _Thread_local
-#endif
-static struct cno_error_t E;
+_Thread_local static struct cno_error_t E;
 
 
 const struct cno_error_t * cno_error(void)

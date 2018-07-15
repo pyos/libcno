@@ -1,11 +1,5 @@
 #pragma once
 
-#ifndef CNO_THREADED
-/* Whether to (attempt to) support multithreaded environments.
-   Requires C11 _Thread_local. */
-#define CNO_THREADED 1
-#endif
-
 #ifndef CNO_BUFFER_ALLOC_MIN
 /* The minimum size (in bytes) in which dynamically allocated buffers grow.
    Controls the number of heap allocations & amount of wasted heap space. */
@@ -47,6 +41,6 @@
 #ifndef CNO_STREAM_RESET_HISTORY
 /* Remember the last N streams for which RST_STREAM was sent. Frames on these streams
    will be ignored under the assumption that the other side has not seen the reset yet.
-   If 0, all streams are closed assumed to be possibly-reset. */
+   If 0, all closed streams are assumed to be possibly-reset. */
 #define CNO_STREAM_RESET_HISTORY 7
 #endif
