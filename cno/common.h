@@ -22,7 +22,6 @@ enum CNO_ERRNO
     CNO_ERRNO_WOULD_BLOCK     = 7,  // cno_write_message would go above the limit on concurrent messages - wait for a request to complete
     CNO_ERRNO_COMPRESSION     = 8,  // (irrecoverable) hpack error, compression now in inconsistent state
     CNO_ERRNO_DISCONNECT      = 9,  // connection has already been closed
-    CNO_ERRNO_SHUTDOWN_READ   = 10, // cno_write_reset terminated the HTTP/1.x connection - close the read side, handle pending events, close the write side
 };
 
 

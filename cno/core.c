@@ -887,7 +887,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             }
 
             if (!conn->buffer.size)
-                return conn->goaway_sent ? CNO_ERROR(SHUTDOWN_READ, "graceful shutdown requested") : CNO_OK;
+                return CNO_OK;
 
             struct cno_stream_t *stream = cno_stream_find(conn, 1);
             if (conn->client) {
@@ -903,9 +903,6 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 if (!(stream->accept & CNO_ACCEPT_HEADERS))
                     return CNO_ERROR(WOULD_BLOCK, "already handling an HTTP/1.x message");
             }
-
-            if (conn->goaway_sent)
-                return CNO_ERROR(SHUTDOWN_READ, "graceful shutdown requested");
 
             // the http 2 client preface looks like an http 1 request, but is not.
             // picohttpparser will reject it. (note: CNO_PREFACE is null-terminated.)
@@ -1131,17 +1128,12 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
         }
 
         case CNO_CONNECTION_UNKNOWN_PROTOCOL: {
-            if (conn->goaway_sent)
-                return CNO_ERROR(SHUTDOWN_READ, "graceful shutdown requested");
-
             if (!conn->buffer.size)
                 return CNO_OK;
-
             struct cno_buffer_t b = conn->buffer.as_static;
             cno_buffer_dyn_shift(&conn->buffer, b.size);
             if (CNO_FIRE(conn, on_message_data, 1, b.data, b.size))
                 return CNO_ERROR_UP();
-
             break;
         }
 
@@ -1268,11 +1260,9 @@ uint32_t cno_connection_next_stream(struct cno_connection_t *conn)
 int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST_STREAM_CODE code)
 {
     if (!cno_connection_is_http2(conn)) {
-        if (!stream && code == CNO_RST_NO_ERROR) {
-            conn->goaway_sent = 1; // graceful shutdown
+        if (!stream && code == CNO_RST_NO_ERROR)
             return CNO_OK;
-        }
-        struct cno_stream_t *obj = cno_stream_find(conn, stream);
+        struct cno_stream_t *obj = cno_stream_find(conn, 1);
         if (obj && cno_stream_rst(conn, obj))
             return CNO_ERROR_UP();
         return CNO_ERROR(DISCONNECT, "HTTP/1.x connection rejected");
