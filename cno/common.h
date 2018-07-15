@@ -1,8 +1,10 @@
 #pragma once
+#if !CFFI_CDEF_MODE
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#endif
 #include "config.h"
 
 #if __cplusplus
