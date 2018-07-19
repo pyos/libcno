@@ -233,7 +233,7 @@ static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
 static int cno_frame_write_goaway(struct cno_connection_t *conn,
                                   uint32_t /* enum CNO_RST_STREAM_CODE */ code)
 {
-    if (conn->goaway_sent)
+    if (!conn->goaway_sent)
         conn->goaway_sent = conn->last_stream[CNO_REMOTE];
     struct cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, { PACK(I32(conn->goaway_sent), I32(code)) } };
     return cno_frame_write(conn, &error);
