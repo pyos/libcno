@@ -970,6 +970,7 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
 
                 if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("http2-settings"))) {
                     // TODO decode & emit on_frame
+                    it--;
                 } else
 
                 if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("upgrade"))) {
@@ -1005,6 +1006,8 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     // technically, server should refuse if HTTP2-Settings are not present.
                     // we'll let this slide.
                     conn->state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
+
+                    it--;
                 } else
 
                 // payload handling may look a bit complicated, so here's what the standard says:
@@ -1031,12 +1034,19 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     //    listed; we don't check for that and simply fail on parsing the format instead)
                     if (!cno_buffer_eq(it->value, CNO_BUFFER_STRING("identity")))
                         conn->http1_remaining = (uint32_t) -1;
+                    if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("chunked")))
+                        it--;
+                    else if (cno_buffer_endswith(it->value, CNO_BUFFER_STRING(", chunked")))
+                        it->value.size -= 9;
+                    else if (cno_buffer_endswith(it->value, CNO_BUFFER_STRING(",chunked")))
+                        it->value.size -= 8;
                 } else
 
                 if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("host"))) {
                     it->name = CNO_BUFFER_STRING(":authority");
                 }
             }
+            msg.headers_len = it - msg.headers;
 
             // even if there's no payload -- the automaton will (almost) instantly switch back:
             stream->accept &= ~CNO_ACCEPT_HEADERS;
