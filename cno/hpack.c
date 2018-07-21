@@ -297,13 +297,15 @@ int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t s,
     }
 
     for (; buf.size; ptr++) {
-        if (ptr == end)
+        if (ptr == end) {
+            while (ptr > rs)
+                cno_hpack_free_header(--ptr);
             return CNO_ERROR(COMPRESSION, "header list too long");
+        }
 
         if (cno_hpack_decode_one(state, &buf, ptr)) {
             while (ptr > rs)
                 cno_hpack_free_header(--ptr);
-
             return CNO_ERROR_UP();
         }
     }
