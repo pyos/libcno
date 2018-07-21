@@ -86,7 +86,8 @@ static int cno_hpack_lookup(struct cno_hpack_t *state, size_t index, struct cno_
         return CNO_ERROR(COMPRESSION, "header index 0 is reserved");
 
     if (index <= CNO_HPACK_STATIC_TABLE_SIZE) {
-        *out = CNO_HPACK_STATIC_TABLE[index - 1];
+        out->name  = CNO_HPACK_STATIC_TABLE[index - 1].name;
+        out->value = CNO_HPACK_STATIC_TABLE[index - 1].value;
         return CNO_OK;
     }
 
@@ -99,9 +100,13 @@ static int cno_hpack_lookup(struct cno_hpack_t *state, size_t index, struct cno_
             return CNO_ERROR(COMPRESSION, "dynamic table index out of bounds");
     }
 
-    out->name  = cno_header_table_k(hdr);
-    out->value = cno_header_table_v(hdr);
-    out->flags = 0;
+    char *buf = malloc(hdr->k_size + hdr->v_size);
+    if (!buf)
+        return CNO_ERROR(NO_MEMORY, "%zu bytes", hdr->k_size + hdr->v_size);
+    memcpy(buf, hdr->data, hdr->k_size + hdr->v_size);
+    out->name  = (struct cno_buffer_t){buf, hdr->k_size};
+    out->value = (struct cno_buffer_t){buf + hdr->k_size, hdr->v_size};
+    out->flags |= CNO_HEADER_OWNS_NAME;
     return CNO_OK;
 }
 
@@ -219,7 +224,6 @@ static int cno_hpack_decode_one(struct cno_hpack_t      *state,
         return CNO_ERROR(COMPRESSION, "expected header, got EOF");
 
     size_t index = 0;
-    uint8_t flags = 0;
 
     if (*source->data & 0x80) {
         // 1....... -- name & value taken from the table
@@ -235,41 +239,33 @@ static int cno_hpack_decode_one(struct cno_hpack_t      *state,
     } else {
         // 0000.... -- same as 0x40, but we shouldn't insert this header into the table.
         // 0001.... -- same as 0x00, but proxies must not encode differently.
-        flags = CNO_HEADER_NOT_INDEXED;
-
+        target->flags |= CNO_HEADER_NOT_INDEXED;
         if (cno_hpack_decode_uint(source, 0x0F, &index))
             return CNO_ERROR_UP();
     }
 
     if (index == 0) {
         int borrow = 0;
-
         if (cno_hpack_decode_string(source, &target->name, &borrow))
             return CNO_ERROR_UP();
-
         if (!borrow)
-            flags |= CNO_HEADER_OWNS_NAME;
+            target->flags |= CNO_HEADER_OWNS_NAME;
     } else {
         if (cno_hpack_lookup(state, index, target))
             return CNO_ERROR_UP();
     }
 
-    target->flags = flags;
     int borrow = 0;
-
     if (cno_hpack_decode_string(source, &target->value, &borrow)) {
         cno_hpack_free_header(target);
         return CNO_ERROR_UP();
     }
-
     if (!borrow)
         target->flags |= CNO_HEADER_OWNS_VALUE;
 
-    if (!(flags & CNO_HEADER_NOT_INDEXED)) {
-        if (cno_hpack_index(state, target)) {
-            cno_hpack_free_header(target);
-            return CNO_ERROR_UP();
-        }
+    if (!(target->flags & CNO_HEADER_NOT_INDEXED) && cno_hpack_index(state, target)) {
+        cno_hpack_free_header(target);
+        return CNO_ERROR_UP();
     }
 
     return CNO_OK;
