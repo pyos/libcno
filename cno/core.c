@@ -1166,7 +1166,15 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
             break;
         }
 
-        case CNO_CONNECTION_READY_NO_SETTINGS:
+        case CNO_CONNECTION_READY_NO_SETTINGS: {
+            if (conn->buffer.size < 5)
+                return CNO_OK;
+            if (conn->buffer.data[3] != CNO_FRAME_SETTINGS || conn->buffer.data[4] != 0)
+                return CNO_ERROR(TRANSPORT, "invalid HTTP 2 preface: no initial SETTINGS");
+            conn->state = CNO_CONNECTION_READY;
+            break;
+        }
+
         case CNO_CONNECTION_READY: {
             if (conn->buffer.size < 9)
                 return CNO_OK;
@@ -1182,11 +1190,6 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
 
             struct cno_frame_t frame = { read1(&base[3]), read1(&base[4]), read4(&base[5]), { (const char *) &base[9], m } };
             frame.stream &= 0x7FFFFFFFUL; // clear the reserved bit
-
-            if (conn->state == CNO_CONNECTION_READY_NO_SETTINGS && frame.type != CNO_FRAME_SETTINGS)
-                return CNO_ERROR(TRANSPORT, "invalid HTTP 2 preface: no initial SETTINGS");
-
-            conn->state = CNO_CONNECTION_READY;
             cno_buffer_dyn_shift(&conn->buffer, 9 + m);
 
             // FIXME should at least decompress headers, probably
