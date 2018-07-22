@@ -871,6 +871,20 @@ static int cno_connection_upgrade(struct cno_connection_t *conn)
 }
 
 
+static size_t cno_remove_chunked_te(struct cno_buffer_t *buf)
+{
+    // assuming the request is valid, chunked can only be the last transfer-encoding
+    if (cno_buffer_endswith(*buf, CNO_BUFFER_STRING("chunked"))) {
+        buf->size -= 7;
+        while (buf->size && buf->data[buf->size - 1] == ' ')
+            buf->size--;
+        if (buf->size && buf->data[buf->size - 1] == ',')
+            buf->size--;
+    }
+    return buf->size;
+}
+
+
 static int cno_connection_proceed(struct cno_connection_t *conn)
 {
     while (1) switch (conn->state) {
@@ -971,11 +985,14 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                 if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("http2-settings"))) {
                     // TODO decode & emit on_frame
                     it--;
-                } else
+                    continue;
+                }
 
                 if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("upgrade"))) {
-                    if (conn->state != CNO_CONNECTION_HTTP1_READY)
+                    if (conn->state != CNO_CONNECTION_HTTP1_READY) {
+                        it--; // already upgrading to h2c
                         continue;
+                    }
 
                     if (!cno_buffer_eq(it->value, CNO_BUFFER_STRING("h2c"))) {
                         if (conn->client) {
@@ -1006,20 +1023,13 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                     // technically, server should refuse if HTTP2-Settings are not present.
                     // we'll let this slide.
                     conn->state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
-
                     it--;
-                } else
-
-                // payload handling may look a bit complicated, so here's what the standard says:
-                // 1. presence of a body in a request is indicated by transfer-encoding/content-length.
-                // 2. HEAD, 1xx, 204, 304 responses never have bodies; the rest do.
-                // FIXME the "HEAD" part is not implemented
-                if (conn->client && ((100 <= msg.code && msg.code < 200) || msg.code == 204 || msg.code == 304)) {
                     continue;
-                } else
+                }
 
+                // TODO ignore on responses to HEAD requests - this is not tracked at all
                 if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length"))) {
-                    // 3. content-length is unique, and mutually exclusive with transfer-encoding
+                    // content-length is unique, and mutually exclusive with transfer-encoding
                     if (conn->http1_remaining)
                         return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: multiple content-lengths");
                     for (const char *ptr = it->value.data, *end = ptr + it->value.size; ptr != end; ptr++) {
@@ -1027,23 +1037,25 @@ static int cno_connection_proceed(struct cno_connection_t *conn)
                             return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: non-int length");
                         conn->http1_remaining = conn->http1_remaining * 10 + (*ptr - '0');
                     }
-                } else
+                    continue;
+                }
 
                 if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("transfer-encoding"))) {
-                    // 4. any non-identity transfer-encoding requires chunked (which should also be
-                    //    listed; we don't check for that and simply fail on parsing the format instead)
-                    if (!cno_buffer_eq(it->value, CNO_BUFFER_STRING("identity")))
-                        conn->http1_remaining = (uint32_t) -1;
-                    if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("chunked")))
+                    // not sure if this value is actually allowed, but just in case
+                    if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("identity"))) {
                         it--;
-                    else if (cno_buffer_endswith(it->value, CNO_BUFFER_STRING(", chunked")))
-                        it->value.size -= 9;
-                    else if (cno_buffer_endswith(it->value, CNO_BUFFER_STRING(",chunked")))
-                        it->value.size -= 8;
-                } else
+                        continue;
+                    }
+                    // any non-identity transfer-encoding requires chunked (which should also be listed)
+                    if (!cno_remove_chunked_te(&it->value))
+                        it--;
+                    conn->http1_remaining = (uint32_t) -1;
+                    continue;
+                }
 
                 if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("host"))) {
                     it->name = CNO_BUFFER_STRING(":authority");
+                    continue;
                 }
             }
             msg.headers_len = it - msg.headers;
@@ -1392,7 +1404,6 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
         struct cno_header_t *it  = msg->headers;
         struct cno_header_t *end = msg->headers_len + it;
-        int had_connection_header = 0;
 
         if (is_informational || final)
             conn->flags &= ~CNO_CONN_FLAG_WRITING_CHUNKED;
@@ -1406,24 +1417,18 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
             if (cno_buffer_eq(name, CNO_BUFFER_STRING(":authority")))
                 name = CNO_BUFFER_STRING("host");
 
-            else if (cno_buffer_startswith(name, CNO_BUFFER_STRING(":")))
+            else if (cno_buffer_startswith(name, CNO_BUFFER_STRING(":"))) // :scheme, probably
                 continue;
-
-            else if (cno_buffer_eq(name, CNO_BUFFER_STRING("connection")))
-                had_connection_header = 1;
 
             else if (cno_buffer_eq(name, CNO_BUFFER_STRING("content-length"))
                   || cno_buffer_eq(name, CNO_BUFFER_STRING("upgrade")))
                 conn->flags &= ~CNO_CONN_FLAG_WRITING_CHUNKED;
 
             else if (cno_buffer_eq(name, CNO_BUFFER_STRING("transfer-encoding"))) {
-                // assuming the request is valid, chunked can only be the last transfer-encoding
-                if (cno_buffer_eq(value, CNO_BUFFER_STRING("chunked")))
+                // either CNO_CONN_FLAG_WRITING_CHUNKED is set, there's no body at all, or message
+                // is invalid because it contains both content-length and transfer-encoding.
+                if (!cno_remove_chunked_te(&value))
                     continue;
-                else if (cno_buffer_endswith(value, CNO_BUFFER_STRING(", chunked")))
-                    value.size -= 9;
-                else if (cno_buffer_endswith(value, CNO_BUFFER_STRING(",chunked")))
-                    value.size -= 8;
             }
 
             size = snprintf(buffer, sizeof(buffer), "%.*s: %.*s\r\n",
@@ -1438,10 +1443,6 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
         if (conn->flags & CNO_CONN_FLAG_WRITING_CHUNKED)
             if (CNO_FIRE(conn, on_write, "transfer-encoding: chunked\r\n", 28))
-                return CNO_ERROR_UP();
-
-        if (!had_connection_header)
-            if (CNO_FIRE(conn, on_write, "connection: keep-alive\r\n", 24))
                 return CNO_ERROR_UP();
 
         if (CNO_FIRE(conn, on_write, "\r\n", 2))
