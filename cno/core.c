@@ -367,8 +367,8 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
         return cno_frame_handle_end_stream(conn, stream);
     }
 
-    // TODO support CONNECT?
-    if (is_response ? !msg->code : (!msg->path.data || !msg->path.size || !msg->method.data || !msg->method.size || !has_scheme))
+    if (is_response ? !msg->code : !cno_buffer_eq(msg->method, CNO_BUFFER_STRING("CONNECT")) &&
+            (!msg->path.data || !msg->path.size || !msg->method.data || !msg->method.size || !has_scheme))
         // >All HTTP/2 requests MUST include exactly one valid value for the :method, :scheme,
         // >and :path pseudo-header fields, unless it is a CONNECT request (Section 8.3).
         goto invalid_message;
