@@ -346,7 +346,7 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
         // >However, header field names MUST be converted to lowercase
         // >prior to their encoding in HTTP/2.
         for (const char *p = it->name.data; p != it->name.data + it->name.size; p++)
-            if ('A' <= *p && *p <= 'Z')
+            if (isupper(*p))
                 goto invalid_message;
 
         // TODO
@@ -1368,6 +1368,11 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
     int is_informational = 100 <= msg->code && msg->code < 200;
     if (is_informational && final)
         return CNO_ERROR(ASSERTION, "1xx codes cannot end the stream");
+
+    for (const struct cno_header_t *it = msg->headers, *e = it + msg->headers_len; it != e; it++)
+        for (const char *p = it->name.data; p != it->name.data + it->name.size; p++)
+            if (isupper(*p))
+                return CNO_ERROR(ASSERTION, "header names should be lowercase");
 
     struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
 
