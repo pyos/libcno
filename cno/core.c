@@ -542,7 +542,7 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
 
     child->accept = CNO_ACCEPT_HEADERS;
-    conn->continued_flags = 0;  // PUSH_PROMISE cannot have END_STREAM
+    conn->continued_flags = CNO_FLAG_END_STREAM;  // pushed requests cannot have payload
     conn->continued_stream = stream->id;
     conn->continued_promise = promised;
 
@@ -561,6 +561,8 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
                                          struct cno_stream_t     *stream,
                                          struct cno_frame_t      *frame)
 {
+    if (conn->continued_promise)
+        stream = cno_stream_find(conn, conn->continued_promise);
     if (!stream || !conn->continued_stream)
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected CONTINUATION");
 
