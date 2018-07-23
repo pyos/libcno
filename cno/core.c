@@ -616,14 +616,19 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
     if (!(stream->accept & CNO_ACCEPT_DATA))
         return cno_frame_write_rst_stream(conn, stream, CNO_RST_STREAM_CLOSED);
 
+    if (length && (int64_t)length > stream->window_recv)
+        return cno_frame_write_rst_stream(conn, stream, CNO_RST_FLOW_CONTROL_ERROR);
+
     if (CNO_FIRE(conn, on_message_data, frame->stream, frame->payload.data, frame->payload.size))
         return CNO_ERROR_UP();
 
     if (frame->flags & CNO_FLAG_END_STREAM)
         return cno_frame_handle_end_stream(conn, stream);
 
-    if (!length || (conn->flags & CNO_CONN_FLAG_MANUAL_FLOW_CONTROL))
+    if (!length || (conn->flags & CNO_CONN_FLAG_MANUAL_FLOW_CONTROL)) {
+        stream->window_recv -= length;
         return CNO_OK;
+    }
 
     struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, stream->id, { PACK(I32(length)) } };
     return cno_frame_write(conn, &update);
@@ -1620,10 +1625,14 @@ int cno_write_frame(struct cno_connection_t *conn, const struct cno_frame_t *fra
     return cno_frame_write(conn, frame);
 }
 
-int cno_increase_flow_window(struct cno_connection_t *conn, uint32_t stream, size_t bytes)
+int cno_increase_flow_window(struct cno_connection_t *conn, uint32_t stream, uint32_t bytes)
 {
-    if (!bytes || !stream || !cno_connection_is_http2(conn) || !cno_stream_find(conn, stream))
+    if (!bytes || !stream || !cno_connection_is_http2(conn))
         return CNO_OK;
+    struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
+    if (!streamobj)
+        return CNO_OK;
+    streamobj->window_recv += bytes;
     struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, stream, { PACK(I32(bytes)) } };
     return cno_frame_write(conn, &update);
 }

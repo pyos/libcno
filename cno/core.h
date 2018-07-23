@@ -343,7 +343,7 @@ int cno_write_frame    (struct cno_connection_t *conn, const struct cno_frame_t 
 /* By default, cno assumes that `on_message_data` does not retain the data after returning.
    If it does copy the data somewhere, you should enable manual stream-level flow control,
    then ask to increase the window once the copy is deallocated. */
-int cno_increase_flow_window(struct cno_connection_t *, uint32_t /*stream*/, size_t /*bytes*/);
+int cno_increase_flow_window(struct cno_connection_t *, uint32_t /*stream*/, uint32_t /*bytes*/);
 
 #ifdef __cplusplus
 }  // extern "C"
