@@ -707,6 +707,7 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
     struct cno_settings_t *cfg = &conn->settings[CNO_REMOTE];
     const uint8_t *ptr = (const uint8_t *) frame->payload.data;
     const uint8_t *end = (const uint8_t *) frame->payload.data + frame->payload.size;
+    const int32_t old_window = cfg->initial_window_size;
 
     for (; ptr != end; ptr += 6) {
         uint16_t setting = read2(ptr);
@@ -723,12 +724,27 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
         return cno_frame_write_error(conn, CNO_RST_FLOW_CONTROL_ERROR,
                                      "initial_window_size out of bounds");
 
+    const int32_t window_diff = (int32_t)cfg->initial_window_size - old_window;
+    if (window_diff != 0) {
+        for (int i = 0; i < CNO_STREAM_BUCKETS; i++) {
+            // on_flow_increase may destroy this stream. we assume it doesn't destroy/create anything else.
+            for (struct cno_stream_t *s = conn->streams[i], *n; s; s = n) {
+                n = s->next;
+                if (window_diff > 0 ? s->window_send > 0x7fffffffL - window_diff : -s->window_send > 0x7fffffffL + window_diff)
+                    return cno_frame_write_error(conn, CNO_RST_FLOW_CONTROL_ERROR,
+                                                 "initial_window_size update caused overflow on a stream");
+                s->window_send += window_diff;
+                if (window_diff > 0 && CNO_FIRE(conn, on_flow_increase, s->id))
+                    return CNO_ERROR_UP();
+            }
+        }
+    }
+
     if (cfg->max_frame_size < 16384 || cfg->max_frame_size > 16777215)
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "max_frame_size out of bounds");
 
     conn->encoder.limit_upper = cfg->header_table_size;
     cno_hpack_setlimit(&conn->encoder, conn->encoder.limit_upper);
-    // TODO update stream flow control windows.
 
     struct cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK, 0, CNO_BUFFER_EMPTY };
     if (cno_frame_write(conn, &ack))
@@ -815,10 +831,14 @@ int cno_connection_set_config(struct cno_connection_t *conn, const struct cno_se
         if (cno_frame_write_settings(conn, &conn->settings[CNO_LOCAL], settings))
             return CNO_ERROR_UP();
 
+    const int64_t window_diff = (int64_t)settings->initial_window_size - conn->settings[CNO_LOCAL].initial_window_size;
     memcpy(&conn->settings[CNO_LOCAL], settings, sizeof(*settings));
     conn->decoder.limit_upper = settings->header_table_size;
-    // TODO the difference in initial flow control window size should be subtracted
-    //      from the flow control window size of all active streams.
+    if (window_diff != 0) {
+        for (int i = 0; i < CNO_STREAM_BUCKETS; i++)
+            for (struct cno_stream_t *s = conn->streams[i]; s; s = s->next)
+                s->window_recv += window_diff;
+    }
     return CNO_OK;
 }
 

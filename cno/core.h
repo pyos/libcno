@@ -243,6 +243,10 @@ struct cno_connection_t
      *        assuming `on_message_start` did not accept or reject the upgrade. if, upon returning,
      *        a 101 response is not sent, it is assumed that the upgrade has been rejected, and
      *        everything proceeds as if the "upgrade" header had no special meaning.
+     *
+     * NOTE: on_stream_end and on_flow_increase may be called while iterating over the streams --
+     *       they MUST NOT do anything that might cause streams to be destroyed, other than the one
+     *       they are emitted for.
      */
     void *cb_data;
     #define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob->cb_data, ##__VA_ARGS__))
