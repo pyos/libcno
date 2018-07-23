@@ -164,7 +164,9 @@ struct cno_stream_t
 
 struct cno_settings_t
 {
-    union {  // TODO implement this in a way not dependent on alignment
+    union {
+        // TODO implement this in a way not dependent on alignment
+        // TODO extensions
         struct {
             uint32_t header_table_size;
             uint32_t enable_push;
