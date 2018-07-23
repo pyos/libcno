@@ -139,11 +139,15 @@ static int cno_stream_end(struct cno_connection_t *conn, struct cno_stream_t *st
 static int cno_stream_end_by_local(struct cno_connection_t *conn, struct cno_stream_t *stream)
 {
 #if CNO_STREAM_RESET_HISTORY
-    // WINDOW_UPDATE, DATA, and RST_STREAM may arrive on streams we have already reset
+    // HEADERS, DATA, WINDOW_UPDATE, and RST_STREAM may arrive on streams we have already reset
     // simply because the other side sent the frames before receiving ours. This is not
-    // a protocol error according to the standard.
-    conn->recently_reset[conn->recently_reset_next++] = stream->id;
-    conn->recently_reset_next %= CNO_STREAM_RESET_HISTORY;
+    // a protocol error according to the standard. (FIXME kinda broken with trailers...)
+    if (stream->accept & (CNO_ACCEPT_HEADERS | CNO_ACCEPT_DATA)) {
+        // Very convenient that this bit is reserved. (For what, we shall never know.)
+        uint32_t is_headers = !!(stream->accept & CNO_ACCEPT_HEADERS);
+        conn->recently_reset[conn->recently_reset_next++] = stream->id | is_headers << 31;
+        conn->recently_reset_next %= CNO_STREAM_RESET_HISTORY;
+    }
 #endif
     return cno_stream_end(conn, stream);
 }
@@ -212,24 +216,13 @@ static int cno_frame_write_settings(const struct cno_connection_t *conn,
 }
 
 static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
-                                      struct cno_stream_t     *stream,
+                                      struct cno_stream_t *stream,
                                       uint32_t /* enum CNO_RST_STREAM_CODE */ code)
 {
     struct cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, stream->id, { PACK(I32(code)) } };
-
-    if (cno_frame_write(conn, &error))
-        return CNO_ERROR_UP();
-
-    if (!(stream->accept & CNO_ACCEPT_HEADERS))
-        // since headers were already handled, this stream can be safely destroyed.
-        // i sure hope there are no trailers, though.
-        return cno_stream_end_by_local(conn, stream);
-
-    // still have to decompress headers to maintain shared compression state.
-    // FIXME headers may never arrive if the peer receives RST_STREAM before sending them.
-    stream->accept &= ~CNO_ACCEPT_OUTBOUND;
-    stream->accept |=  CNO_ACCEPT_NOP_HEADERS;
-    return CNO_OK;
+    // Note that if HEADERS have not yet arrived, they may still do, in which case not decoding them
+    // would break compression state. Setting CNO_RESET_STREAM_HISTORY is recommended.
+    return cno_frame_write(conn, &error) ? CNO_ERROR_UP() : cno_stream_end_by_local(conn, stream);
 }
 
 
@@ -261,6 +254,23 @@ static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
         return CNO_OK;
 
     return cno_stream_end(conn, stream);
+}
+
+
+/* ignore frames on reset streams, as the spec requires. unfortunately,
+   these are indistinguishable from streams that were never opened, but hey, what
+   can i do, keep a set of uint32_t-s? memory doesn't grow on trees, you know. */
+static int cno_frame_handle_invalid_stream(struct cno_connection_t *conn,
+                                           struct cno_frame_t *frame)
+{
+    if (frame->stream && frame->stream <= conn->last_stream[cno_stream_is_local(conn, frame->stream)])
+#if CNO_STREAM_RESET_HISTORY
+        for (uint8_t i = 0; i < CNO_STREAM_RESET_HISTORY; i++)
+            if ((frame->type != CNO_FRAME_HEADERS && conn->recently_reset[i] == frame->stream)
+             || (frame->type != CNO_FRAME_DATA && conn->recently_reset[i] == (frame->stream | (1ul << 31))))
+#endif
+                return CNO_OK;
+    return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "invalid stream");
 }
 
 
@@ -384,15 +394,10 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
         goto invalid_message;
 
     if (conn->continued_promise)
-        // accept pushes even on reset streams.
         return CNO_FIRE(conn, on_message_push, stream->id, msg, conn->continued_stream);
 
     stream->accept &= ~CNO_ACCEPT_HEADERS;
     stream->accept |=  CNO_ACCEPT_TRAILERS | CNO_ACCEPT_DATA;
-
-    if (stream->accept & CNO_ACCEPT_NOP_HEADERS)
-        // hpack compression is now in sync, there's no use for this stream anymore.
-        return cno_stream_end_by_local(conn, stream);
 
     if (CNO_FIRE(conn, on_message_start, stream->id, msg))
         return CNO_ERROR_UP();
@@ -421,14 +426,15 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
     }
 
     struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, count };
-    int failed = cno_frame_handle_message(conn, stream, frame, &msg);
+    // Just ignore the message if the stream has already been reset.
+    int failed = stream ? cno_frame_handle_message(conn, stream, frame, &msg) : CNO_OK;
 
     for (size_t i = 0; i < count; i++)
         cno_hpack_free_header(&headers[i]);
 
     cno_buffer_dyn_clear(&conn->continued);
     conn->continued = CNO_BUFFER_DYN_EMPTY;
-    conn->continued_stream  = 0;
+    conn->continued_stream = 0;
     conn->continued_promise = 0;
     return failed;
 }
@@ -475,27 +481,6 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
     if (cno_frame_handle_padding(conn, frame))
         return CNO_ERROR_UP();
 
-    if (stream == NULL) {
-        if (conn->client)
-            // servers cannot initiate streams.
-            return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected HEADERS");
-
-        stream = cno_stream_new(conn, frame->stream, CNO_REMOTE);
-        if (stream == NULL)
-            return CNO_ERROR_UP();
-
-        stream->accept = CNO_ACCEPT_HEADERS | CNO_ACCEPT_WRITE_HEADERS | CNO_ACCEPT_WRITE_PUSH;
-    }
-
-    if (stream->accept & CNO_ACCEPT_TRAILERS) {
-        stream->accept &= ~CNO_ACCEPT_DATA;
-
-        if (!(frame->flags & CNO_FLAG_END_STREAM))
-            return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "trailers without END_STREAM");
-    }
-    else if (!(stream->accept & CNO_ACCEPT_HEADERS))
-        return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected HEADERS");
-
     if (frame->flags & CNO_FLAG_PRIORITY) {
         if (frame->payload.size < 5)
             return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "no priority spec");
@@ -507,8 +492,27 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
         frame->payload.size -= 5;
     }
 
+    if (stream == NULL) {
+        if (conn->client || frame->stream <= conn->last_stream[CNO_REMOTE]) {
+            if (cno_frame_handle_invalid_stream(conn, frame))
+                return CNO_ERROR_UP();
+            // else this frame must be decompressed, but ignored.
+        } else {
+            stream = cno_stream_new(conn, frame->stream, CNO_REMOTE);
+            if (stream == NULL)
+                return CNO_ERROR_UP();
+            stream->accept = CNO_ACCEPT_HEADERS | CNO_ACCEPT_WRITE_HEADERS | CNO_ACCEPT_WRITE_PUSH;
+        }
+    } else if (stream->accept & CNO_ACCEPT_TRAILERS) {
+        stream->accept &= ~CNO_ACCEPT_DATA;
+        if (!(frame->flags & CNO_FLAG_END_STREAM))
+            return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "trailers without END_STREAM");
+    } else if (!(stream->accept & CNO_ACCEPT_HEADERS)) {
+        return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected HEADERS");
+    }
+
     conn->continued_flags = frame->flags & CNO_FLAG_END_STREAM;
-    conn->continued_stream = stream->id;
+    conn->continued_stream = frame->stream;
 
     if (cno_buffer_dyn_concat(&conn->continued, frame->payload))
         // no need to cleanup -- compression errors are non-recoverable,
@@ -529,11 +533,11 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
     if (cno_frame_handle_padding(conn, frame))
         return CNO_ERROR_UP();
 
-    if (!conn->settings[CNO_LOCAL].enable_push || !stream || !(stream->accept & CNO_ACCEPT_PUSH))
-        return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected PUSH_PROMISE");
-
     if (frame->payload.size < 4)
         return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "PUSH_PROMISE too short");
+
+    if (!conn->settings[CNO_LOCAL].enable_push || !stream || !(stream->accept & CNO_ACCEPT_PUSH))
+        return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected PUSH_PROMISE");
 
     uint32_t promised = read4((const uint8_t *) frame->payload.data);
 
@@ -563,7 +567,8 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
 {
     if (conn->continued_promise)
         stream = cno_stream_find(conn, conn->continued_promise);
-    if (!stream || !conn->continued_stream)
+
+    if (!conn->continued_stream)
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected CONTINUATION");
 
     // we don't actually count CONTINUATIONs, but this is an ok estimate.
@@ -579,22 +584,6 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
     if (frame->flags & CNO_FLAG_END_HEADERS)
         return cno_frame_handle_end_headers(conn, stream, frame);
     return CNO_OK;
-}
-
-
-/* ignore non-HEADERS frames on reset streams, as the spec requires. unfortunately,
-   these are indistinguishable from streams that were never opened, but hey, what
-   can i do, keep a set of uint32_t-s? memory doesn't grow on trees, you know. */
-static int cno_frame_handle_invalid_stream(struct cno_connection_t *conn,
-                                           struct cno_frame_t *frame)
-{
-    if (frame->stream && frame->stream <= conn->last_stream[cno_stream_is_local(conn, frame->stream)])
-#if CNO_STREAM_RESET_HISTORY
-        for (uint8_t i = 0; i < CNO_STREAM_RESET_HISTORY; i++)
-            if (conn->recently_reset[i] == frame->stream)
-#endif
-                return CNO_OK;
-    return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "invalid stream");
 }
 
 

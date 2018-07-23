@@ -62,13 +62,11 @@ enum CNO_CONNECTION_FLAGS
 
 enum CNO_STREAM_ACCEPT
 {
-    CNO_ACCEPT_NOTHING       = 0x00,
     CNO_ACCEPT_HEADERS       = 0x01,
     CNO_ACCEPT_DATA          = 0x02,
     CNO_ACCEPT_PUSH          = 0x04,
     CNO_ACCEPT_TRAILERS      = 0x08,
-    CNO_ACCEPT_NOP_HEADERS   = 0x10,  // decompress but discard header blocks on reset streams
-    CNO_ACCEPT_INBOUND       = 0x1F,
+    CNO_ACCEPT_INBOUND       = 0x0F,
     CNO_ACCEPT_WRITE_PUSH    = 0x20,
     CNO_ACCEPT_WRITE_HEADERS = 0x40,
     CNO_ACCEPT_WRITE_DATA    = 0x80,
