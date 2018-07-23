@@ -155,7 +155,7 @@ static int cno_stream_end_by_local(struct cno_connection_t *conn, struct cno_str
 // Send a single non-flow-controlled* frame, splitting DATA/HEADERS if they are too big.
 // (*meaning that it isn't counted; in case of DATA, this must be done by the caller.)
 static int cno_frame_write(const struct cno_connection_t *conn,
-                           const struct cno_frame_t *frame)
+                           const struct cno_frame_t      *frame)
 {
     size_t length = frame->payload.size;
     size_t limit  = conn->settings[CNO_REMOTE].max_frame_size;
@@ -197,10 +197,37 @@ static int cno_frame_write(const struct cno_connection_t *conn,
     return cno_frame_write(conn, &part);
 }
 
+static int cno_frame_write_goaway(struct cno_connection_t *conn,
+                                  uint32_t /* enum CNO_RST_STREAM_CODE */ code)
+{
+    if (!conn->goaway_sent)
+        conn->goaway_sent = conn->last_stream[CNO_REMOTE];
+    struct cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, { PACK(I32(conn->goaway_sent), I32(code)) } };
+    return cno_frame_write(conn, &error);
+}
+
+// Shut down a connection and *then* throw a TRANSPORT error.
+#define cno_frame_write_error(conn, type, ...) \
+    (cno_frame_write_goaway(conn, type) ? CNO_ERROR_UP() : CNO_ERROR(TRANSPORT, __VA_ARGS__))
+
+// Ignore frames on reset streams, as the spec requires. See `cno_stream_end_by_local`.
+static int cno_frame_handle_invalid_stream(struct cno_connection_t *conn,
+                                           struct cno_frame_t      *frame)
+{
+    if (frame->stream && frame->stream <= conn->last_stream[cno_stream_is_local(conn, frame->stream)])
+#if CNO_STREAM_RESET_HISTORY
+        for (uint8_t i = 0; i < CNO_STREAM_RESET_HISTORY; i++)
+            if ((frame->type != CNO_FRAME_HEADERS && conn->recently_reset[i] == frame->stream)
+             || (frame->type != CNO_FRAME_DATA && conn->recently_reset[i] == (frame->stream | (1ul << 31))))
+#endif
+                return CNO_OK;
+    return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "invalid stream");
+}
+
 // Send a delta between two configs as a SETTINGS frame.
 static int cno_frame_write_settings(const struct cno_connection_t *conn,
-                                    const struct cno_settings_t *previous,
-                                    const struct cno_settings_t *current)
+                                    const struct cno_settings_t   *previous,
+                                    const struct cno_settings_t   *current)
 {
     uint8_t payload[CNO_SETTINGS_UNDEFINED - 1][6];
     uint8_t (*ptr)[6] = payload;
@@ -216,7 +243,7 @@ static int cno_frame_write_settings(const struct cno_connection_t *conn,
 }
 
 static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
-                                      struct cno_stream_t *stream,
+                                      struct cno_stream_t     *stream,
                                       uint32_t /* enum CNO_RST_STREAM_CODE */ code)
 {
     struct cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, stream->id, { PACK(I32(code)) } };
@@ -225,130 +252,92 @@ static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
     return cno_frame_write(conn, &error) ? CNO_ERROR_UP() : cno_stream_end_by_local(conn, stream);
 }
 
-
-static int cno_frame_write_goaway(struct cno_connection_t *conn,
-                                  uint32_t /* enum CNO_RST_STREAM_CODE */ code)
-{
-    if (!conn->goaway_sent)
-        conn->goaway_sent = conn->last_stream[CNO_REMOTE];
-    struct cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, { PACK(I32(conn->goaway_sent), I32(code)) } };
-    return cno_frame_write(conn, &error);
-}
-
-
-/* shut down a connection and *then* throw a TRANSPORT error. */
-#define cno_frame_write_error(conn, type, ...) \
-    (cno_frame_write_goaway(conn, type) ? CNO_ERROR_UP() : CNO_ERROR(TRANSPORT, __VA_ARGS__))
-
-
 static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
                                        struct cno_stream_t     *stream)
 {
-    // don't move below the event. it may call write_{message,data} and destroy the stream.
-    int half_open = (stream->accept &= ~CNO_ACCEPT_INBOUND) != 0;
-
     if (CNO_FIRE(conn, on_message_end, stream->id))
         return CNO_ERROR_UP();
-
-    if (half_open)
-        return CNO_OK;
-
-    return cno_stream_end(conn, stream);
+    return !(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream);
 }
-
-
-/* ignore frames on reset streams, as the spec requires. unfortunately,
-   these are indistinguishable from streams that were never opened, but hey, what
-   can i do, keep a set of uint32_t-s? memory doesn't grow on trees, you know. */
-static int cno_frame_handle_invalid_stream(struct cno_connection_t *conn,
-                                           struct cno_frame_t *frame)
-{
-    if (frame->stream && frame->stream <= conn->last_stream[cno_stream_is_local(conn, frame->stream)])
-#if CNO_STREAM_RESET_HISTORY
-        for (uint8_t i = 0; i < CNO_STREAM_RESET_HISTORY; i++)
-            if ((frame->type != CNO_FRAME_HEADERS && conn->recently_reset[i] == frame->stream)
-             || (frame->type != CNO_FRAME_DATA && conn->recently_reset[i] == (frame->stream | (1ul << 31))))
-#endif
-                return CNO_OK;
-    return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "invalid stream");
-}
-
 
 static int cno_frame_handle_message(struct cno_connection_t *conn,
                                     struct cno_stream_t     *stream,
                                     struct cno_frame_t      *frame,
                                     struct cno_message_t    *msg)
 {
-    int is_response = conn->client && !conn->continued_promise;
+    int is_push = !!conn->continued_promise;
+    int is_response = conn->client && !is_push;
+
     struct cno_header_t *it  = msg->headers;
     struct cno_header_t *end = msg->headers + msg->headers_len;
 
-    int has_scheme = 0;
     // >HTTP/2 uses special pseudo-header fields beginning with ':' character
     // >(ASCII 0x3a) [to convey the target URI, ...]
-    while (it != end && cno_buffer_startswith(it->name, CNO_BUFFER_STRING(":")))
-        ++it;
-
-    struct cno_header_t *first_non_pseudo = it;
-    struct cno_header_t *into = it;
-    while (it-- != msg->headers) {
+    for (; it != end && cno_buffer_startswith(it->name, CNO_BUFFER_STRING(":")); it++)
+        // >Pseudo-header fields MUST NOT appear in trailers.
         if (stream->accept & CNO_ACCEPT_TRAILERS)
-            // >Pseudo-header fields MUST NOT appear in trailers.
             goto invalid_message;
 
+    struct cno_header_t *first_non_pseudo = it;
+    // Pseudo-headers are checked in reverse order because those that are used to fill fields
+    // of `cno_message_t` are then erased, and shifting the two remaining headers up is cheaper
+    // than moving all the normal headers down.
+    int has_scheme = 0;
+    int has_authority = 0;
+    for (struct cno_header_t *h = it; h-- != msg->headers;) {
         if (is_response) {
-            if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":status"))) {
+            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":status"))) {
                 if (msg->code)
                     goto invalid_message;
-                for (const char *p = it->value.data; p != it->value.data + it->value.size; p++) {
+                for (const char *p = h->value.data, *e = h->value.data + h->value.size; p != e; p++) {
                     if (*p < '0' || '9' < *p)
                         goto invalid_message;
-                    msg->code = msg->code * 10 + (*p - '0');
+                    if ((msg->code = msg->code * 10 + (*p - '0')) > 1000000)
+                        goto invalid_message; // kind of an arbitrary limit, really
                 }
+                cno_hpack_free_header(h);
                 continue;
             }
         } else {
-            if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":path"))) {
+            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":path"))) {
                 if (msg->path.data)
                     goto invalid_message;
-                msg->path = it->value;
+                msg->path = h->value;
+                cno_hpack_free_header(h);
                 continue;
             }
 
-            if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":method"))) {
+            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":method"))) {
                 if (msg->method.data)
                     goto invalid_message;
-                msg->method = it->value;
+                msg->method = h->value;
+                cno_hpack_free_header(h);
                 continue;
             }
 
-            if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":authority")))
-                goto save_header;
+            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":authority"))) {
+                if (has_authority)
+                    goto invalid_message;
+                has_authority = 1;
+                *--it = *h;
+                continue;
+            }
 
-            if (cno_buffer_eq(it->name, CNO_BUFFER_STRING(":scheme"))) {
+            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":scheme"))) {
                 if (has_scheme)
                     goto invalid_message;
                 has_scheme = 1;
-                goto save_header;
+                *--it = *h;
+                continue;
             }
         }
 
         // >Endpoints MUST NOT generate pseudo-header fields other than those defined in this document.
         goto invalid_message;
-
-    save_header:
-        // parsed headers get removed; that way the message can be passed right back
-        // into `cno_write_message` of a different connection.
-        if (it != --into) {
-            struct cno_header_t tmp;
-            memmove(&tmp, it, sizeof(struct cno_header_t));
-            memmove(it, into, sizeof(struct cno_header_t));
-            memmove(into, &tmp, sizeof(struct cno_header_t));
-        }
     }
 
-    msg->headers_len -= (into - msg->headers);
-    msg->headers = into;
+    msg->headers = it;
+    msg->headers_len = end - it;
 
     for (it = first_non_pseudo; it != end; ++it) {
         // >All pseudo-header fields MUST appear in the header block
@@ -375,25 +364,22 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
     }
 
     if (stream->accept & CNO_ACCEPT_TRAILERS) {
-        if (!(frame->flags & CNO_FLAG_END_STREAM))
-            // there is no data after trailers.
-            goto invalid_message;
-
+        // There is no data after trailers.
         stream->accept &= ~CNO_ACCEPT_INBOUND;
-
+        if (!(frame->flags & CNO_FLAG_END_STREAM))
+            goto invalid_message;
         if (CNO_FIRE(conn, on_message_trail, stream->id, msg))
             return CNO_ERROR_UP();
-
         return cno_frame_handle_end_stream(conn, stream);
     }
 
+    // >All HTTP/2 requests MUST include exactly one valid value for the :method, :scheme,
+    // >and :path pseudo-header fields, unless it is a CONNECT request (Section 8.3).
     if (is_response ? !msg->code : !cno_buffer_eq(msg->method, CNO_BUFFER_STRING("CONNECT")) &&
             (!msg->path.data || !msg->path.size || !msg->method.data || !msg->method.size || !has_scheme))
-        // >All HTTP/2 requests MUST include exactly one valid value for the :method, :scheme,
-        // >and :path pseudo-header fields, unless it is a CONNECT request (Section 8.3).
         goto invalid_message;
 
-    if (conn->continued_promise)
+    if (is_push)
         return CNO_FIRE(conn, on_message_push, stream->id, msg, conn->continued_stream);
 
     stream->accept &= ~CNO_ACCEPT_HEADERS;
@@ -411,27 +397,23 @@ invalid_message:
     return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
 }
 
-
 static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
                                         struct cno_stream_t     *stream,
                                         struct cno_frame_t      *frame)
 {
     struct cno_header_t headers[CNO_MAX_HEADERS];
-    size_t count = CNO_MAX_HEADERS;
-
-    if (cno_hpack_decode(&conn->decoder, conn->continued.as_static, headers, &count)) {
+    struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, CNO_MAX_HEADERS };
+    if (cno_hpack_decode(&conn->decoder, conn->continued.as_static, headers, &msg.headers_len)) {
         cno_buffer_dyn_clear(&conn->continued);
         cno_frame_write_goaway(conn, CNO_RST_COMPRESSION_ERROR);
         return CNO_ERROR_UP();
     }
 
-    struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, count };
     // Just ignore the message if the stream has already been reset.
     int failed = stream ? cno_frame_handle_message(conn, stream, frame, &msg) : CNO_OK;
 
-    for (size_t i = 0; i < count; i++)
-        cno_hpack_free_header(&headers[i]);
-
+    for (size_t i = 0; i < msg.headers_len; i++)
+        cno_hpack_free_header(&msg.headers[i]);
     cno_buffer_dyn_clear(&conn->continued);
     conn->continued = CNO_BUFFER_DYN_EMPTY;
     conn->continued_stream = 0;
