@@ -349,9 +349,16 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
             if (isupper(*p))
                 goto invalid_message;
 
-        // TODO
         // >HTTP/2 does not use the Connection header field to indicate
         // >connection-specific header fields.
+        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("connection")))
+            goto invalid_message;
+
+        // >The only exception to this is the TE header field, which MAY be present
+        // > in an HTTP/2 request; when it is, it MUST NOT contain any value other than "trailers".
+        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("te"))
+        && !cno_buffer_eq(it->value, CNO_BUFFER_STRING("trailers")))
+            goto invalid_message;
     }
 
     if (stream->accept & CNO_ACCEPT_TRAILERS) {
