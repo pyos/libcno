@@ -981,6 +981,9 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
         // HTTP/1.0 is probably not really supported either tbh.
         return CNO_ERROR(TRANSPORT, "HTTP/1.%d not supported", minor);
 
+    // Have to switch the state before calling on_message_start; if it decides
+    // to respond right away and there is a h2c upgrade in progress, response must be sent as h2.
+    conn->state = CNO_CONNECTION_HTTP1_READING;
     // Even if there's no payload, the automaton will (almost) instantly switch back:
     stream->accept &= ~CNO_ACCEPT_HEADERS;
     stream->accept |=  CNO_ACCEPT_DATA;
@@ -990,7 +993,6 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
     struct cno_header_t headers[CNO_MAX_HEADERS];
     struct cno_header_t *it = msg.headers = headers;
 
-    int next_state = CNO_CONNECTION_HTTP1_READING;
     for (size_t i = 0; i < msg.headers_len; i++, it++) {
         *it = (struct cno_header_t) {
             .name  = { headers_phr[i].name,  headers_phr[i].name_len  },
@@ -1011,11 +1013,11 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
         }
 
         if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("upgrade"))) {
-            if (next_state != CNO_CONNECTION_HTTP1_READING) {
+            if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("h2c"))) {
                 it--;
-            } else if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("h2c"))) {
                 // TODO: client-side h2 upgrade
-                if (conn->client || conn->flags & CNO_CONN_FLAG_DISALLOW_H2_UPGRADE)
+                if (conn->client || conn->state != CNO_CONNECTION_HTTP1_READING
+                 || conn->flags & CNO_CONN_FLAG_DISALLOW_H2_UPGRADE)
                     continue;
 
                 struct cno_header_t upgrade_headers[] = {
@@ -1029,13 +1031,15 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
                     return CNO_ERROR_UP();
 
                 // Technically, server should refuse if HTTP2-Settings are not present. We'll let this slide.
-                next_state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
-                it--;
+                conn->state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
+            } else if (conn->state != CNO_CONNECTION_HTTP1_READING) {
+                if (conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE)
+                    it--; // If upgrading to h2c, don't notify application of any upgrades.
             } else if (conn->client) {
                 if (msg.code == 101)
-                    next_state = CNO_CONNECTION_UNKNOWN_PROTOCOL;
+                    conn->state = CNO_CONNECTION_UNKNOWN_PROTOCOL;
             } else {
-                next_state = CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE;
+                conn->state = CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE;
             }
             continue;
         }
@@ -1084,7 +1088,7 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
     if (CNO_FIRE(conn, on_message_start, stream->id, &msg))
         return CNO_ERROR_UP();
 
-    return next_state;
+    return conn->state;
 }
 
 // TODO make this function more readable
@@ -1208,7 +1212,6 @@ int cno_connection_stop(struct cno_connection_t *conn)
     return cno_write_reset(conn, 0, CNO_RST_NO_ERROR);
 }
 
-
 int cno_connection_lost(struct cno_connection_t *conn)
 {
     if (!cno_connection_is_http2(conn)) {
@@ -1217,36 +1220,32 @@ int cno_connection_lost(struct cno_connection_t *conn)
             if (conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL) {
                 if (CNO_FIRE(conn, on_message_end, 1))
                     return CNO_ERROR_UP();
-            } else if (stream->accept & CNO_ACCEPT_DATA) { // the other side did not finish writing the body
+            } else if (stream->accept & CNO_ACCEPT_DATA) {
                 return CNO_ERROR(TRANSPORT, "unclean http/1.x termination");
             }
-            // if still writable, `cno_write_message`/`cno_write_data` will reset the stream
+            // If still writable, `cno_write_message`/`cno_write_data` will reset the stream.
             if (!(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream))
                 return CNO_ERROR_UP();
         }
         return CNO_OK;
     }
 
+    // h2 won't work over half-closed connections.
     conn->state = CNO_CONNECTION_UNDEFINED;
-
     for (struct cno_stream_t **s = &conn->streams[0]; s != &conn->streams[CNO_STREAM_BUCKETS]; s++)
         while (*s)
             if (cno_stream_end(conn, *s))
                 return CNO_ERROR_UP();
-
     return CNO_OK;
 }
-
 
 uint32_t cno_connection_next_stream(struct cno_connection_t *conn)
 {
     if (!cno_connection_is_http2(conn))
         return 1;
-
     uint32_t last = conn->last_stream[CNO_LOCAL];
     return conn->client && !last ? 1 : last + 2;
 }
-
 
 int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST_STREAM_CODE code)
 {
@@ -1266,7 +1265,6 @@ int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST
     return obj ? cno_frame_write_rst_stream(conn, obj, code) : CNO_OK; // assume idle streams have already been reset
 }
 
-
 int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct cno_message_t *msg)
 {
     if (conn->state == CNO_CONNECTION_UNDEFINED)
@@ -1279,42 +1277,34 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
         return CNO_OK;
 
     struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
-
-    if (streamobj == NULL)
-        return CNO_ERROR(INVALID_STREAM, "push to a nonexistent stream");
-
-    if (!(streamobj->accept & CNO_ACCEPT_WRITE_PUSH))
+    if (!streamobj || !(streamobj->accept & CNO_ACCEPT_WRITE_PUSH))
         return CNO_OK;  // pushed requests are safe, so whether we send one doesn't matter
 
     uint32_t child = cno_connection_next_stream(conn);
 
     struct cno_stream_t *childobj = cno_stream_new(conn, child, CNO_LOCAL);
-
     if (childobj == NULL)
         return CNO_ERROR_UP();
-
     childobj->accept = CNO_ACCEPT_WRITE_HEADERS;
 
     struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_EMPTY;
-    struct cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_EMPTY };
     struct cno_header_t head[2] = {
         { CNO_BUFFER_STRING(":method"), msg->method, 0 },
         { CNO_BUFFER_STRING(":path"),   msg->path,   0 },
     };
 
     if (cno_buffer_dyn_concat(&payload, (struct cno_buffer_t) { PACK(I32(child)) })
-    ||  cno_hpack_encode(&conn->encoder, &payload, head, 2)
-    ||  cno_hpack_encode(&conn->encoder, &payload, msg->headers, msg->headers_len))
+     || cno_hpack_encode(&conn->encoder, &payload, head, 2)
+     || cno_hpack_encode(&conn->encoder, &payload, msg->headers, msg->headers_len))
         return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
 
-    frame.payload = payload.as_static;
+    struct cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, stream, payload.as_static };
     if (cno_frame_write(conn, &frame))
         return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
 
     cno_buffer_dyn_clear(&payload);
     return CNO_FIRE(conn, on_message_start, child, msg) || CNO_FIRE(conn, on_message_end, child);
 }
-
 
 static int cno_discard_remaining_payload(struct cno_connection_t *conn, struct cno_stream_t *streamobj)
 {
@@ -1324,7 +1314,6 @@ static int cno_discard_remaining_payload(struct cno_connection_t *conn, struct c
         return CNO_ERROR_UP();
     return CNO_OK;
 }
-
 
 int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const struct cno_message_t *msg, int final)
 {
@@ -1341,7 +1330,6 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
                 return CNO_ERROR(ASSERTION, "header names should be lowercase");
 
     struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
-
     if (conn->client) {
         if (streamobj == NULL) {
             streamobj = cno_stream_new(conn, stream, CNO_LOCAL);
@@ -1477,11 +1465,7 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
         return CNO_ERROR(DISCONNECT, "connection closed");
 
     struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
-
-    if (streamobj == NULL)
-        return CNO_ERROR(INVALID_STREAM, "stream does not exist");
-
-    if (!(streamobj->accept & CNO_ACCEPT_WRITE_DATA))
+    if (!streamobj || !(streamobj->accept & CNO_ACCEPT_WRITE_DATA))
         return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
     if (conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL) {
@@ -1532,7 +1516,6 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
             return 0;
 
         struct cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, stream, { data, length } };
-
         if (cno_frame_write(conn, &frame))
             return CNO_ERROR_UP();
 
@@ -1547,7 +1530,6 @@ int cno_write_ping(struct cno_connection_t *conn, const char data[8])
 {
     if (!cno_connection_is_http2(conn))
         return CNO_ERROR(ASSERTION, "cannot ping HTTP/1.x endpoints");
-
     struct cno_frame_t ping = { CNO_FRAME_PING, 0, 0, { data, 8 } };
     return cno_frame_write(conn, &ping);
 }
