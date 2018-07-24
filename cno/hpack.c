@@ -2,7 +2,6 @@
 #include "hpack.h"
 #include "hpack-data.h"
 
-
 void cno_hpack_init(struct cno_hpack_t *state, uint32_t limit)
 {
     cno_list_init(state);
@@ -12,7 +11,6 @@ void cno_hpack_init(struct cno_hpack_t *state, uint32_t limit)
     state->limit_update_min = \
     state->limit_update_end = limit;
 }
-
 
 static void cno_hpack_evict(struct cno_hpack_t *state, uint32_t limit)
 {
@@ -24,48 +22,32 @@ static void cno_hpack_evict(struct cno_hpack_t *state, uint32_t limit)
     }
 }
 
-
 void cno_hpack_clear(struct cno_hpack_t *state)
 {
     cno_hpack_evict(state, 0);
 }
 
-
-void cno_hpack_setlimit(struct cno_hpack_t *state, uint32_t limit)
+int cno_hpack_setlimit(struct cno_hpack_t *state, uint32_t limit)
 {
+    if (limit > state->limit_upper)
+        return CNO_ERROR(ASSERTION, "dynamic table size limit higher than allowed by peer");
+    // The update will be encoded the next time we send a header block.
     if (state->limit_update_min > limit)
         cno_hpack_evict(state, state->limit_update_min = limit);
-
-    // the update will be encoded the next time we send a header block.
     state->limit_update_end = limit;
+    return CNO_OK;
 }
 
-
-static struct cno_buffer_t cno_header_table_k(const struct cno_header_table_t *t)
-{
-    return (struct cno_buffer_t) { &t->data[0], t->k_size };
-}
-
-
-static struct cno_buffer_t cno_header_table_v(const struct cno_header_table_t *t)
-{
-    return (struct cno_buffer_t) { &t->data[t->k_size], t->v_size };
-}
-
-
-/* Insert a header into the index table. */
-static int cno_hpack_index(struct cno_hpack_t *state, const struct cno_header_t *h)
+static int cno_hpack_insert(struct cno_hpack_t *state, const struct cno_header_t *h)
 {
     size_t recorded = h->name.size + h->value.size + 32;
-    size_t actual   = h->name.size + h->value.size + sizeof(struct cno_header_table_t);
-
-    if (recorded > state->limit)
+    if (recorded > state->limit) {
         cno_hpack_evict(state, 0);
-    else {
+    } else {
         cno_hpack_evict(state, state->limit - recorded);
 
+        size_t actual = h->name.size + h->value.size + sizeof(struct cno_header_table_t);
         struct cno_header_table_t *entry = malloc(actual);
-
         if (entry == NULL)
             return CNO_ERROR(NO_MEMORY, "%zu bytes", actual);
 
@@ -74,12 +56,9 @@ static int cno_hpack_index(struct cno_hpack_t *state, const struct cno_header_t 
         memcpy(&entry->data[h->name.size], h->value.data, entry->v_size = h->value.size);
         cno_list_append(state, entry);
     }
-
     return CNO_OK;
 }
 
-
-/* Find a header given its index in the table. */
 static int cno_hpack_lookup(struct cno_hpack_t *state, size_t index, struct cno_header_t *out)
 {
     if (index == 0)
@@ -92,14 +71,12 @@ static int cno_hpack_lookup(struct cno_hpack_t *state, size_t index, struct cno_
     }
 
     const struct cno_header_table_t *hdr = cno_list_end(state);
-
-    for (index -= CNO_HPACK_STATIC_TABLE_SIZE; index; --index) {
-        hdr = hdr->next;
-
-        if (hdr == cno_list_end(state))
+    for (index -= CNO_HPACK_STATIC_TABLE_SIZE; index; --index)
+        if ((hdr = hdr->next) == cno_list_end(state))
             return CNO_ERROR(COMPRESSION, "dynamic table index out of bounds");
-    }
 
+    // A peer may send an index into the dynamic table followed by an indexed header that
+    // overflows the table and evicts the entry. Thus, the copying.
     char *buf = malloc(hdr->k_size + hdr->v_size);
     if (!buf)
         return CNO_ERROR(NO_MEMORY, "%zu bytes", hdr->k_size + hdr->v_size);
@@ -110,31 +87,31 @@ static int cno_hpack_lookup(struct cno_hpack_t *state, size_t index, struct cno_
     return CNO_OK;
 }
 
-
-/* Calculate the index of a header in the table. Return value is the index,
-   0 if not found, negative if both name and value match. */
-static int cno_hpack_index_of(struct cno_hpack_t *state, const struct cno_header_t *needle)
+// Return value is either 0 (not found), index (name match), or -index (full match).
+static int cno_hpack_lookup_inverse(struct cno_hpack_t *state, const struct cno_header_t *needle)
 {
-    size_t i = 1, possible = 0;
-    const struct cno_header_t       *h = CNO_HPACK_STATIC_TABLE;
-    const struct cno_header_table_t *t = state->first;
+#define TRY(k, v) do {                   \
+    if (!cno_buffer_eq(needle->name, k)) \
+        break;                           \
+    if (cno_buffer_eq(needle->value, v)) \
+        return -i;                       \
+    if (possible == 0)                   \
+        possible = i;                    \
+} while (0)
 
-    #define TRY(k, v)                            \
-        if (cno_buffer_eq(needle->name, k)) {    \
-            if (cno_buffer_eq(needle->value, v)) \
-                return -i;                       \
-            if (possible == 0)                   \
-                possible = i;                    \
-        }
-    for (; i <= CNO_HPACK_STATIC_TABLE_SIZE; ++h, ++i) TRY(h->name, h->value);
-    for (; t != cno_list_end(state); t = t->next, ++i) TRY(cno_header_table_k(t),
-                                                           cno_header_table_v(t));
-    #undef TRY
-    return possible;
+    size_t i = 1, possible = 0;
+    for (const struct cno_header_t *h = CNO_HPACK_STATIC_TABLE; i <= CNO_HPACK_STATIC_TABLE_SIZE; ++h, ++i)
+        TRY(h->name, h->value);
+    for (const struct cno_header_table_t *t = state->first; t != cno_list_end(state); t = t->next, ++i)
+        TRY(((struct cno_buffer_t) { &t->data[0], t->k_size }),
+            ((struct cno_buffer_t) { &t->data[t->k_size], t->v_size }));
+    return -possible;
+
+#undef TRY
 }
 
-
-static int cno_hpack_decode_uint(struct cno_buffer_dyn_t *source, uint8_t mask, size_t *out)
+// Format: the value as 1 byte if less than mask, else {mask, 0x80 | <7 bits>, ..., <last 7 bits>} (little-endian).
+static int cno_hpack_decode_uint(struct cno_buffer_t *source, uint8_t mask, size_t *out)
 {
     if (!source->size)
         return CNO_ERROR(COMPRESSION, "expected uint, got EOF");
@@ -143,33 +120,30 @@ static int cno_hpack_decode_uint(struct cno_buffer_dyn_t *source, uint8_t mask, 
     const uint8_t head = *out = *src++ & mask;
     uint8_t size = 1;
 
-    if (head == mask)
+    if (head == mask) {
         do {
             if (size == source->size)
                 return CNO_ERROR(COMPRESSION, "truncated multi-byte uint");
-
             if (size == sizeof(size_t))
                 return CNO_ERROR(COMPRESSION, "uint literal too large");
-
             *out += (*src & 0x7Ful) << (7 * size++ - 7);
         } while (*src++ & 0x80);
+    }
 
-    cno_buffer_dyn_shift(source, size);
+    *source = cno_buffer_shift(*source, size);
     return CNO_OK;
 }
 
-
-static int cno_hpack_decode_string(struct cno_buffer_dyn_t *source, struct cno_buffer_t *out, int *borrow)
+// Format: 1 bit is a flag for Huffman encoding, then a varint for length, then raw data.
+static int cno_hpack_decode_string(struct cno_buffer_t *source, struct cno_buffer_t *out, int *borrow)
 {
     if (!source->size)
         return CNO_ERROR(COMPRESSION, "expected string, got EOF");
+    const uint8_t huffman = (* (const uint8_t *) source->data) & 0x80;
 
-    int    huffman = *source->data & 0x80;
-    size_t length  = 0;
-
+    size_t length = 0;
     if (cno_hpack_decode_uint(source, 0x7F, &length))
         return CNO_ERROR_UP();
-
     if (length > source->size)
         return CNO_ERROR(COMPRESSION, "expected %zu octets, got %zu", length, source->size);
 
@@ -183,13 +157,12 @@ static int cno_hpack_decode_string(struct cno_buffer_dyn_t *source, struct cno_b
         if (!buf)
             return CNO_ERROR(NO_MEMORY, "%zu bytes", length * 2);
 
-        struct cno_huffman_leaf_t state = { 0, 0, CNO_HUFFMAN_ACCEPT };
-
+        struct cno_huffman_state_t state = CNO_HUFFMAN_STATE_INIT;
         do {
             uint8_t chr = *src++;
 
             for (int i = 0; i < 8 / CNO_HUFFMAN_INPUT_BITS; i++, chr <<= CNO_HUFFMAN_INPUT_BITS) {
-                state = CNO_HUFFMAN_TREES[state.next | (chr >> (8 - CNO_HUFFMAN_INPUT_BITS))];
+                state = CNO_HUFFMAN_STATE[state.next | (chr >> (8 - CNO_HUFFMAN_INPUT_BITS))];
 
                 if (state.flags & CNO_HUFFMAN_APPEND)
                     *ptr++ = state.byte;
@@ -209,31 +182,29 @@ static int cno_hpack_decode_string(struct cno_buffer_dyn_t *source, struct cno_b
         *borrow = 1;
     }
 
-    cno_buffer_dyn_shift(source, length);
+    *source = cno_buffer_shift(*source, length);
     return CNO_OK;
 }
 
-
-static int cno_hpack_decode_one(struct cno_hpack_t      *state,
-                                struct cno_buffer_dyn_t *source,
-                                struct cno_header_t     *target)
+static int cno_hpack_decode_one(struct cno_hpack_t  *state,
+                                struct cno_buffer_t *source,
+                                struct cno_header_t *target)
 {
     *target = CNO_HEADER_EMPTY;
-
     if (!source->size)
         return CNO_ERROR(COMPRESSION, "expected header, got EOF");
+    const uint8_t head = * (const uint8_t *) source->data;
 
     size_t index = 0;
-
-    if (*source->data & 0x80) {
+    if (head & 0x80) {
         // 1....... -- name & value taken from the table
         return cno_hpack_decode_uint(source, 0x7F, &index)
             || cno_hpack_lookup(state, index, target);
-    } else if ((*source->data & 0xC0) == 0x40) {
+    } else if ((head & 0xC0) == 0x40) {
         // 01...... -- name taken from the table, value included as a literal
         if (cno_hpack_decode_uint(source, 0x3F, &index))
             return CNO_ERROR_UP();
-    } else if ((*source->data & 0xE0) == 0x20) {
+    } else if ((head & 0xE0) == 0x20) {
         // 001..... -- table size limit update; see cno_hpack_decode
         return CNO_ERROR(COMPRESSION, "unexpected table size limit update");
     } else {
@@ -263,7 +234,7 @@ static int cno_hpack_decode_one(struct cno_hpack_t      *state,
     if (!borrow)
         target->flags |= CNO_HEADER_OWNS_VALUE;
 
-    if (!(target->flags & CNO_HEADER_NOT_INDEXED) && cno_hpack_index(state, target)) {
+    if (!(target->flags & CNO_HEADER_NOT_INDEXED) && cno_hpack_insert(state, target)) {
         cno_hpack_free_header(target);
         return CNO_ERROR_UP();
     }
@@ -271,45 +242,38 @@ static int cno_hpack_decode_one(struct cno_hpack_t      *state,
     return CNO_OK;
 }
 
-
-int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t s,
-                     struct cno_header_t *rs, size_t *n)
+int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t buf, struct cno_header_t *rs, size_t *n)
 {
-    struct cno_buffer_dyn_t buf = {{s}, 0, 0};
-    struct cno_header_t *ptr =  rs;
-    struct cno_header_t *end = &rs[*n];
-
     while (buf.size && (*buf.data & 0xE0) == 0x20) {
         // 001..... -- a new size limit for the table
         size_t limit = 0;
-
         if (cno_hpack_decode_uint(&buf, 0x1F, &limit))
             return CNO_ERROR_UP();
-
         if (limit > state->limit_upper)
             return CNO_ERROR(COMPRESSION, "requested table size is too big");
-
         cno_hpack_evict(state, state->limit = limit);
     }
 
-    for (; buf.size; ptr++) {
-        if (ptr == end) {
-            while (ptr > rs)
-                cno_hpack_free_header(--ptr);
+    if (state->limit > state->limit_upper)
+        return CNO_ERROR(COMPRESSION, "current decoder state size limit is higher than the upper bound");
+
+    size_t read = 0, limit = *n;
+    for (; buf.size; rs++, read++) {
+        if (read == limit) {
+            while (read--)
+                cno_hpack_free_header(--rs);
             return CNO_ERROR(COMPRESSION, "header list too long");
         }
 
-        if (cno_hpack_decode_one(state, &buf, ptr)) {
-            while (ptr > rs)
-                cno_hpack_free_header(--ptr);
+        if (cno_hpack_decode_one(state, &buf, rs)) {
+            while (read--)
+                cno_hpack_free_header(--rs);
             return CNO_ERROR_UP();
         }
     }
-
-    *n = ptr - rs;
+    *n = read;
     return CNO_OK;
 }
-
 
 static int cno_hpack_encode_uint(struct cno_buffer_dyn_t *buf, uint8_t prefix, uint8_t mask, size_t num)
 {
@@ -319,15 +283,12 @@ static int cno_hpack_encode_uint(struct cno_buffer_dyn_t *buf, uint8_t prefix, u
     }
 
     uint8_t tmp[sizeof(num) * 2], *ptr = tmp;
-
     *ptr++ = prefix | mask;
     for (num -= mask; num > 0x7F; num >>= 7)
         *ptr++ = num | 0x80;
     *ptr++ = num;
-
     return cno_buffer_dyn_concat(buf, (struct cno_buffer_t) { (char *) tmp, ptr - tmp });
 }
-
 
 static int cno_hpack_encode_string(struct cno_buffer_dyn_t *buf, const struct cno_buffer_t s)
 {
@@ -336,7 +297,6 @@ static int cno_hpack_encode_string(struct cno_buffer_dyn_t *buf, const struct cn
 
     uint8_t *out = malloc(s.size);
     uint8_t *ptr = out;
-
     if (out == NULL)
         return CNO_ERROR(NO_MEMORY, "%zu bytes", s.size);
 
@@ -347,7 +307,7 @@ static int cno_hpack_encode_string(struct cno_buffer_dyn_t *buf, const struct cn
     uint8_t  used = 0;
 
     while (src != end) {
-        const struct cno_huffman_item_t it = CNO_HUFFMAN_TABLE[*src++];
+        const struct cno_huffman_table_t it = CNO_HUFFMAN_TABLE[*src++];
 
         bits  = it.code | bits << it.bits;
         used += it.bits;
@@ -376,16 +336,15 @@ huffman_inefficient:
         || cno_buffer_dyn_concat(buf, s);
 }
 
-
 static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf, const struct cno_header_t *h)
 {
-    int index = cno_hpack_index_of(state, h);
+    int index = cno_hpack_lookup_inverse(state, h);
     if (index < 0)
         return cno_hpack_encode_uint(buf, 0x80, 0x7F, -index);
 
     if (h->flags & CNO_HEADER_NOT_INDEXED
         ? cno_hpack_encode_uint(buf, 0x10, 0x0F, index)
-        : cno_hpack_encode_uint(buf, 0x40, 0x3F, index) || cno_hpack_index(state, h))
+        : cno_hpack_encode_uint(buf, 0x40, 0x3F, index) || cno_hpack_insert(state, h))
             return CNO_ERROR_UP();
 
     if (!index)
@@ -395,25 +354,21 @@ static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_dyn
     return cno_hpack_encode_string(buf, h->value);
 }
 
-
 int cno_hpack_encode(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf,
-               const struct cno_header_t *headers, size_t n)
+                     const struct cno_header_t *headers, size_t n)
 {
-    // force the other side to evict the same number of entries first
+    // Force the other side to evict the same number of entries first...
     if (state->limit != state->limit_update_min)
         if (cno_hpack_encode_uint(buf, 0x20, 0x1F, state->limit_update_min))
             return CNO_ERROR_UP();
-
-    // only then set the limit to its actual value
+    // ...then set the limit to its actual value.
     if (state->limit != state->limit_update_end)
         if (cno_hpack_encode_uint(buf, 0x20, 0x1F, state->limit_update_end))
             return CNO_ERROR_UP();
-
     state->limit_update_min = state->limit = state->limit_update_end;
 
     while (n--)
         if (cno_hpack_encode_one(state, buf, headers++))
             return CNO_ERROR_UP();
-
     return CNO_OK;
 }

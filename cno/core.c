@@ -59,17 +59,6 @@ static int cno_stream_is_local(const struct cno_connection_t *conn, uint32_t id)
     return id % 2 == conn->client;
 }
 
-// Each stream carries a single request-response pair, plus push promises.
-//
-// @param local: 1 (== CNO_LOCAL) if this side is initiating the stream.
-//               (Used for checking; the value can be derived from the ID, see above.)
-//
-// Errors:
-//     INVALID_STREAM  stream id is unacceptable.
-//     WOULD_BLOCK     too many streams, enhance your calm.
-//     NO_MEMORY       streams are heap-allocated.
-// For remote-initiated streams, INVALID_STREAM and WOULD_BLOCK are converted into TRANSPORT.
-//
 static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint32_t id, int local)
 {
     if (cno_stream_is_local(conn, id) != local)
@@ -707,8 +696,11 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
         }
     }
 
-    conn->encoder.limit_upper = cfg->header_table_size;
-    cno_hpack_setlimit(&conn->encoder, conn->encoder.limit_upper);
+    size_t limit = conn->encoder.limit_upper = cfg->header_table_size;
+    if (limit > conn->settings[CNO_LOCAL].header_table_size)
+        limit = conn->settings[CNO_LOCAL].header_table_size;
+    if (cno_hpack_setlimit(&conn->encoder, limit))
+        return CNO_ERROR_UP();
 
     struct cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK, 0, CNO_BUFFER_EMPTY };
     if (cno_frame_write(conn, &ack))
@@ -1399,7 +1391,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
                 (int) name.size, name.data, (int) value.size, value.data);
 
             if ((size_t)size > sizeof(buffer))
-                return CNO_ERROR(ASSERTION, "header too big\r\n");
+                return CNO_ERROR(ASSERTION, "header too big");
 
             if (size && CNO_FIRE(conn, on_write, buffer, size))
                 return CNO_ERROR_UP();

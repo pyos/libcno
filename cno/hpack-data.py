@@ -166,8 +166,8 @@ with open(os.path.join(os.path.dirname(__file__), 'hpack-data.h'), 'w') as fd:
     fd.write(
         '#pragma once\n' + textwrap.dedent('''
         // make cno/hpack-data.h
-        struct cno_huffman_item_t {{ uint32_t code; uint8_t bits; }};
-        struct cno_huffman_leaf_t {{ uint16_t next; uint8_t byte; uint8_t flags; }};
+        struct cno_huffman_table_t {{ uint32_t code; uint8_t bits; }};
+        struct cno_huffman_state_t {{ uint16_t next; uint8_t byte; uint8_t flags; }};
 
         enum {{
             CNO_HPACK_STATIC_TABLE_SIZE = {},
@@ -176,9 +176,10 @@ with open(os.path.join(os.path.dirname(__file__), 'hpack-data.h'), 'w') as fd:
             CNO_HUFFMAN_INPUT_BITS = {},
         }};
 
-        static const struct cno_header_t CNO_HPACK_STATIC_TABLE[]  = {{ {} }};
-        static const struct cno_huffman_item_t CNO_HUFFMAN_TABLE[] = {{ {} }};
-        static const struct cno_huffman_leaf_t CNO_HUFFMAN_TREES[] = {{ {} }};
+        static const struct cno_header_t CNO_HPACK_STATIC_TABLE[] = {{ {} }};
+        static const struct cno_huffman_table_t CNO_HUFFMAN_TABLE[] = {{ {} }};
+        static const struct cno_huffman_state_t CNO_HUFFMAN_STATE[] = {{ {} }};
+        static const struct cno_huffman_state_t CNO_HUFFMAN_STATE_INIT = {{ 0, 0, CNO_HUFFMAN_ACCEPT }};
         ''').format(
             len(STATIC_TABLE), HUFFMAN_ACCEPT, HUFFMAN_APPEND, HUFFMAN_INPUT_BITS,
             ','.join('{{"%s",%s},{"%s",%s},0}' % (k, len(k), v, len(v)) for k, v in STATIC_TABLE),

@@ -139,6 +139,11 @@ static inline int cno_buffer_endswith(const struct cno_buffer_t a, const struct 
 }
 
 
+static inline struct cno_buffer_t cno_buffer_shift(const struct cno_buffer_t x, size_t offset) {
+    return offset > x.size ? CNO_BUFFER_EMPTY : (struct cno_buffer_t) {x.data + offset, x.size - offset};
+}
+
+
 static inline void cno_buffer_dyn_clear(struct cno_buffer_dyn_t *x)
 {
     free(x->data - x->offset);
