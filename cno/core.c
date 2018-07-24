@@ -240,9 +240,20 @@ static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
 static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
                                        struct cno_stream_t     *stream)
 {
+    if (stream->remaining_payload && stream->remaining_payload != (uint64_t) -1)
+        return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
     if (CNO_FIRE(conn, on_message_end, stream->id))
         return CNO_ERROR_UP();
     return !(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream);
+}
+
+static int cno_parse_content_length(struct cno_buffer_t value, uint64_t *cl)
+{
+    uint64_t prev = *cl = 0;
+    for (const char *ptr = value.data, *end = ptr + value.size; ptr != end; ptr++, prev = *cl)
+        if (*ptr < '0' || '9' < *ptr || (*cl = prev * 10 + (*ptr - '0')) < prev)
+            return CNO_ERROR(PROTOCOL, "invalid content-length");
+    return CNO_OK;
 }
 
 static int cno_frame_handle_message(struct cno_connection_t *conn,
@@ -324,6 +335,7 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
     msg->headers = it;
     msg->headers_len = end - it;
 
+    stream->remaining_payload = (uint64_t) -1;
     for (it = first_non_pseudo; it != end; ++it) {
         // >All pseudo-header fields MUST appear in the header block
         // >before regular header fields.
@@ -345,6 +357,10 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
         // > in an HTTP/2 request; when it is, it MUST NOT contain any value other than "trailers".
         if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("te"))
         && !cno_buffer_eq(it->value, CNO_BUFFER_STRING("trailers")))
+            goto invalid_message;
+
+        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length"))
+         && cno_parse_content_length(it->value, &stream->remaining_payload))
             goto invalid_message;
     }
 
@@ -570,6 +586,9 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
 
     if (length && length > stream->window_recv)
         return cno_frame_write_rst_stream(conn, stream, CNO_RST_FLOW_CONTROL_ERROR);
+
+    if (stream->remaining_payload != (uint64_t) -1)
+        stream->remaining_payload -= frame->payload.size;
 
     if (frame->payload.size && CNO_FIRE(conn, on_message_data, frame->stream, frame->payload.data, frame->payload.size))
         return CNO_ERROR_UP();
@@ -1033,17 +1052,12 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
         }
 
         if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length"))) {
-            // XXX doesn't the standard say to *ignore* content-length with transfer-encoding?
-            if (conn->http1_remaining)
-                return CNO_ERROR(PROTOCOL, "bad HTTP/1.x message: multiple content-lengths");
-            for (const char *ptr = it->value.data, *end = ptr + it->value.size; ptr != end; ptr++) {
-                if (*ptr < '0' || '9' < *ptr)
-                    return CNO_ERROR(PROTOCOL, "bad HTTP/1.x message: non-int length");
-                if (conn->http1_remaining > 0x19999998)
-                    // XXX should probably support files > 4 GiB...
-                    return CNO_ERROR(PROTOCOL, "bad HTTP/1.x message: content-length overflows");
-                conn->http1_remaining = conn->http1_remaining * 10 + (*ptr - '0');
-            }
+            if (stream->remaining_payload == (uint64_t) -1)
+                continue; // ignore content-length with chunked transfer-encoding
+            if (stream->remaining_payload)
+                return CNO_ERROR(PROTOCOL, "multiple content-lengths");
+            if (cno_parse_content_length(it->value, &stream->remaining_payload))
+                return CNO_ERROR_UP();
             continue;
         }
 
@@ -1057,7 +1071,7 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
             // (This part is a bit non-compatible with h2. Proxies should probably decode TEs.)
             if (!cno_remove_chunked_te(&it->value))
                 it--;
-            conn->http1_remaining = (uint32_t) -1;
+            stream->remaining_payload = (uint64_t) -1;
             continue;
         }
 
@@ -1085,7 +1099,7 @@ static int cno_when_http1_reading(struct cno_connection_t *conn)
     if (!stream || !(stream->accept & CNO_ACCEPT_DATA))
         return CNO_ERROR(ASSERTION, "connection expects HTTP/1.x message body, but stream 1 does not");
 
-    if (!conn->http1_remaining || (stream->flags & CNO_STREAM_H1_READING_HEAD_RESPONSE)) {
+    if (!stream->remaining_payload || (stream->flags & CNO_STREAM_H1_READING_HEAD_RESPONSE)) {
         // if still writable, `cno_write_message`/`cno_write_data` will reset it.
         if (CNO_FIRE(conn, on_message_end, stream->id))
             return CNO_ERROR_UP();
@@ -1099,7 +1113,7 @@ static int cno_when_http1_reading(struct cno_connection_t *conn)
     if (!conn->buffer.size)
         return CNO_OK;
 
-    if (conn->http1_remaining == (uint32_t) -1) {
+    if (stream->remaining_payload == (uint64_t) -1) {
         char *eol = memchr(conn->buffer.data, '\n', conn->buffer.size);
         if (eol++ == NULL)
             return CNO_OK;
@@ -1116,15 +1130,15 @@ static int cno_when_http1_reading(struct cno_connection_t *conn)
             return CNO_ERROR(PROTOCOL, "HTTP/1.x chunked encoding parse error");
 
         if (!length)
-            conn->http1_remaining = 0;
+            stream->remaining_payload = 0;
         else if (CNO_FIRE(conn, on_message_data, stream->id, eol, length))
             return CNO_ERROR_UP();
         cno_buffer_dyn_shift(&conn->buffer, total);
     } else {
         struct cno_buffer_t b = conn->buffer.as_static;
-        if (b.size > conn->http1_remaining)
-            b.size = conn->http1_remaining;
-        conn->http1_remaining -= b.size;
+        if (b.size > stream->remaining_payload)
+            b.size = stream->remaining_payload;
+        stream->remaining_payload -= b.size;
         cno_buffer_dyn_shift(&conn->buffer, b.size);
         if (CNO_FIRE(conn, on_message_data, stream->id, b.data, b.size))
             return CNO_ERROR_UP();
