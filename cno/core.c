@@ -1044,7 +1044,6 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
             continue;
         }
 
-        // TODO ignore on responses to HEAD requests - this is not tracked at all
         if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length"))) {
             // XXX doesn't the standard say to *ignore* content-length with transfer-encoding?
             if (conn->http1_remaining)
@@ -1098,7 +1097,7 @@ static int cno_when_http1_reading(struct cno_connection_t *conn)
     if (!stream || !(stream->accept & CNO_ACCEPT_DATA))
         return CNO_ERROR(ASSERTION, "connection expects HTTP/1.x message body, but stream 1 does not");
 
-    if (!conn->http1_remaining) {
+    if (!conn->http1_remaining || (stream->flags & CNO_STREAM_H1_READING_HEAD_RESPONSE)) {
         // if still writable, `cno_write_message`/`cno_write_data` will reset it.
         if (CNO_FIRE(conn, on_message_end, stream->id))
             return CNO_ERROR_UP();
@@ -1348,12 +1347,18 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         char buffer[CNO_MAX_HTTP1_HEADER_SIZE + 3];
         int size;
 
-        if (conn->client)
+        if (conn->client) {
+            if (cno_buffer_eq(msg->method, CNO_BUFFER_STRING("HEAD")))
+                streamobj->flags |= CNO_STREAM_H1_READING_HEAD_RESPONSE;
+            else
+                streamobj->flags &= CNO_STREAM_H1_READING_HEAD_RESPONSE;
+
             size = snprintf(buffer, sizeof(buffer), "%.*s %.*s HTTP/1.1\r\n",
                 (int) msg->method.size, msg->method.data,
                 (int) msg->path.size,   msg->path.data);
-        else
+        } else {
             size = snprintf(buffer, sizeof(buffer), "HTTP/1.1 %d Something\r\n", msg->code);
+        }
 
         if (size > CNO_MAX_HTTP1_HEADER_SIZE)
             return CNO_ERROR(ASSERTION, "method/path too big");
@@ -1365,9 +1370,9 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         struct cno_header_t *end = msg->headers_len + it;
 
         if (is_informational || final)
-            conn->flags &= ~CNO_CONN_FLAG_WRITING_CHUNKED;
+            streamobj->flags &= ~CNO_STREAM_H1_WRITING_CHUNKED;
         else
-            conn->flags |= CNO_CONN_FLAG_WRITING_CHUNKED;
+            streamobj->flags |= CNO_STREAM_H1_WRITING_CHUNKED;
 
         for (; it != end; ++it) {
             struct cno_buffer_t name = it->name;
@@ -1381,10 +1386,10 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
             else if (cno_buffer_eq(name, CNO_BUFFER_STRING("content-length"))
                   || cno_buffer_eq(name, CNO_BUFFER_STRING("upgrade")))
-                conn->flags &= ~CNO_CONN_FLAG_WRITING_CHUNKED;
+                streamobj->flags &= ~CNO_STREAM_H1_WRITING_CHUNKED;
 
             else if (cno_buffer_eq(name, CNO_BUFFER_STRING("transfer-encoding"))) {
-                // either CNO_CONN_FLAG_WRITING_CHUNKED is set, there's no body at all, or message
+                // either CNO_STREAM_H1_WRITING_CHUNKED is set, there's no body at all, or message
                 // is invalid because it contains both content-length and transfer-encoding.
                 if (!cno_remove_chunked_te(&value))
                     continue;
@@ -1400,7 +1405,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
                 return CNO_ERROR_UP();
         }
 
-        if (conn->flags & CNO_CONN_FLAG_WRITING_CHUNKED)
+        if (streamobj->flags & CNO_STREAM_H1_WRITING_CHUNKED)
             if (CNO_FIRE(conn, on_write, "transfer-encoding: chunked\r\n", 28))
                 return CNO_ERROR_UP();
 
@@ -1458,7 +1463,6 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
     return CNO_OK;
 }
 
-
 int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *data, size_t length, int final)
 {
     if (conn->state == CNO_CONNECTION_UNDEFINED)
@@ -1480,7 +1484,7 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
     }
 
     if (!cno_connection_is_http2(conn)) {
-        int chunked = conn->flags & CNO_CONN_FLAG_WRITING_CHUNKED;
+        int chunked = streamobj->flags & CNO_STREAM_H1_WRITING_CHUNKED;
 
         if (length) {
             if (chunked) {

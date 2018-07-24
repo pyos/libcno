@@ -47,16 +47,20 @@ enum CNO_CONNECTION_STATE
 
 enum CNO_CONNECTION_FLAGS
 {
-    // In HTTP/1.x mode, wrap the payload in chunked transfer-encoding. Toggled automatically
-    // depending on whether content-length was present in the last written message head.
-    CNO_CONN_FLAG_WRITING_CHUNKED = 0x01,
     // Disable automatic sending of stream WINDOW_UPDATEs after receiving DATA;
     // application must call `cno_increase_flow_window` after processing a chunk from `on_message_data`.
-    CNO_CONN_FLAG_MANUAL_FLOW_CONTROL = 0x02,
+    CNO_CONN_FLAG_MANUAL_FLOW_CONTROL = 0x01,
     // Disable special handling of the "Upgrade: h2c" header in HTTP/1.x mode.
-    CNO_CONN_FLAG_DISALLOW_H2_UPGRADE = 0x04,
+    CNO_CONN_FLAG_DISALLOW_H2_UPGRADE = 0x02,
     // Disable special handling of the HTTP2 preface in HTTP/1.x mode.
-    CNO_CONN_FLAG_DISALLOW_H2_PRIOR_KNOWLEDGE = 0x08,
+    CNO_CONN_FLAG_DISALLOW_H2_PRIOR_KNOWLEDGE = 0x04,
+};
+
+
+enum CNO_STREAM_FLAGS
+{
+    CNO_STREAM_H1_WRITING_CHUNKED = 0x01,
+    CNO_STREAM_H1_READING_HEAD_RESPONSE = 0x02,
 };
 
 
@@ -157,6 +161,7 @@ struct cno_stream_t
      int32_t window_recv;
      int32_t window_send;
     uint8_t /* enum CNO_STREAM_ACCEPT */ accept;
+    uint8_t /* enum CNO_STREAM_FLAGS */ flags;
 };
 
 
