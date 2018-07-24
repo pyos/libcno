@@ -32,6 +32,7 @@ enum CNO_HTTP_VERSION
 
 enum CNO_CONNECTION_STATE
 {
+    CNO_CONNECTION_UNDEFINED,
     CNO_CONNECTION_INIT,
     CNO_CONNECTION_PREFACE,
     CNO_CONNECTION_READY,
@@ -41,7 +42,6 @@ enum CNO_CONNECTION_STATE
     CNO_CONNECTION_HTTP1_READING_UPGRADE,  // reading HTTP/1.x request, writing HTTP 2 responses
     CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE,
     CNO_CONNECTION_UNKNOWN_PROTOCOL,
-    CNO_CONNECTION_UNDEFINED,
 };
 
 
@@ -183,18 +183,18 @@ struct cno_connection_t
     uint8_t /* enum CNO_PEER_KIND        */ client;
     uint8_t /* enum CNO_CONNECTION_STATE */ state;
     uint8_t /* enum CNO_CONNECTION_FLAGS */ flags;
-    uint8_t  continued_flags;  // OR the flags of the next CONTINUATION with this.
-    uint32_t continued_stream;  // if nonzero, expect a CONTINUATION on that stream.
-    uint32_t continued_promise;  // if prev. frame was a PUSH_PROMISE, this is the stream it created.
-    uint32_t http1_remaining;  // how many bytes to read before the next message; `-1` for chunked TE
+    uint8_t  continued_flags;
+    uint32_t continued_stream;
+    uint32_t continued_promise;
+    uint32_t http1_remaining;
      int32_t window_recv;
      int32_t window_send;
-    uint32_t last_stream  [2];  // dereferencable with CNO_REMOTE/CNO_LOCAL
+    uint32_t last_stream[2]; // dereferencable with CNO_REMOTE/CNO_LOCAL
     uint32_t goaway_sent;
-    uint32_t stream_count [2];
+    uint32_t stream_count[2];
     struct cno_settings_t settings[2];
     struct cno_buffer_dyn_t buffer;
-    struct cno_buffer_dyn_t continued;  // concat CONTINUATIONs with this
+    struct cno_buffer_dyn_t continued;
     struct cno_hpack_t decoder;
     struct cno_hpack_t encoder;
     struct cno_stream_t *streams[CNO_STREAM_BUCKETS];
