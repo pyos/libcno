@@ -127,7 +127,6 @@ static int cno_stream_end(struct cno_connection_t *conn, struct cno_stream_t *st
 
 static int cno_stream_end_by_local(struct cno_connection_t *conn, struct cno_stream_t *stream)
 {
-#if CNO_STREAM_RESET_HISTORY
     // HEADERS, DATA, WINDOW_UPDATE, and RST_STREAM may arrive on streams we have already reset
     // simply because the other side sent the frames before receiving ours. This is not
     // a protocol error according to the standard. (FIXME kinda broken with trailers...)
@@ -137,7 +136,6 @@ static int cno_stream_end_by_local(struct cno_connection_t *conn, struct cno_str
         conn->recently_reset[conn->recently_reset_next++] = stream->id | is_headers << 31;
         conn->recently_reset_next %= CNO_STREAM_RESET_HISTORY;
     }
-#endif
     return cno_stream_end(conn, stream);
 }
 
@@ -204,11 +202,9 @@ static int cno_frame_handle_invalid_stream(struct cno_connection_t *conn,
                                            struct cno_frame_t      *frame)
 {
     if (frame->stream && frame->stream <= conn->last_stream[cno_stream_is_local(conn, frame->stream)])
-#if CNO_STREAM_RESET_HISTORY
         for (uint8_t i = 0; i < CNO_STREAM_RESET_HISTORY; i++)
             if ((frame->type != CNO_FRAME_HEADERS && conn->recently_reset[i] == frame->stream)
              || (frame->type != CNO_FRAME_DATA && conn->recently_reset[i] == (frame->stream | (1ul << 31))))
-#endif
                 return CNO_OK;
     return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "invalid stream");
 }
