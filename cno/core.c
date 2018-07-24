@@ -832,8 +832,8 @@ int cno_connection_is_http2(struct cno_connection_t *conn)
 {
     return conn->state == CNO_CONNECTION_INIT ||
            conn->state == CNO_CONNECTION_PREFACE ||
+           conn->state == CNO_CONNECTION_SETTINGS ||
            conn->state == CNO_CONNECTION_READY ||
-           conn->state == CNO_CONNECTION_READY_NO_SETTINGS ||
            conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE;
 }
 
@@ -862,6 +862,60 @@ static size_t cno_remove_chunked_te(struct cno_buffer_t *buf)
 static int cno_when_undefined(struct cno_connection_t *conn __attribute__((unused)))
 {
     return CNO_OK; // Wait until connection_made before processing data.
+}
+
+static int cno_when_init(struct cno_connection_t *conn)
+{
+    if (cno_connection_upgrade(conn))
+        return CNO_ERROR_UP();
+    return CNO_CONNECTION_PREFACE;
+}
+
+static int cno_when_preface(struct cno_connection_t *conn)
+{
+    if (!conn->client) {
+        if (strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size))
+            return CNO_ERROR(TRANSPORT, "invalid HTTP 2 client preface");
+        if (conn->buffer.size < CNO_PREFACE.size)
+            return CNO_OK;
+        cno_buffer_dyn_shift(&conn->buffer, CNO_PREFACE.size);
+    }
+    return CNO_CONNECTION_SETTINGS;
+}
+
+static int cno_when_settings(struct cno_connection_t *conn)
+{
+    if (conn->buffer.size < 5)
+        return CNO_OK;
+    if (conn->buffer.data[3] != CNO_FRAME_SETTINGS || conn->buffer.data[4] != 0)
+        return CNO_ERROR(TRANSPORT, "invalid HTTP 2 preface: no initial SETTINGS");
+    return CNO_CONNECTION_READY;
+}
+
+static int cno_when_ready(struct cno_connection_t *conn)
+{
+    if (conn->buffer.size < 9)
+        return CNO_OK;
+
+    const uint8_t *base = (const uint8_t *) conn->buffer.data;
+    const size_t len = read3(base);
+
+    if (len > conn->settings[CNO_LOCAL].max_frame_size)
+        return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "frame too big");
+
+    if (conn->buffer.size < 9 + len)
+        return CNO_OK;
+
+    struct cno_buffer_t payload = { conn->buffer.data + 9, len };
+    struct cno_frame_t frame = { read1(&base[3]), read1(&base[4]), read4(&base[5]) & 0x7FFFFFFFUL, payload };
+
+    // FIXME should at least decompress headers, probably
+    if (!conn->goaway_sent || frame.stream <= conn->goaway_sent)
+        if (CNO_FIRE(conn, on_frame, &frame) || cno_frame_handle(conn, &frame))
+            return CNO_ERROR_UP();
+
+    cno_buffer_dyn_shift(&conn->buffer, 9 + len);
+    return CNO_CONNECTION_READY;
 }
 
 static int cno_when_http1_ready(struct cno_connection_t *conn)
@@ -1033,171 +1087,96 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
     return next_state;
 }
 
+// TODO make this function more readable
+static int cno_when_http1_reading(struct cno_connection_t *conn)
+{
+    struct cno_stream_t *stream = cno_stream_find(conn, 1);
+    if (!stream || !(stream->accept & CNO_ACCEPT_DATA))
+        return CNO_ERROR(ASSERTION, "connection expects HTTP/1.x message body, but stream 1 does not");
+
+    if (!conn->http1_remaining) {
+        // if still writable, `cno_write_message`/`cno_write_data` will reset it.
+        if (CNO_FIRE(conn, on_message_end, stream->id))
+            return CNO_ERROR_UP();
+        if (!(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream))
+            return CNO_ERROR_UP();
+        return conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE
+            ? CNO_CONNECTION_PREFACE
+            : CNO_CONNECTION_HTTP1_READY;
+    }
+
+    if (!conn->buffer.size)
+        return CNO_OK;
+
+    if (conn->http1_remaining == (uint32_t) -1) {
+        char *eol = memchr(conn->buffer.data, '\n', conn->buffer.size);
+        if (eol++ == NULL)
+            return CNO_OK;
+
+        char *end_of_length;
+        size_t length = strtoul(conn->buffer.data, &end_of_length, 16);
+        if (end_of_length == conn->buffer.data || end_of_length + 2 != eol)
+            return CNO_ERROR(TRANSPORT, "HTTP/1.x chunked encoding parse error");
+
+        size_t total = length + (eol - conn->buffer.data) + 2;  // + crlf after data
+        if (conn->buffer.size < total)
+            return CNO_OK;
+        if (conn->buffer.data[total - 2] != '\r' || conn->buffer.data[total - 1] != '\n')
+            return CNO_ERROR(TRANSPORT, "HTTP/1.x chunked encoding parse error");
+
+        if (!length)
+            conn->http1_remaining = 0;
+        else if (CNO_FIRE(conn, on_message_data, stream->id, eol, length))
+            return CNO_ERROR_UP();
+        cno_buffer_dyn_shift(&conn->buffer, total);
+    } else {
+        struct cno_buffer_t b = conn->buffer.as_static;
+        if (b.size > conn->http1_remaining)
+            b.size = conn->http1_remaining;
+        conn->http1_remaining -= b.size;
+        cno_buffer_dyn_shift(&conn->buffer, b.size);
+        if (CNO_FIRE(conn, on_message_data, stream->id, b.data, b.size))
+            return CNO_ERROR_UP();
+    }
+    return conn->state;
+}
+
+static int cno_when_unknown_protocol_upgrade(struct cno_connection_t *conn)
+{
+    if (CNO_FIRE(conn, on_upgrade))
+        return CNO_ERROR_UP();
+    // might've sent 101 and switched to the next state as a result
+    if (conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE)
+        return CNO_CONNECTION_HTTP1_READING;
+    return conn->state;
+}
+
+static int cno_when_unknown_protocol(struct cno_connection_t *conn)
+{
+    if (!conn->buffer.size)
+        return CNO_OK;
+    struct cno_buffer_t b = conn->buffer.as_static;
+    if (CNO_FIRE(conn, on_message_data, 1, b.data, b.size))
+        return CNO_ERROR_UP();
+    cno_buffer_dyn_shift(&conn->buffer, b.size);
+    return CNO_CONNECTION_UNKNOWN_PROTOCOL;
+}
+
 typedef int cno_state_handler_t(struct cno_connection_t *);
 
 static cno_state_handler_t * const CNO_STATE_MACHINE[] = {
     // Should be synced to enum CNO_CONNECTION_STATE.
     &cno_when_undefined,
-    NULL,//&cno_when_init,
-    NULL,//&cno_when_preface,
-    NULL,//&cno_when_ready,
-    NULL,//&cno_when_ready_no_settings,
+    &cno_when_init,
+    &cno_when_preface,
+    &cno_when_settings,
+    &cno_when_ready,
     &cno_when_http1_ready,
-    NULL,//&cno_when_http1_reading,
-    NULL,//&cno_when_http1_reading_upgrade,
-    NULL,//&cno_when_unknown_protocol_upgrade,
-    NULL,//&cno_when_unknown_protocol,
+    &cno_when_http1_reading,
+    &cno_when_http1_reading,//_upgrade,
+    &cno_when_unknown_protocol_upgrade,
+    &cno_when_unknown_protocol,
 };
-
-static int cno_connection_proceed(struct cno_connection_t *conn)
-{
-    while (1) switch (conn->state) {
-        case CNO_CONNECTION_UNDEFINED:
-        case CNO_CONNECTION_HTTP1_READY: {
-            int r = CNO_STATE_MACHINE[conn->state](conn);
-            if (r <= 0)
-                return r;
-            conn->state = r;
-            break;
-        }
-
-        case CNO_CONNECTION_HTTP1_READING:
-        case CNO_CONNECTION_HTTP1_READING_UPGRADE: {
-            struct cno_stream_t *stream = cno_stream_find(conn, 1);
-            if (!stream)
-                return CNO_ERROR(ASSERTION, "connection in HTTP/1.x mode but stream 1 does not exist");
-            if (!(stream->accept & CNO_ACCEPT_DATA))
-                return CNO_ERROR(ASSERTION, "connection expects HTTP/1.x message body, but stream 1 does not");
-
-            if (!conn->http1_remaining) {
-                // if still writable, `cno_write_message`/`cno_write_data` will reset it.
-                conn->state = conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE
-                    ? CNO_CONNECTION_PREFACE
-                    : CNO_CONNECTION_HTTP1_READY;
-
-                if (CNO_FIRE(conn, on_message_end, stream->id))
-                    return CNO_ERROR_UP();
-                if (!(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream))
-                    return CNO_ERROR_UP();
-                break;
-            }
-
-            if (!conn->buffer.size)
-                return CNO_OK;
-
-            if (conn->http1_remaining == (uint32_t) -1) {
-                char *eol = memchr(conn->buffer.data, '\n', conn->buffer.size);
-                if (eol++ == NULL)
-                    return CNO_OK;
-
-                char *end_of_length;
-                size_t length = strtoul(conn->buffer.data, &end_of_length, 16);
-                if (end_of_length == conn->buffer.data || end_of_length + 2 != eol)
-                    return CNO_ERROR(TRANSPORT, "HTTP/1.x chunked encoding parse error");
-
-                size_t total = length + (eol - conn->buffer.data) + 2;  // + crlf after data
-                if (conn->buffer.size < total)
-                    return CNO_OK;
-                if (conn->buffer.data[total - 2] != '\r' || conn->buffer.data[total - 1] != '\n')
-                    return CNO_ERROR(TRANSPORT, "HTTP/1.x chunked encoding parse error");
-
-                cno_buffer_dyn_shift(&conn->buffer, total);
-
-                if (!length)
-                    conn->http1_remaining = 0;
-                else if (CNO_FIRE(conn, on_message_data, stream->id, eol, length))
-                    return CNO_ERROR_UP();
-
-                break;
-            }
-
-            struct cno_buffer_t b = conn->buffer.as_static;
-
-            if (b.size > conn->http1_remaining)
-                b.size = conn->http1_remaining;
-
-            conn->http1_remaining -= b.size;
-            cno_buffer_dyn_shift(&conn->buffer, b.size);
-
-            if (CNO_FIRE(conn, on_message_data, stream->id, b.data, b.size))
-                return CNO_ERROR_UP();
-            break;
-        }
-
-        case CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE: {
-            if (CNO_FIRE(conn, on_upgrade))
-                return CNO_ERROR_UP();
-            // might've sent 101 and switched to the next state as a result
-            if (conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE)
-                conn->state = CNO_CONNECTION_HTTP1_READING;
-            break;
-        }
-
-        case CNO_CONNECTION_UNKNOWN_PROTOCOL: {
-            if (!conn->buffer.size)
-                return CNO_OK;
-            struct cno_buffer_t b = conn->buffer.as_static;
-            cno_buffer_dyn_shift(&conn->buffer, b.size);
-            if (CNO_FIRE(conn, on_message_data, 1, b.data, b.size))
-                return CNO_ERROR_UP();
-            break;
-        }
-
-        case CNO_CONNECTION_INIT: {
-            conn->state = CNO_CONNECTION_PREFACE;
-            if (cno_connection_upgrade(conn))
-                return CNO_ERROR_UP();
-            break;
-        }
-
-        case CNO_CONNECTION_PREFACE: {
-            if (!conn->client) {
-                if (conn->buffer.size < CNO_PREFACE.size)
-                    return CNO_OK;
-                if (strncmp(conn->buffer.data, CNO_PREFACE.data, CNO_PREFACE.size))
-                    return CNO_ERROR(TRANSPORT, "invalid HTTP 2 client preface");
-                cno_buffer_dyn_shift(&conn->buffer, CNO_PREFACE.size);
-            }
-            conn->state = CNO_CONNECTION_READY_NO_SETTINGS;
-            break;
-        }
-
-        case CNO_CONNECTION_READY_NO_SETTINGS: {
-            if (conn->buffer.size < 5)
-                return CNO_OK;
-            if (conn->buffer.data[3] != CNO_FRAME_SETTINGS || conn->buffer.data[4] != 0)
-                return CNO_ERROR(TRANSPORT, "invalid HTTP 2 preface: no initial SETTINGS");
-            conn->state = CNO_CONNECTION_READY;
-            break;
-        }
-
-        case CNO_CONNECTION_READY: {
-            if (conn->buffer.size < 9)
-                return CNO_OK;
-
-            const uint8_t *base = (const uint8_t *) conn->buffer.data;
-            const size_t m = read3(base);
-
-            if (m > conn->settings[CNO_LOCAL].max_frame_size)
-                return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "frame too big");
-
-            if (conn->buffer.size < 9 + m)
-                return CNO_OK;
-
-            struct cno_frame_t frame = { read1(&base[3]), read1(&base[4]), read4(&base[5]), { (const char *) &base[9], m } };
-            frame.stream &= 0x7FFFFFFFUL; // clear the reserved bit
-            cno_buffer_dyn_shift(&conn->buffer, 9 + m);
-
-            // FIXME should at least decompress headers, probably
-            if (!conn->goaway_sent || frame.stream <= conn->goaway_sent)
-                if (CNO_FIRE(conn, on_frame, &frame) || cno_frame_handle(conn, &frame))
-                    return CNO_ERROR_UP();
-
-            break;
-        }
-    }
-}
-
 
 int cno_connection_made(struct cno_connection_t *conn, enum CNO_HTTP_VERSION version)
 {
@@ -1205,21 +1184,24 @@ int cno_connection_made(struct cno_connection_t *conn, enum CNO_HTTP_VERSION ver
         return CNO_ERROR(ASSERTION, "called connection_made twice");
 
     conn->state = version == CNO_HTTP2 ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_READY;
-    return cno_connection_proceed(conn);
+    return cno_connection_data_received(conn, NULL, 0);
 }
-
 
 int cno_connection_data_received(struct cno_connection_t *conn, const char *data, size_t length)
 {
     if (conn->state == CNO_CONNECTION_UNDEFINED)
         return CNO_ERROR(DISCONNECT, "connection closed");
 
-    if (cno_buffer_dyn_concat(&conn->buffer, (struct cno_buffer_t) { data, length }))
+    if (length && cno_buffer_dyn_concat(&conn->buffer, (struct cno_buffer_t) { data, length }))
         return CNO_ERROR_UP();
 
-    return cno_connection_proceed(conn);
+    while (1) {
+        int r = CNO_STATE_MACHINE[conn->state](conn);
+        if (r <= 0)
+            return r;
+        conn->state = r;
+    }
 }
-
 
 int cno_connection_stop(struct cno_connection_t *conn)
 {
