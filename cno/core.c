@@ -63,19 +63,19 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
 {
     if (cno_stream_is_local(conn, id) != local)
         return local ? CNO_ERROR_NULL(INVALID_STREAM, "incorrect stream id parity")
-                     : CNO_ERROR_NULL(TRANSPORT, "incorrect stream id parity");
+                     : CNO_ERROR_NULL(PROTOCOL, "incorrect stream id parity");
 
     if (cno_connection_is_http2(conn)) {
         if (id <= conn->last_stream[local])
             return local ? CNO_ERROR_NULL(INVALID_STREAM, "nonmonotonic stream id")
-                         : CNO_ERROR_NULL(TRANSPORT, "nonmonotonic stream id");
+                         : CNO_ERROR_NULL(PROTOCOL, "nonmonotonic stream id");
     } else if (id != 1) {
         return CNO_ERROR_NULL(INVALID_STREAM, "HTTP/1.x has only one stream");
     }
 
     if (conn->stream_count[local] >= conn->settings[!local].max_concurrent_streams)
         return local ? CNO_ERROR_NULL(WOULD_BLOCK, "wait for on_stream_end")
-                     : CNO_ERROR_NULL(TRANSPORT,   "peer exceeded stream limit");
+                     : CNO_ERROR_NULL(PROTOCOL,   "peer exceeded stream limit");
 
     struct cno_stream_t *stream = malloc(sizeof(struct cno_stream_t));
     if (!stream)
@@ -195,9 +195,9 @@ static int cno_frame_write_goaway(struct cno_connection_t *conn,
     return cno_frame_write(conn, &error);
 }
 
-// Shut down a connection and *then* throw a TRANSPORT error.
+// Shut down a connection and *then* throw a PROTOCOL error.
 #define cno_frame_write_error(conn, type, ...) \
-    (cno_frame_write_goaway(conn, type) ? CNO_ERROR_UP() : CNO_ERROR(TRANSPORT, __VA_ARGS__))
+    (cno_frame_write_goaway(conn, type) ? CNO_ERROR_UP() : CNO_ERROR(PROTOCOL, __VA_ARGS__))
 
 // Ignore frames on reset streams, as the spec requires. See `cno_stream_end_by_local`.
 static int cno_frame_handle_invalid_stream(struct cno_connection_t *conn,
@@ -623,7 +623,7 @@ static int cno_frame_handle_goaway(struct cno_connection_t *conn,
 
     const uint32_t error = read4((const uint8_t *) frame->payload.data + 4);
     if (error != CNO_RST_NO_ERROR)
-        return CNO_ERROR(TRANSPORT, "disconnected with error %u", error);
+        return CNO_ERROR(PROTOCOL, "disconnected with error %u", error);
     // TODO: clean shutdown: reject all streams higher than indicated in the frame
     return CNO_ERROR(DISCONNECT, "disconnected");
 }
@@ -867,7 +867,7 @@ static int cno_when_preface(struct cno_connection_t *conn)
 {
     if (!conn->client) {
         if (strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size))
-            return CNO_ERROR(TRANSPORT, "invalid HTTP 2 client preface");
+            return CNO_ERROR(PROTOCOL, "invalid HTTP 2 client preface");
         if (conn->buffer.size < CNO_PREFACE.size)
             return CNO_OK;
         cno_buffer_dyn_shift(&conn->buffer, CNO_PREFACE.size);
@@ -880,7 +880,7 @@ static int cno_when_settings(struct cno_connection_t *conn)
     if (conn->buffer.size < 5)
         return CNO_OK;
     if (conn->buffer.data[3] != CNO_FRAME_SETTINGS || conn->buffer.data[4] != 0)
-        return CNO_ERROR(TRANSPORT, "invalid HTTP 2 preface: no initial SETTINGS");
+        return CNO_ERROR(PROTOCOL, "invalid HTTP 2 preface: no initial SETTINGS");
     return CNO_CONNECTION_READY;
 }
 
@@ -925,7 +925,7 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
     struct cno_stream_t *stream = cno_stream_find(conn, 1);
     if (conn->client) {
         if (!stream || !(stream->accept & CNO_ACCEPT_HEADERS))
-            return CNO_ERROR(TRANSPORT, "server sent an HTTP/1.x response, but there was no request");
+            return CNO_ERROR(PROTOCOL, "server sent an HTTP/1.x response, but there was no request");
     } else {
         // Only allow upgrading with prior knowledge if no h1 requests have yet been sent.
         if (conn->last_stream[CNO_REMOTE] == 0 && !(conn->flags & CNO_CONN_FLAG_DISALLOW_H2_PRIOR_KNOWLEDGE)) {
@@ -962,16 +962,16 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
 
     if (ok == -2) {
         if (conn->buffer.size > CNO_MAX_CONTINUATIONS * conn->settings[CNO_LOCAL].max_frame_size)
-            return CNO_ERROR(TRANSPORT, "HTTP/1.x message too big");
+            return CNO_ERROR(PROTOCOL, "HTTP/1.x message too big");
         return CNO_OK;
     }
 
     if (ok == -1)
-        return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message");
+        return CNO_ERROR(PROTOCOL, "bad HTTP/1.x message");
 
     if (minor != 0 && minor != 1)
         // HTTP/1.0 is probably not really supported either tbh.
-        return CNO_ERROR(TRANSPORT, "HTTP/1.%d not supported", minor);
+        return CNO_ERROR(PROTOCOL, "HTTP/1.%d not supported", minor);
 
     // Have to switch the state before calling on_message_start; if it decides
     // to respond right away and there is a h2c upgrade in progress, response must be sent as h2.
@@ -1039,13 +1039,13 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
         if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length"))) {
             // XXX doesn't the standard say to *ignore* content-length with transfer-encoding?
             if (conn->http1_remaining)
-                return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: multiple content-lengths");
+                return CNO_ERROR(PROTOCOL, "bad HTTP/1.x message: multiple content-lengths");
             for (const char *ptr = it->value.data, *end = ptr + it->value.size; ptr != end; ptr++) {
                 if (*ptr < '0' || '9' < *ptr)
-                    return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: non-int length");
+                    return CNO_ERROR(PROTOCOL, "bad HTTP/1.x message: non-int length");
                 if (conn->http1_remaining > 0x19999998)
                     // XXX should probably support files > 4 GiB...
-                    return CNO_ERROR(TRANSPORT, "bad HTTP/1.x message: content-length overflows");
+                    return CNO_ERROR(PROTOCOL, "bad HTTP/1.x message: content-length overflows");
                 conn->http1_remaining = conn->http1_remaining * 10 + (*ptr - '0');
             }
             continue;
@@ -1111,13 +1111,13 @@ static int cno_when_http1_reading(struct cno_connection_t *conn)
         char *end_of_length;
         size_t length = strtoul(conn->buffer.data, &end_of_length, 16);
         if (end_of_length == conn->buffer.data || end_of_length + 2 != eol)
-            return CNO_ERROR(TRANSPORT, "HTTP/1.x chunked encoding parse error");
+            return CNO_ERROR(PROTOCOL, "HTTP/1.x chunked encoding parse error");
 
         size_t total = length + (eol - conn->buffer.data) + 2;  // + crlf after data
         if (conn->buffer.size < total)
             return CNO_OK;
         if (conn->buffer.data[total - 2] != '\r' || conn->buffer.data[total - 1] != '\n')
-            return CNO_ERROR(TRANSPORT, "HTTP/1.x chunked encoding parse error");
+            return CNO_ERROR(PROTOCOL, "HTTP/1.x chunked encoding parse error");
 
         if (!length)
             conn->http1_remaining = 0;
@@ -1212,7 +1212,7 @@ int cno_connection_lost(struct cno_connection_t *conn)
                 if (CNO_FIRE(conn, on_message_end, 1))
                     return CNO_ERROR_UP();
             } else if (stream->accept & CNO_ACCEPT_DATA) {
-                return CNO_ERROR(TRANSPORT, "unclean http/1.x termination");
+                return CNO_ERROR(PROTOCOL, "unclean http/1.x termination");
             }
             // If still writable, `cno_write_message`/`cno_write_data` will reset the stream.
             if (!(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream))

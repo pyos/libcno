@@ -62,7 +62,7 @@ static int cno_hpack_insert(struct cno_hpack_t *state, const struct cno_header_t
 static int cno_hpack_lookup(struct cno_hpack_t *state, size_t index, struct cno_header_t *out)
 {
     if (index == 0)
-        return CNO_ERROR(COMPRESSION, "header index 0 is reserved");
+        return CNO_ERROR(PROTOCOL, "header index 0 is reserved");
 
     if (index <= CNO_HPACK_STATIC_TABLE_SIZE) {
         out->name  = CNO_HPACK_STATIC_TABLE[index - 1].name;
@@ -73,7 +73,7 @@ static int cno_hpack_lookup(struct cno_hpack_t *state, size_t index, struct cno_
     const struct cno_header_table_t *hdr = cno_list_end(state);
     for (index -= CNO_HPACK_STATIC_TABLE_SIZE; index; --index)
         if ((hdr = hdr->next) == cno_list_end(state))
-            return CNO_ERROR(COMPRESSION, "dynamic table index out of bounds");
+            return CNO_ERROR(PROTOCOL, "dynamic table index out of bounds");
 
     // A peer may send an index into the dynamic table followed by an indexed header that
     // overflows the table and evicts the entry. Thus, the copying.
@@ -114,7 +114,7 @@ static int cno_hpack_lookup_inverse(struct cno_hpack_t *state, const struct cno_
 static int cno_hpack_decode_uint(struct cno_buffer_t *source, uint8_t mask, size_t *out)
 {
     if (!source->size)
-        return CNO_ERROR(COMPRESSION, "expected uint, got EOF");
+        return CNO_ERROR(PROTOCOL, "expected uint, got EOF");
 
     const uint8_t *src = (const uint8_t *) source->data;
     const uint8_t head = *out = *src++ & mask;
@@ -123,9 +123,9 @@ static int cno_hpack_decode_uint(struct cno_buffer_t *source, uint8_t mask, size
     if (head == mask) {
         do {
             if (size == source->size)
-                return CNO_ERROR(COMPRESSION, "truncated multi-byte uint");
+                return CNO_ERROR(PROTOCOL, "truncated multi-byte uint");
             if (size == sizeof(size_t))
-                return CNO_ERROR(COMPRESSION, "uint literal too large");
+                return CNO_ERROR(PROTOCOL, "uint literal too large");
             *out += (*src & 0x7Ful) << (7 * size++ - 7);
         } while (*src++ & 0x80);
     }
@@ -138,14 +138,14 @@ static int cno_hpack_decode_uint(struct cno_buffer_t *source, uint8_t mask, size
 static int cno_hpack_decode_string(struct cno_buffer_t *source, struct cno_buffer_t *out, int *borrow)
 {
     if (!source->size)
-        return CNO_ERROR(COMPRESSION, "expected string, got EOF");
+        return CNO_ERROR(PROTOCOL, "expected string, got EOF");
     const uint8_t huffman = (* (const uint8_t *) source->data) & 0x80;
 
     size_t length = 0;
     if (cno_hpack_decode_uint(source, 0x7F, &length))
         return CNO_ERROR_UP();
     if (length > source->size)
-        return CNO_ERROR(COMPRESSION, "expected %zu octets, got %zu", length, source->size);
+        return CNO_ERROR(PROTOCOL, "expected %zu octets, got %zu", length, source->size);
 
     if (length && huffman) {
         const uint8_t *src = (const uint8_t *) source->data;
@@ -171,7 +171,7 @@ static int cno_hpack_decode_string(struct cno_buffer_t *source, struct cno_buffe
 
         if (!(state.flags & CNO_HUFFMAN_ACCEPT)) {
             free(buf);
-            return CNO_ERROR(COMPRESSION, "invalid or truncated Huffman code");
+            return CNO_ERROR(PROTOCOL, "invalid or truncated Huffman code");
         }
 
         out->data = (char *) buf;
@@ -192,7 +192,7 @@ static int cno_hpack_decode_one(struct cno_hpack_t  *state,
 {
     *target = CNO_HEADER_EMPTY;
     if (!source->size)
-        return CNO_ERROR(COMPRESSION, "expected header, got EOF");
+        return CNO_ERROR(PROTOCOL, "expected header, got EOF");
     const uint8_t head = * (const uint8_t *) source->data;
 
     size_t index = 0;
@@ -206,7 +206,7 @@ static int cno_hpack_decode_one(struct cno_hpack_t  *state,
             return CNO_ERROR_UP();
     } else if ((head & 0xE0) == 0x20) {
         // 001..... -- table size limit update; see cno_hpack_decode
-        return CNO_ERROR(COMPRESSION, "unexpected table size limit update");
+        return CNO_ERROR(PROTOCOL, "unexpected table size limit update");
     } else {
         // 0000.... -- same as 0x40, but we shouldn't insert this header into the table.
         // 0001.... -- same as 0x00, but proxies must not encode differently.
@@ -250,19 +250,19 @@ int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t buf, struct 
         if (cno_hpack_decode_uint(&buf, 0x1F, &limit))
             return CNO_ERROR_UP();
         if (limit > state->limit_upper)
-            return CNO_ERROR(COMPRESSION, "requested table size is too big");
+            return CNO_ERROR(PROTOCOL, "requested table size is too big");
         cno_hpack_evict(state, state->limit = limit);
     }
 
     if (state->limit > state->limit_upper)
-        return CNO_ERROR(COMPRESSION, "current decoder state size limit is higher than the upper bound");
+        return CNO_ERROR(PROTOCOL, "current decoder state size limit is higher than the upper bound");
 
     size_t read = 0, limit = *n;
     for (; buf.size; rs++, read++) {
         if (read == limit) {
             while (read--)
                 cno_hpack_free_header(--rs);
-            return CNO_ERROR(COMPRESSION, "header list too long");
+            return CNO_ERROR(PROTOCOL, "header list too long");
         }
 
         if (cno_hpack_decode_one(state, &buf, rs)) {
