@@ -24,7 +24,8 @@ struct cno_header_t
 
 struct cno_header_table_t
 {
-    struct cno_list_link_t(struct cno_header_table_t);
+    struct cno_header_table_t *prev;
+    struct cno_header_table_t *next;
     size_t k_size;
     size_t v_size;
     char data[];
@@ -33,7 +34,8 @@ struct cno_header_table_t
 
 struct cno_hpack_t
 {
-    struct cno_list_root_t(struct cno_header_table_t);
+    struct cno_header_table_t *last;
+    struct cno_header_table_t *first;
     uint32_t size;
     uint32_t limit;
     uint32_t limit_upper;

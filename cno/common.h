@@ -64,27 +64,6 @@ struct cno_buffer_dyn_t
 };
 
 
-struct cno_list_t
-{
-    struct cno_list_t *prev;
-    struct cno_list_t *next;
-};
-
-
-#define cno_list_link_t(T)               \
-  { union {                              \
-      struct cno_list_t cno_list_handle; \
-      struct { T *prev, *next; };        \
-  }; }
-
-
-#define cno_list_root_t(T)               \
-  { union {                              \
-      struct cno_list_t cno_list_handle; \
-      struct { T *last, *first; };       \
-  }; }
-
-
 /* Return some information about the last error in the current thread. */
 const struct cno_error_t * cno_error(void);
 
@@ -100,12 +79,6 @@ int cno_error_upd(const char *file, int line);
 #define CNO_ERROR_UP()       cno_error_upd(__FILE__, __LINE__)
 #define CNO_ERROR_NULL(...) (CNO_ERROR(__VA_ARGS__), NULL)
 #define CNO_ERROR_UP_NULL() (CNO_ERROR_UP(), NULL)
-
-
-#define cno_list_end(x)       ((void *) &(x)->cno_list_handle)
-#define cno_list_init(x)      cno_list_gen_init(&(x)->cno_list_handle)
-#define cno_list_append(x, y) cno_list_gen_append(&(x)->cno_list_handle, &(y)->cno_list_handle)
-#define cno_list_remove(x)    cno_list_gen_remove(&(x)->cno_list_handle)
 
 
 static const struct cno_buffer_t     CNO_BUFFER_EMPTY     = { NULL, 0 };
@@ -203,27 +176,6 @@ static inline int cno_buffer_dyn_concat(struct cno_buffer_dyn_t *a, const struct
     memcpy(a->data + a->size, b.data, b.size);
     a->size += b.size;
     return CNO_OK;
-}
-
-
-static inline void cno_list_gen_init(struct cno_list_t *x)
-{
-    *x = (struct cno_list_t) { x, x };
-}
-
-
-static inline void cno_list_gen_append(struct cno_list_t *x, struct cno_list_t *y)
-{
-    *y = (struct cno_list_t) { x, x->next };
-    x->next->prev = y;
-    x->next       = y;
-}
-
-
-static inline void cno_list_gen_remove(struct cno_list_t *x)
-{
-    x->next->prev = x->prev;
-    x->prev->next = x->next;
 }
 
 #endif

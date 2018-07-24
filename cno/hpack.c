@@ -4,7 +4,7 @@
 
 void cno_hpack_init(struct cno_hpack_t *state, uint32_t limit)
 {
-    cno_list_init(state);
+    state->last = state->first = (struct cno_header_table_t *) state;
     state->size = 0;
     state->limit            = \
     state->limit_upper      = \
@@ -17,7 +17,8 @@ static void cno_hpack_evict(struct cno_hpack_t *state, uint32_t limit)
     while (state->size > limit) {
         struct cno_header_table_t *entry = state->last;
         state->size -= entry->k_size + entry->v_size + 32;
-        cno_list_remove(entry);
+        entry->next->prev = entry->prev;
+        entry->prev->next = entry->next;
         free(entry);
     }
 }
@@ -51,10 +52,13 @@ static int cno_hpack_insert(struct cno_hpack_t *state, const struct cno_header_t
         if (entry == NULL)
             return CNO_ERROR(NO_MEMORY, "%zu bytes", actual);
 
-        state->size += recorded;
         memcpy(&entry->data[0],            h->name.data,  entry->k_size = h->name.size);
         memcpy(&entry->data[h->name.size], h->value.data, entry->v_size = h->value.size);
-        cno_list_append(state, entry);
+        entry->prev = (struct cno_header_table_t *) state;
+        entry->next = state->first;
+        state->first->prev = entry;
+        state->first = entry;
+        state->size += recorded;
     }
     return CNO_OK;
 }
@@ -70,9 +74,9 @@ static int cno_hpack_lookup(struct cno_hpack_t *state, size_t index, struct cno_
         return CNO_OK;
     }
 
-    const struct cno_header_table_t *hdr = cno_list_end(state);
-    for (index -= CNO_HPACK_STATIC_TABLE_SIZE; index; --index)
-        if ((hdr = hdr->next) == cno_list_end(state))
+    const struct cno_header_table_t *hdr = (struct cno_header_table_t *) state;
+    for (index -= CNO_HPACK_STATIC_TABLE_SIZE; index--;)
+        if ((hdr = hdr->next) == (struct cno_header_table_t *) state)
             return CNO_ERROR(PROTOCOL, "dynamic table index out of bounds");
 
     // A peer may send an index into the dynamic table followed by an indexed header that
@@ -102,7 +106,7 @@ static int cno_hpack_lookup_inverse(struct cno_hpack_t *state, const struct cno_
     size_t i = 1, possible = 0;
     for (const struct cno_header_t *h = CNO_HPACK_STATIC_TABLE; i <= CNO_HPACK_STATIC_TABLE_SIZE; ++h, ++i)
         TRY(h->name, h->value);
-    for (const struct cno_header_table_t *t = state->first; t != cno_list_end(state); t = t->next, ++i)
+    for (const struct cno_header_table_t *t = state->first; t != (struct cno_header_table_t *) state; t = t->next, ++i)
         TRY(((struct cno_buffer_t) { &t->data[0], t->k_size }),
             ((struct cno_buffer_t) { &t->data[t->k_size], t->v_size }));
     return -possible;
