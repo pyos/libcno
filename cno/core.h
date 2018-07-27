@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-// skip to struct cno_connection_t for useful stuff.
+// Skip to struct cno_connection_t for useful stuff.
 enum CNO_PEER_KIND
 {
     CNO_REMOTE = 0,
@@ -156,10 +156,10 @@ struct cno_message_t
 
 struct cno_stream_t
 {
-    struct cno_stream_t *next;  // in hashmap bucket
+    struct cno_stream_t *next; // in hashmap bucket
     uint32_t id;
     uint8_t /* enum CNO_STREAM_ACCEPT */ accept;
-    uint8_t /* enum CNO_STREAM_FLAGS */ flags;
+    uint8_t /* enum CNO_STREAM_FLAGS  */ flags;
      int32_t window_recv;
      int32_t window_send;
     uint64_t remaining_payload;
@@ -206,147 +206,131 @@ struct cno_connection_t
     struct cno_hpack_t encoder;
     struct cno_stream_t *streams[CNO_STREAM_BUCKETS];
 
-    /* Events, yay!
-     *
-     *   cb_data
-     *     -- passed as the first argument to all callbacks.
-     *   on_write
-     *     -- called when there is something to send to the other side,
-     *        such as a request or a response or a flow control window update.
-     *        transport level is not within the scope of this library.
-     *   on_stream_start
-     *     -- called when either side initiates a stream.
-     *        a request should arrive (or be sent) on that stream shortly.
-     *   on_stream_end
-     *     -- called when a stream is terminated. if the response was not
-     *        sent/received on that stream yet, the request was aborted.
-     *   on_flow_increase
-     *     -- called when the other side is ready to accept some more payload.
-     *        there is a global limit and one for each stream; when the global one
-     *        is updated, this function is called with stream id = 0.
-     *   on_message_start
-     *     -- called when a real request/response is received on a stream
-     *        (depending on whether this is a server connection or not).
-     *        each stream carries exactly one request-response pair.
-     *   on_message_trail
-     *     -- called before on_message_end if the message contains trailers.
-     *   on_message_data
-     *     -- called each time a new chunk of payload for a previously received message
-     *        arrives.
-     *   on_message_end
-     *     -- called after all chunks of the payload (and possibly the trailers) have arrived.
-     *   on_message_push
-     *     -- called on client side when the server wants to push some data.
-     *        its argument is a fake request the client has been assumed to send;
-     *        a response to that request should arrive soon on the same stream.
-     *   on_settings
-     *     -- called whenever the remote peer sends a new configuration.
-     *   on_upgrade
-     *     -- called when the client requests an upgrade from HTTP/1.x to an unknown protocol,
-     *        assuming `on_message_start` did not accept or reject the upgrade. if, upon returning,
-     *        a 101 response is not sent, it is assumed that the upgrade has been rejected, and
-     *        everything proceeds as if the "upgrade" header had no special meaning.
-     *
-     * NOTE: on_stream_end and on_flow_increase may be called while iterating over the streams --
-     *       they MUST NOT do anything that might cause streams to be destroyed, other than the one
-     *       they are emitted for.
-     */
+    // Passed as the first argument to all callbacks.
     void *cb_data;
-    #define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob->cb_data, ##__VA_ARGS__))
-    int (*on_write         )(void *, const char * /* data */, size_t /* length */);
-    int (*on_stream_start  )(void *, uint32_t /* stream id */);
-    int (*on_stream_end    )(void *, uint32_t);
-    int (*on_flow_increase )(void *, uint32_t);
-    int (*on_message_start )(void *, uint32_t, const struct cno_message_t * /* msg */);
-    int (*on_message_trail )(void *, uint32_t, const struct cno_message_t * /* msg */);
-    int (*on_message_push  )(void *, uint32_t, const struct cno_message_t *, uint32_t /* parent stream */);
-    int (*on_message_data  )(void *, uint32_t, const char * /* data */, size_t /* length */);
-    int (*on_message_end   )(void *, uint32_t);
-    int (*on_frame         )(void *, const struct cno_frame_t *);
-    int (*on_frame_send    )(void *, const struct cno_frame_t *);
-    int (*on_pong          )(void *, const char[8]);
-    int (*on_settings      )(void *);
-    int (*on_upgrade       )(void *);
+    // There is something to send to the other side. Transport level
+    // is outside the scope of this library.
+    int (*on_write)(void *, const char *data, size_t length);
+    // A new stream has been created due to sending/receiving a request or sending
+    // a push promise. In the latter two cases, `on_message_start` will be called
+    // shortly afterwards.
+    int (*on_stream_start)(void *, uint32_t id);
+    // Either a response has been sent/received fully, or the stream has been reset.
+    // For HTTP 2, all stream ids are only used once; for 1.1, stream id 1 can be reused,
+    // but multiple request/response pairs do not overlap.
+    int (*on_stream_end)(void *, uint32_t id);
+    // The other side has signaled that it is willing to accept more data.
+    // There is a global limit (shared between all streams) and one for each stream;
+    // `cno_write_data` will send as much data as the lowest of the two allows.
+    // When the global limit is updated, this function is called with stream id = 0.
+    //
+    // NOTE: this function may be called while iterating over all streams; it should
+    //       not destroy any streams other than the one passed as the argument.
+    //
+    int (*on_flow_increase)(void *, uint32_t id);
+    // A request/response has been received (depending on whether this is a server
+    // connection or not). Each stream carries exactly one request/response pair.
+    int (*on_message_start)(void *, uint32_t id, const struct cno_message_t *);
+    // Trailers (like headers, but come after the payload) have been received.
+    int (*on_message_trail)(void *, uint32_t id, const struct cno_message_t *);
+    // Client only: server is intending to push a response to a request that
+    // it anticipates in advance.
+    int (*on_message_push)(void *, uint32_t id, const struct cno_message_t *, uint32_t parent);
+    // A chunk of the payload has arrived.
+    int (*on_message_data)(void *, uint32_t id, const char *, size_t);
+    // All chunks of the payload (and possibly the trailers) have arrived.
+    int (*on_message_end)(void *, uint32_t id);
+    // An HTTP 2 frame has been received.
+    int (*on_frame)(void *, const struct cno_frame_t *);
+    // An HTTP 2 frame will be sent with `on_data` soon.
+    int (*on_frame_send)(void *, const struct cno_frame_t *);
+    // An acknowledgment of one of the previously sent pings has arrived.
+    int (*on_pong)(void *, const char[8]);
+    // New connection-wide settings have been chosen by the peer.
+    int (*on_settings)(void *);
+    // HTTP 1 server only: the previous request (see on_message_start) has requested
+    // an update to a different protocol. If `cno_write_message` is called with code 101
+    // before the next call to `cno_connection_data_received`, all further data will
+    // be forwarded as payload to stream 1. Otherwise, the upgrade is ignored.
+    int (*on_upgrade)(void *);
 };
 
 
-/* Lifetime of a connection:
- *
- *  connection = new cno_connection_t
- *  try {
- *      cno_connection_init(client ? CNO_CLIENT : CNO_SERVER)
- *      connection.on_write = ...
- *      connection.on_message_start = ...
- *      ...
- *      cno_connection_made(negotiated http2 ? CNO_HTTP2 : CNO_HTTP1)
- *      while (i/o is open) {
- *          cno_connection_data_received
- *      }
- *      cno_connection_lost
- *  } finally {
- *      cno_connection_reset
- *      delete connection
- *  }
- *
- */
+// Lifetime of a connection:
+//
+//  connection = new cno_connection_t
+//  try {
+//      cno_connection_init(client ? CNO_CLIENT : CNO_SERVER)
+//      connection.on_write = ...
+//      connection.on_message_start = ...
+//      ...
+//      cno_connection_made(negotiated http2 ? CNO_HTTP2 : CNO_HTTP1)
+//      while (i/o is open) {
+//          cno_connection_data_received
+//      }
+//      cno_connection_lost
+//  } finally {
+//      cno_connection_reset
+//      delete connection
+//  }
+//
 void cno_connection_init          (struct cno_connection_t *, enum CNO_CONNECTION_KIND);
 int  cno_connection_made          (struct cno_connection_t *, enum CNO_HTTP_VERSION);
 int  cno_connection_data_received (struct cno_connection_t *, const char *, size_t);
 int  cno_connection_lost          (struct cno_connection_t *);
 void cno_connection_reset         (struct cno_connection_t *);
 int  cno_connection_stop          (struct cno_connection_t *);
-/* Returns whether the next message will be sent in HTTP 2 mode.
-   `cno_write_push` does nothing if this returns false. On the other hand,
-   you can't switch protocols (e.g. to websockets) if this returns true. */
-int  cno_connection_is_http2      (struct cno_connection_t *);
-/* Send a new configuration/schedule it to be sent when upgrading to HTTP 2.
-   The current configuration can be read through `conn->settings[CNO_LOCAL]`.
-   DO NOT modify `conn->settings` directly -- it is used to compute the delta. */
-int  cno_connection_set_config    (struct cno_connection_t *, const struct cno_settings_t *);
+// Returns whether the next message will be sent in HTTP 2 mode.
+// `cno_write_push` does nothing if this returns false. On the other hand,
+// you can't switch protocols (e.g. to websockets) if this returns true.
+int  cno_connection_is_http2(struct cno_connection_t *);
+// Send a new configuration/schedule it to be sent when upgrading to HTTP 2.
+// The current configuration can be read through `conn->settings[CNO_LOCAL]`.
+// DO NOT modify `conn->settings` directly -- it is used to compute the delta.
+int  cno_connection_set_config(struct cno_connection_t *, const struct cno_settings_t *);
 
-/* (As a client) sending requests:
- *
- *  headers = new cno_header_t[] { {name, value}, ... }
- *  message = new cno_message_t { 0, method, path, headers, length(headers) }
- *  stream  = cno_connection_next_stream
- *  cno_write_message where final = 1 if there is no payload
- *  for (chunk in payload) {
- *      while (length(chunk) != 0) {
- *          sent = cno_write_data
- *          if (sent == 0)
- *              await on_flow_increase(0) or on_flow_increase(stream)
- *          chunk = drop(chunk, sent)
- *      }
- *  }
- *
- * (As a server) sending responses:
- *
- *  Same as sending a request, but specify the status code instead of `0`, leave
- *  method/path empty, and use the stream id provided by the on_message_{start,data,end}
- *  events.
- *
- * (Also as a server) pushing resources:
- *
- *  Same as sending a request, but use cno_write_push instead of cno_write_message
- *  and get the stream id from an event, not from cno_connection_next_stream.
- *
- * (As a client again) aborting a push:
- *
- *  Call cno_write_reset with a stream id provided by on_message_push and code CNO_RST_CANCEL.
- *
- */
+// (As a client) sending requests:
+//
+//  headers = new cno_header_t[] { {name, value}, ... }
+//  message = new cno_message_t { 0, method, path, headers, length(headers) }
+//  stream  = cno_connection_next_stream
+//  cno_write_message where final = 1 if there is no payload
+//  for (chunk in payload) {
+//      while (length(chunk) != 0) {
+//          sent = cno_write_data
+//          if (sent == 0)
+//              await on_flow_increase(0) or on_flow_increase(stream)
+//          chunk = drop(chunk, sent)
+//      }
+//  }
+//
+// (As a server) sending responses:
+//
+//  Same as sending a request, but specify the status code instead of `0`, leave
+//  method/path empty, and use the stream id provided by the on_message_{start,data,end}
+//  events.
+//
+// (Also as a server) pushing resources:
+//
+//  Same as sending a request, but use cno_write_push instead of cno_write_message
+//  and get the stream id from an event, not from cno_connection_next_stream.
+//
+// (As a client again) aborting a push:
+//
+//  Call cno_write_reset with a stream id provided by on_message_push and code CNO_RST_CANCEL.
+//
 uint32_t cno_connection_next_stream (struct cno_connection_t *);
-int cno_write_reset    (struct cno_connection_t *, uint32_t /* stream */, enum CNO_RST_STREAM_CODE);
-int cno_write_push     (struct cno_connection_t *, uint32_t, const struct cno_message_t *);
-int cno_write_message  (struct cno_connection_t *, uint32_t, const struct cno_message_t *, int final);
-int cno_write_data     (struct cno_connection_t *, uint32_t, const char *, size_t, int final);
+int cno_write_reset    (struct cno_connection_t *, uint32_t stream, enum CNO_RST_STREAM_CODE);
+int cno_write_push     (struct cno_connection_t *, uint32_t stream, const struct cno_message_t *);
+int cno_write_message  (struct cno_connection_t *, uint32_t stream, const struct cno_message_t *, int final);
+int cno_write_data     (struct cno_connection_t *, uint32_t stream, const char *, size_t, int final);
 int cno_write_ping     (struct cno_connection_t *, const char[8]);
-int cno_write_frame    (struct cno_connection_t *conn, const struct cno_frame_t *frame);
+int cno_write_frame    (struct cno_connection_t *, const struct cno_frame_t *);
 
-/* By default, cno assumes that `on_message_data` does not retain the data after returning.
-   If it does copy the data somewhere, you should enable manual stream-level flow control,
-   then ask to increase the window once the copy is deallocated. */
-int cno_increase_flow_window(struct cno_connection_t *, uint32_t /*stream*/, uint32_t /*bytes*/);
+// By default, cno assumes that `on_message_data` does not retain the data after returning.
+// If it does copy the data somewhere, you should enable manual stream-level flow control,
+// then ask to increase the window once the copy is deallocated.
+int cno_increase_flow_window(struct cno_connection_t *, uint32_t stream, uint32_t bytes);
 
 #ifdef __cplusplus
 }  // extern "C"

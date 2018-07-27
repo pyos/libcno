@@ -19,6 +19,8 @@ static inline uint32_t read3(const uint8_t *p) { return read4(p) >> 8; }
 #define I24(x) (x) >> 16, (x) >> 8,  (x)
 #define I32(x) (x) >> 24, (x) >> 16, (x) >> 8, (x)
 
+#define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob->cb_data, ##__VA_ARGS__))
+
 // Fake http "request" sent by the client at the beginning of a connection.
 static const struct cno_buffer_t CNO_PREFACE = { "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24 };
 
