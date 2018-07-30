@@ -64,24 +64,24 @@ static int cno_stream_is_local(const struct cno_connection_t *conn, uint32_t id)
 static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint32_t id, int local)
 {
     if (cno_stream_is_local(conn, id) != local)
-        return local ? CNO_ERROR_NULL(INVALID_STREAM, "incorrect stream id parity")
-                     : CNO_ERROR_NULL(PROTOCOL, "incorrect stream id parity");
+        return (local ? CNO_ERROR(INVALID_STREAM, "incorrect stream id parity")
+                      : CNO_ERROR(PROTOCOL, "incorrect stream id parity")), NULL;
 
     if (cno_connection_is_http2(conn)) {
         if (id <= conn->last_stream[local])
-            return local ? CNO_ERROR_NULL(INVALID_STREAM, "nonmonotonic stream id")
-                         : CNO_ERROR_NULL(PROTOCOL, "nonmonotonic stream id");
+            return (local ? CNO_ERROR(INVALID_STREAM, "nonmonotonic stream id")
+                          : CNO_ERROR(PROTOCOL, "nonmonotonic stream id")), NULL;
     } else if (id != 1) {
-        return CNO_ERROR_NULL(INVALID_STREAM, "HTTP/1.x has only one stream");
+        return CNO_ERROR(INVALID_STREAM, "HTTP/1.x has only one stream"), NULL;
     }
 
     if (conn->stream_count[local] >= conn->settings[!local].max_concurrent_streams)
-        return local ? CNO_ERROR_NULL(WOULD_BLOCK, "wait for on_stream_end")
-                     : CNO_ERROR_NULL(PROTOCOL,   "peer exceeded stream limit");
+        return (local ? CNO_ERROR(WOULD_BLOCK, "wait for on_stream_end")
+                      : CNO_ERROR(PROTOCOL, "peer exceeded stream limit")), NULL;
 
     struct cno_stream_t *stream = malloc(sizeof(struct cno_stream_t));
     if (!stream)
-        return CNO_ERROR_NULL(NO_MEMORY, "%zu bytes", sizeof(struct cno_stream_t));
+        return CNO_ERROR(NO_MEMORY, "%zu bytes", sizeof(struct cno_stream_t)), NULL;
 
     *stream = (struct cno_stream_t) {
         .id          = conn->last_stream[local] = id,
@@ -98,7 +98,7 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
         conn->streams[id % CNO_STREAM_BUCKETS] = stream->next;
         conn->stream_count[local]--;
         free(stream);
-        return CNO_ERROR_UP_NULL();
+        return CNO_ERROR_UP(), NULL;
     }
     return stream;
 }

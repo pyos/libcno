@@ -77,8 +77,6 @@ int cno_error_upd(const char *file, int line);
 
 #define CNO_ERROR(...)       cno_error_set(__FILE__, __LINE__, CNO_ERRNO_ ## __VA_ARGS__)
 #define CNO_ERROR_UP()       cno_error_upd(__FILE__, __LINE__)
-#define CNO_ERROR_NULL(...) (CNO_ERROR(__VA_ARGS__), NULL)
-#define CNO_ERROR_UP_NULL() (CNO_ERROR_UP(), NULL)
 
 
 static const struct cno_buffer_t     CNO_BUFFER_EMPTY     = { NULL, 0 };
@@ -111,8 +109,9 @@ static inline int cno_buffer_endswith(const struct cno_buffer_t a, const struct 
 }
 
 
-static inline struct cno_buffer_t cno_buffer_shift(const struct cno_buffer_t x, size_t offset) {
-    return offset > x.size ? CNO_BUFFER_EMPTY : (struct cno_buffer_t) {x.data + offset, x.size - offset};
+static inline struct cno_buffer_t cno_buffer_shift(const struct cno_buffer_t x, size_t offset)
+{
+    return (struct cno_buffer_t) {x.data + offset, x.size - offset};
 }
 
 
@@ -137,37 +136,37 @@ static inline int cno_buffer_dyn_reserve(struct cno_buffer_dyn_t *x, size_t n)
     if (n <= x->cap)
         return CNO_OK;
 
-    if (x->offset) {
+    if (n <= x->cap + x->offset) {
         memmove(x->data - x->offset, x->data, x->size);
         x->data  -= x->offset;
         x->cap   += x->offset;
         x->offset = 0;
+        return CNO_OK;
     }
 
-    if (n <= x->cap)
-        return CNO_OK;
-
-    if (n < x->cap + CNO_BUFFER_ALLOC_MIN)
-        n = x->cap + CNO_BUFFER_ALLOC_MIN;
-    if (n < x->cap * CNO_BUFFER_ALLOC_MIN_EXP)
-        n = x->cap * CNO_BUFFER_ALLOC_MIN_EXP;
+    size_t cap = x->cap + x->offset;
+    if (n < cap + CNO_BUFFER_ALLOC_MIN)
+        n = cap + CNO_BUFFER_ALLOC_MIN;
+    if (n < cap * CNO_BUFFER_ALLOC_MIN_EXP)
+        n = cap * CNO_BUFFER_ALLOC_MIN_EXP;
 
     char *m = (char *) malloc(n);
     if (m == NULL)
         return CNO_ERROR(NO_MEMORY, "%zu bytes", n);
-
     if (x->data != NULL)
         memcpy(m, x->data, x->size);
-    free(x->data);
-    x->data = m;
-    x->cap  = n;
+    free(x->data - x->offset);
+
+    x->data   = m;
+    x->cap    = n;
+    x->offset = 0;
     return CNO_OK;
 }
 
 
 static inline int cno_buffer_dyn_concat(struct cno_buffer_dyn_t *a, const struct cno_buffer_t b)
 {
-    if (b.data == NULL)
+    if (b.size == 0)
         return CNO_OK;
 
     if (cno_buffer_dyn_reserve(a, a->size + b.size))
