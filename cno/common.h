@@ -43,13 +43,8 @@ struct cno_buffer_t
 
 struct cno_buffer_dyn_t
 {
-    union {
-        struct cno_buffer_t as_static;
-        struct {
-            char  *data;
-            size_t size;
-        };
-    };
+    char  *data;
+    size_t size;
     size_t offset;
     size_t cap;
 };
@@ -66,7 +61,7 @@ int cno_error_set(int code, const char *fmt, ...) __attribute__ ((format(printf,
 
 
 static const struct cno_buffer_t     CNO_BUFFER_EMPTY     = { NULL, 0 };
-static const struct cno_buffer_dyn_t CNO_BUFFER_DYN_EMPTY = {{{NULL, 0}}, 0, 0};
+static const struct cno_buffer_dyn_t CNO_BUFFER_DYN_EMPTY = { NULL, 0, 0, 0 };
 
 // cffi does not compile inline functions
 #if !CFFI_CDEF_MODE
@@ -74,6 +69,12 @@ static const struct cno_buffer_dyn_t CNO_BUFFER_DYN_EMPTY = {{{NULL, 0}}, 0, 0};
 static inline struct cno_buffer_t CNO_BUFFER_STRING(const char *s)
 {
     return (struct cno_buffer_t) { s, strlen(s) };
+}
+
+
+static inline struct cno_buffer_t CNO_BUFFER_VIEW(const struct cno_buffer_dyn_t b)
+{
+    return (struct cno_buffer_t) { b.data, b.size };
 }
 
 

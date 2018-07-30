@@ -410,7 +410,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
 {
     struct cno_header_t headers[CNO_MAX_HEADERS];
     struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, CNO_MAX_HEADERS };
-    if (cno_hpack_decode(&conn->decoder, conn->continued.as_static, headers, &msg.headers_len)) {
+    if (cno_hpack_decode(&conn->decoder, CNO_BUFFER_VIEW(conn->continued), headers, &msg.headers_len)) {
         cno_buffer_dyn_clear(&conn->continued);
         cno_frame_write_goaway(conn, CNO_RST_COMPRESSION_ERROR);
         return CNO_ERROR_UP();
@@ -1142,7 +1142,7 @@ static int cno_when_http1_reading(struct cno_connection_t *conn)
             return CNO_ERROR_UP();
         cno_buffer_dyn_shift(&conn->buffer, total);
     } else {
-        struct cno_buffer_t b = conn->buffer.as_static;
+        struct cno_buffer_t b = CNO_BUFFER_VIEW(conn->buffer);
         if (b.size > stream->remaining_payload)
             b.size = stream->remaining_payload;
         stream->remaining_payload -= b.size;
@@ -1167,10 +1167,10 @@ static int cno_when_unknown_protocol(struct cno_connection_t *conn)
 {
     if (!conn->buffer.size)
         return CNO_OK;
-    struct cno_buffer_t b = conn->buffer.as_static;
+    struct cno_buffer_t b = CNO_BUFFER_VIEW(conn->buffer);
+    cno_buffer_dyn_shift(&conn->buffer, b.size);
     if (CNO_FIRE(conn, on_message_data, 1, b.data, b.size))
         return CNO_ERROR_UP();
-    cno_buffer_dyn_shift(&conn->buffer, b.size);
     return CNO_CONNECTION_UNKNOWN_PROTOCOL;
 }
 
@@ -1306,7 +1306,7 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
      || cno_hpack_encode(&conn->encoder, &payload, msg->headers, msg->headers_len))
         return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
 
-    struct cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, stream, payload.as_static };
+    struct cno_frame_t frame = { CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_VIEW(payload) };
     if (cno_frame_write(conn, &frame))
         return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
 
@@ -1427,10 +1427,6 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         }
     } else {
         struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_EMPTY;
-        struct cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_EMPTY };
-
-        if (final)
-            frame.flags |= CNO_FLAG_END_STREAM;
 
         if (conn->client) {
             struct cno_header_t head[] = {
@@ -1453,8 +1449,9 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         if (cno_hpack_encode(&conn->encoder, &payload, msg->headers, msg->headers_len))
             return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
 
-        frame.payload = payload.as_static;
-
+        struct cno_frame_t frame = { CNO_FRAME_HEADERS, CNO_FLAG_END_HEADERS, stream, CNO_BUFFER_VIEW(payload) };
+        if (final)
+            frame.flags |= CNO_FLAG_END_STREAM;
         if (cno_frame_write(conn, &frame))
             return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
 
