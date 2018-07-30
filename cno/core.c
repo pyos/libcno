@@ -229,14 +229,19 @@ static int cno_frame_write_settings(const struct cno_connection_t *conn,
     return cno_frame_write(conn, &frame);
 }
 
+static int cno_frame_write_rst_stream_by_id(struct cno_connection_t *conn, uint32_t id, uint32_t code)
+{
+    struct cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, id, { PACK(I32(code)) } };
+    return cno_frame_write(conn, &error);
+}
+
 static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
                                       struct cno_stream_t     *stream,
                                       uint32_t /* enum CNO_RST_STREAM_CODE */ code)
 {
-    struct cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, stream->id, { PACK(I32(code)) } };
     // Note that if HEADERS have not yet arrived, they may still do, in which case not decoding them
     // would break compression state. Setting CNO_RESET_STREAM_HISTORY is recommended.
-    return cno_frame_write(conn, &error) ? CNO_ERROR_UP() : cno_stream_end_by_local(conn, stream);
+    return cno_frame_write_rst_stream_by_id(conn, stream->id, code) ? CNO_ERROR_UP() : cno_stream_end_by_local(conn, stream);
 }
 
 static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
@@ -478,6 +483,9 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
             if (cno_frame_handle_invalid_stream(conn, frame))
                 return CNO_ERROR_UP();
             // else this frame must be decompressed, but ignored.
+        } else if (conn->goaway_sent || conn->stream_count[CNO_REMOTE] >= conn->settings[CNO_LOCAL].max_concurrent_streams) {
+            if (cno_frame_write_rst_stream_by_id(conn, frame->stream, CNO_RST_REFUSED_STREAM))
+                return CNO_ERROR_UP();
         } else {
             stream = cno_stream_new(conn, frame->stream, CNO_REMOTE);
             if (stream == NULL)
@@ -916,11 +924,8 @@ static int cno_when_ready(struct cno_connection_t *conn)
 
     struct cno_buffer_t payload = { conn->buffer.data + 9, len };
     struct cno_frame_t frame = { read1(&base[3]), read1(&base[4]), read4(&base[5]) & 0x7FFFFFFFUL, payload };
-
-    // FIXME should at least decompress headers, probably
-    if (!conn->goaway_sent || frame.stream <= conn->goaway_sent)
-        if (CNO_FIRE(conn, on_frame, &frame) || cno_frame_handle(conn, &frame))
-            return CNO_ERROR_UP();
+    if (CNO_FIRE(conn, on_frame, &frame) || cno_frame_handle(conn, &frame))
+        return CNO_ERROR_UP();
 
     cno_buffer_dyn_shift(&conn->buffer, 9 + len);
     return CNO_CONNECTION_READY;
