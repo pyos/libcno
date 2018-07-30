@@ -54,6 +54,7 @@ Event receivers must be defined as methods of `Connection` subclasses.
 | C event                                 | `cno.raw.Connection` method                                        |
 | --------------------------------------- | ------------------------------------------------------------------ |
 | `on_write(data, length)`                | `def on_write(self, data)`                                         |
+| `on_writev(iov, iovcnt)`                | `def on_write(self, chunks)`                                       |
 | `on_stream_start(stream)`               | `def on_stream_start(self, stream)`                                |
 | `on_stream_end(stream)`                 | `def on_stream_end(self, stream)`                                  |
 | `on_flow_increase(stream)`              | `def on_flow_increase(self, stream)`                               |

@@ -22,6 +22,7 @@ def make_ffi(root):
 
             extern "Python" {
                 int on_write         (void *, const char *, size_t);
+                int on_writev        (void *, const struct cno_buffer_t *, size_t);
                 int on_stream_start  (void *, uint32_t);
                 int on_stream_end    (void *, uint32_t);
                 int on_flow_increase (void *, uint32_t);

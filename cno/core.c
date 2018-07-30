@@ -12,8 +12,8 @@ static inline uint16_t read2(const uint8_t *p) { return p[0] <<  8 | p[1]; }
 static inline uint32_t read4(const uint8_t *p) { return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 static inline uint32_t read3(const uint8_t *p) { return read4(p) >> 8; }
 
-// Construct a stack-allocated array of bytes in place. Expands to (pointer, length) without parentheses.
-#define PACK(...) (char *) (uint8_t []) { __VA_ARGS__ }, sizeof((uint8_t []) { __VA_ARGS__ })
+// Construct a stack-allocated array of bytes in place.
+#define PACK(...) ((struct cno_buffer_t) { (char *) (uint8_t []) { __VA_ARGS__ }, sizeof((uint8_t []) { __VA_ARGS__ }) })
 #define I8(x)  (x)
 #define I16(x) (x) >> 8,  (x)
 #define I24(x) (x) >> 16, (x) >> 8,  (x)
@@ -141,6 +141,20 @@ static int cno_stream_end_by_local(struct cno_connection_t *conn, struct cno_str
     return cno_stream_end(conn, stream);
 }
 
+static int cno_writev(const struct cno_connection_t *conn, const struct cno_buffer_t *iov, size_t iovcnt)
+{
+    if (conn->on_writev)
+        return conn->on_writev(conn->cb_data, iov, iovcnt);
+    if (conn->on_write)
+        for (; iovcnt--; iov++)
+            if (iov->size && conn->on_write(conn->cb_data, iov->data, iov->size))
+                return CNO_ERROR_UP();
+    return CNO_OK;
+}
+
+#define CNO_WRITEV(conn, ...) cno_writev(conn, (struct cno_buffer_t[]){__VA_ARGS__}, \
+    sizeof((struct cno_buffer_t[]){__VA_ARGS__}) / sizeof(struct cno_buffer_t))
+
 // Send a single non-flow-controlled* frame, splitting DATA/HEADERS if they are too big.
 // (*meaning that it isn't counted; in case of DATA, this must be done by the caller.)
 static int cno_frame_write(const struct cno_connection_t *conn,
@@ -149,13 +163,8 @@ static int cno_frame_write(const struct cno_connection_t *conn,
     size_t length = frame->payload.size;
     size_t limit  = conn->settings[CNO_REMOTE].max_frame_size;
 
-    if (length <= limit) {
-        return CNO_FIRE(conn, on_frame_send, frame)
-            // Really annoying that the header is misaligned like this. The frame could've been
-            // a single blob were it {u32 length, u32 stream, u8 type, u8 flags, u8 payload[]}.
-            || CNO_FIRE(conn, on_write, PACK(I24(length), I8(frame->type), I8(frame->flags), I32(frame->stream)))
-            || (length && CNO_FIRE(conn, on_write, frame->payload.data, length));
-    }
+    if (length <= limit)
+        return CNO_WRITEV(conn, PACK(I24(length), I8(frame->type), I8(frame->flags), I32(frame->stream)), frame->payload);
 
     if (frame->type != CNO_FRAME_HEADERS && frame->type != CNO_FRAME_PUSH_PROMISE && frame->type != CNO_FRAME_DATA)
         // A really unexpected outcome, considering that the *lowest possible* limit is 16 KiB.
@@ -191,7 +200,7 @@ static int cno_frame_write_goaway(struct cno_connection_t *conn,
 {
     if (!conn->goaway_sent)
         conn->goaway_sent = conn->last_stream[CNO_REMOTE];
-    struct cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, { PACK(I32(conn->goaway_sent), I32(code)) } };
+    struct cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, PACK(I32(conn->goaway_sent), I32(code)) };
     return cno_frame_write(conn, &error);
 }
 
@@ -221,8 +230,7 @@ static int cno_frame_write_settings(const struct cno_connection_t *conn,
     for (size_t i = 0; i + 1 < CNO_SETTINGS_UNDEFINED; i++) {
         if (previous->array[i] == current->array[i])
             continue;
-        // XXX don't remember why this isn't `memcpy(ptr++, PACK(...))`. Some compiler probably complained.
-        struct cno_buffer_t buf = { PACK(I16(i + 1), I32(current->array[i])) };
+        struct cno_buffer_t buf = PACK(I16(i + 1), I32(current->array[i]));
         memcpy(ptr++, buf.data, buf.size);
     }
     struct cno_frame_t frame = { CNO_FRAME_SETTINGS, 0, 0, { (char *) payload, (ptr - payload) * 6 } };
@@ -231,7 +239,7 @@ static int cno_frame_write_settings(const struct cno_connection_t *conn,
 
 static int cno_frame_write_rst_stream_by_id(struct cno_connection_t *conn, uint32_t id, uint32_t code)
 {
-    struct cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, id, { PACK(I32(code)) } };
+    struct cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, id, PACK(I32(code)) };
     return cno_frame_write(conn, &error);
 }
 
@@ -578,13 +586,10 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
     if (cno_frame_handle_padding(conn, frame))
         return CNO_ERROR_UP();
 
-    if (length) {
-        // Frames on invalid streams still count against the connection-wide flow control window.
-        // TODO allow manual connection flow control?
-        struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, 0, { PACK(I32(length)) } };
-        if (cno_frame_write(conn, &update))
-            return CNO_ERROR_UP();
-    }
+    // Frames on invalid streams still count against the connection-wide flow control window.
+    // TODO allow manual connection flow control?
+    if (length && cno_frame_write(conn, &(struct cno_frame_t) { CNO_FRAME_WINDOW_UPDATE, 0, 0, PACK(I32(length)) }))
+        return CNO_ERROR_UP();
 
     if (!stream)
         return cno_frame_handle_invalid_stream(conn, frame);
@@ -613,7 +618,7 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
 
     if (!length)
         return CNO_OK;
-    struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, stream->id, { PACK(I32(length)) } };
+    struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, stream->id, PACK(I32(length)) };
     return cno_frame_write(conn, &update);
 }
 
@@ -854,7 +859,7 @@ int cno_connection_is_http2(struct cno_connection_t *conn)
 
 static int cno_connection_upgrade(struct cno_connection_t *conn)
 {
-    if (conn->client && CNO_FIRE(conn, on_write, CNO_PREFACE.data, CNO_PREFACE.size))
+    if (conn->client && CNO_WRITEV(conn, CNO_PREFACE))
         return CNO_ERROR_UP();
     return cno_frame_write_settings(conn, &CNO_SETTINGS_STANDARD, &conn->settings[CNO_LOCAL]);
 }
@@ -1300,7 +1305,7 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
         { CNO_BUFFER_STRING(":path"),   msg->path,   0 },
     };
 
-    if (cno_buffer_dyn_concat(&payload, (struct cno_buffer_t) { PACK(I32(child)) })
+    if (cno_buffer_dyn_concat(&payload, PACK(I32(child)))
      || cno_hpack_encode(&conn->encoder, &payload, head, 2)
      || cno_hpack_encode(&conn->encoder, &payload, msg->headers, msg->headers_len))
         return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
@@ -1352,27 +1357,19 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
     }
 
     if (!cno_connection_is_http2(conn)) {
-        char buffer[CNO_MAX_HTTP1_HEADER_SIZE + 3];
-        int size;
-
         if (conn->client) {
             if (cno_buffer_eq(msg->method, CNO_BUFFER_STRING("HEAD")))
                 streamobj->flags |= CNO_STREAM_H1_READING_HEAD_RESPONSE;
             else
                 streamobj->flags &= CNO_STREAM_H1_READING_HEAD_RESPONSE;
 
-            size = snprintf(buffer, sizeof(buffer), "%.*s %.*s HTTP/1.1\r\n",
-                (int) msg->method.size, msg->method.data,
-                (int) msg->path.size,   msg->path.data);
+            if (CNO_WRITEV(conn, msg->method, CNO_BUFFER_STRING(" "), msg->path, CNO_BUFFER_STRING(" HTTP/1.1\r\n")))
+                return CNO_ERROR_UP();
         } else {
-            size = snprintf(buffer, sizeof(buffer), "HTTP/1.1 %d Something\r\n", msg->code);
+            char codebuf[48];
+            if (CNO_WRITEV(conn, {codebuf, snprintf(codebuf, sizeof(codebuf), "HTTP/1.1 %d No Reason\r\n", msg->code)}))
+                return CNO_ERROR_UP();
         }
-
-        if (size > CNO_MAX_HTTP1_HEADER_SIZE)
-            return CNO_ERROR(ASSERTION, "method/path too big");
-
-        if (CNO_FIRE(conn, on_write, buffer, size))
-            return CNO_ERROR_UP();
 
         struct cno_header_t *it  = msg->headers;
         struct cno_header_t *end = msg->headers_len + it;
@@ -1403,21 +1400,13 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
                     continue;
             }
 
-            size = snprintf(buffer, sizeof(buffer), "%.*s: %.*s\r\n",
-                (int) name.size, name.data, (int) value.size, value.data);
-
-            if ((size_t)size > sizeof(buffer))
-                return CNO_ERROR(ASSERTION, "header too big");
-
-            if (size && CNO_FIRE(conn, on_write, buffer, size))
+            if (CNO_WRITEV(conn, name, CNO_BUFFER_STRING(": "), value, CNO_BUFFER_STRING("\r\n")))
                 return CNO_ERROR_UP();
         }
 
-        if (streamobj->flags & CNO_STREAM_H1_WRITING_CHUNKED)
-            if (CNO_FIRE(conn, on_write, "transfer-encoding: chunked\r\n", 28))
-                return CNO_ERROR_UP();
-
-        if (CNO_FIRE(conn, on_write, "\r\n", 2))
+        if (streamobj->flags & CNO_STREAM_H1_WRITING_CHUNKED
+          ? CNO_WRITEV(conn, CNO_BUFFER_STRING("transfer-encoding: chunked\r\n\r\n"))
+          : CNO_WRITEV(conn, CNO_BUFFER_STRING("\r\n")))
             return CNO_ERROR_UP();
 
         if (msg->code == 101 && conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE) {
@@ -1477,36 +1466,18 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
     if (!streamobj || !(streamobj->accept & CNO_ACCEPT_WRITE_DATA))
         return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
-    if (conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL) {
-        if (CNO_FIRE(conn, on_write, data, length))
-            return CNO_ERROR_UP();
-        if (final) {
-            if (!(streamobj->accept &= ~CNO_ACCEPT_WRITE_DATA) && cno_stream_end(conn, streamobj))
-                return CNO_ERROR_UP();
-            return CNO_ERROR(DISCONNECT, "should now close the transport");
-        }
-        return length;
-    }
-
     if (!cno_connection_is_http2(conn)) {
-        int chunked = streamobj->flags & CNO_STREAM_H1_WRITING_CHUNKED;
-
-        if (length) {
-            if (chunked) {
-                char lenbuf[16];
-                if (CNO_FIRE(conn, on_write, lenbuf, snprintf(lenbuf, sizeof(lenbuf), "%zX\r\n", length)))
-                    return CNO_ERROR_UP();
-            }
-
-            if (CNO_FIRE(conn, on_write, data, length))
+        if (streamobj->flags & CNO_STREAM_H1_WRITING_CHUNKED) {
+            char lenbuf[16];
+            struct cno_buffer_t len = { lenbuf, snprintf(lenbuf, sizeof(lenbuf), "%zX\r\n", length) };
+            if (length && final ? CNO_WRITEV(conn, len, { data, length }, CNO_BUFFER_STRING("\r\n0\r\n\r\n"))
+              : length          ? CNO_WRITEV(conn, len, { data, length }, CNO_BUFFER_STRING("\r\n"))
+              : final           ? CNO_WRITEV(conn, CNO_BUFFER_STRING("0\r\n\r\n"))
+              : CNO_OK)
                 return CNO_ERROR_UP();
-
-            if (chunked && CNO_FIRE(conn, on_write, "\r\n", 2))
-                return CNO_ERROR_UP();
-        }
-
-        if (final && chunked && CNO_FIRE(conn, on_write, "0\r\n\r\n", 5))
+        } else if (length && CNO_WRITEV(conn, {data, length})) {
             return CNO_ERROR_UP();
+        }
     } else {
         if (conn->window_send < 0 || streamobj->window_send < 0)
             return 0;
@@ -1558,6 +1529,6 @@ int cno_increase_flow_window(struct cno_connection_t *conn, uint32_t stream, uin
     if (!streamobj)
         return CNO_OK;
     streamobj->window_recv += bytes;
-    struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, stream, { PACK(I32(bytes)) } };
+    struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, stream, PACK(I32(bytes)) };
     return cno_frame_write(conn, &update);
 }

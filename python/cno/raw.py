@@ -43,6 +43,7 @@ try:
 except NameError:
     _CALLBACKS = {
         'on_write':         lambda self, data, size: self.on_write(ffi.unpack(data, size)),
+        'on_writev':        lambda self, iov, cnt: self.on_writev([ffi.unpack(iov[i].data, iov[i].size) for i in range(cnt)]),
         'on_stream_start':  lambda self, id: self.on_stream_start(id),
         'on_stream_end':    lambda self, id: self.on_stream_end(id),
         'on_flow_increase': lambda self, id: self.on_flow_increase(id),

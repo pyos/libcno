@@ -113,8 +113,8 @@ class Connection (raw.Connection, asyncio.Protocol):
     def close(self):
         self.transport.close()
 
-    def on_write(self, data):
-        self.transport.write(data)
+    def on_writev(self, chunks):
+        self.transport.write(b''.join(chunks))
 
     def on_stream_start(self, i):
         self._data[i] = asyncio.StreamReader(loop=self.loop)
