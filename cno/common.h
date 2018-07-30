@@ -24,19 +24,10 @@ enum CNO_ERRNO
 };
 
 
-struct cno_traceback_t
-{
-    const char * file;
-    int line;
-};
-
-
 struct cno_error_t
 {
     int  code;
     char text[256];
-    struct cno_traceback_t *traceback_end;
-    struct cno_traceback_t  traceback[16];
 };
 
 
@@ -64,19 +55,14 @@ struct cno_buffer_dyn_t
 };
 
 
-/* Return some information about the last error in the current thread. */
+// Return some information about the last error in the current thread.
 const struct cno_error_t * cno_error(void);
 
-/* Fail with a specified error code and message. */
-int cno_error_set(const char *file, int line, int code,
-                  const char *fmt, ...) __attribute__ ((format(printf, 4, 5)));
+// Fail with a specified error code and message.
+int cno_error_set(int code, const char *fmt, ...) __attribute__ ((format(printf, 2, 3)));
 
-/* Fail with the same code and message as the previous call to `cno_error_set`. */
-int cno_error_upd(const char *file, int line);
-
-
-#define CNO_ERROR(...)       cno_error_set(__FILE__, __LINE__, CNO_ERRNO_ ## __VA_ARGS__)
-#define CNO_ERROR_UP()       cno_error_upd(__FILE__, __LINE__)
+#define CNO_ERROR(n, ...) cno_error_set(CNO_ERRNO_##n, __VA_ARGS__)
+#define CNO_ERROR_UP() (-1)
 
 
 static const struct cno_buffer_t     CNO_BUFFER_EMPTY     = { NULL, 0 };
