@@ -848,7 +848,7 @@ int cno_connection_is_http2(struct cno_connection_t *conn)
 
 static int cno_connection_upgrade(struct cno_connection_t *conn)
 {
-    if (conn->client && CNO_WRITEV(conn, CNO_PREFACE))
+    if (conn->client && CNO_FIRE(conn, on_writev, &CNO_PREFACE, 1))
         return CNO_ERROR_UP();
     return cno_frame_write_settings(conn, &CNO_SETTINGS_STANDARD, &conn->settings[CNO_LOCAL]);
 }
@@ -1455,16 +1455,15 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
     if (!streamobj || !(streamobj->accept & CNO_ACCEPT_WRITE_DATA))
         return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
+    struct cno_buffer_t buf = { data, length };
     if (!cno_connection_is_http2(conn)) {
         if (streamobj->flags & CNO_STREAM_H1_WRITING_CHUNKED) {
-            char lenbuf[16];
+            char lenbuf[24];
             struct cno_buffer_t len = { lenbuf, snprintf(lenbuf, sizeof(lenbuf), "%zX\r\n", length) };
-            if (length && final ? CNO_WRITEV(conn, len, { data, length }, CNO_BUFFER_STRING("\r\n0\r\n\r\n"))
-              : length          ? CNO_WRITEV(conn, len, { data, length }, CNO_BUFFER_STRING("\r\n"))
-              : final           ? CNO_WRITEV(conn, CNO_BUFFER_STRING("0\r\n\r\n"))
-              : CNO_OK)
+            struct cno_buffer_t chunk[] = { len, buf, CNO_BUFFER_STRING("\r\n"), CNO_BUFFER_STRING("0\r\n\r\n") };
+            if (length ? CNO_FIRE(conn, on_writev, chunk, 3 + !!final) : CNO_FIRE(conn, on_writev, chunk + 3, !!final))
                 return CNO_ERROR_UP();
-        } else if (length && CNO_WRITEV(conn, {data, length})) {
+        } else if (length && CNO_FIRE(conn, on_writev, &buf, 1)) {
             return CNO_ERROR_UP();
         }
     } else {
@@ -1484,7 +1483,7 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
         if (!length && !final)
             return 0;
 
-        struct cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, stream, { data, length } };
+        struct cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, stream, buf };
         if (cno_frame_write(conn, &frame))
             return CNO_ERROR_UP();
 
