@@ -57,11 +57,10 @@ Event receivers must be defined as methods of `Connection` subclasses.
 | `on_stream_start(stream)`               | `def on_stream_start(self, stream)`                                |
 | `on_stream_end(stream)`                 | `def on_stream_end(self, stream)`                                  |
 | `on_flow_increase(stream)`              | `def on_flow_increase(self, stream)`                               |
-| `on_message_start(stream, msg)`         | `def on_message_start(self, stream, code, method, path, headers)`  |
-| `on_message_trail(stream, msg)`         | `def on_message_trail(self, stream, trailers)`                     |
+| `on_message_head(stream, msg)`          | `def on_message_head(self, stream, code, method, path, headers)`   |
+| `on_message_tail(stream, msg)`          | `def on_message_tail(self, stream, trailers)`                      |
 | `on_message_data(stream, data, length)` | `def on_message_data(self, stream, data)`                          |
 | `on_message_push(stream, msg, parent)`  | `def on_message_push(self, stream, parent, method, path, headers)` |
-| `on_message_end(stream)`                | `def on_message_end(self, stream)`                                 |
 
 
 On Python 3.5+, higher-level asyncio bindings are also available. Server:

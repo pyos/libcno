@@ -212,7 +212,7 @@ struct cno_connection_t
     // is outside the scope of this library.
     int (*on_write)(void *, const char *data, size_t length);
     // A new stream has been created due to sending/receiving a request or sending
-    // a push promise. In the latter two cases, `on_message_start` will be called
+    // a push promise. In the latter two cases, `on_message_head` will be called
     // shortly afterwards.
     int (*on_stream_start)(void *, uint32_t id);
     // Either a response has been sent/received fully, or the stream has been reset.
@@ -230,16 +230,15 @@ struct cno_connection_t
     int (*on_flow_increase)(void *, uint32_t id);
     // A request/response has been received (depending on whether this is a server
     // connection or not). Each stream carries exactly one request/response pair.
-    int (*on_message_start)(void *, uint32_t id, const struct cno_message_t *);
-    // Trailers (like headers, but come after the payload) have been received.
-    int (*on_message_trail)(void *, uint32_t id, const struct cno_message_t *);
+    int (*on_message_head)(void *, uint32_t id, const struct cno_message_t *);
     // Client only: server is intending to push a response to a request that
     // it anticipates in advance.
     int (*on_message_push)(void *, uint32_t id, const struct cno_message_t *, uint32_t parent);
     // A chunk of the payload has arrived.
     int (*on_message_data)(void *, uint32_t id, const char *, size_t);
-    // All chunks of the payload (and possibly the trailers) have arrived.
-    int (*on_message_end)(void *, uint32_t id);
+    // All chunks of the payload (and possibly trailers) have arrived.
+    // Trailers (like headers, but come after the payload) have been received.
+    int (*on_message_tail)(void *, uint32_t id, const struct cno_message_t * /* nullable */ trailers);
     // An HTTP 2 frame has been received.
     int (*on_frame)(void *, const struct cno_frame_t *);
     // An HTTP 2 frame will be sent with `on_data` soon.
@@ -248,7 +247,7 @@ struct cno_connection_t
     int (*on_pong)(void *, const char[8]);
     // New connection-wide settings have been chosen by the peer.
     int (*on_settings)(void *);
-    // HTTP 1 server only: the previous request (see on_message_start) has requested
+    // HTTP 1 server only: the previous request (see on_message_head) has requested
     // an update to a different protocol. If `cno_write_message` is called with code 101
     // before the next call to `cno_connection_data_received`, all further data will
     // be forwarded as payload to stream 1. Otherwise, the upgrade is ignored.
@@ -262,7 +261,7 @@ struct cno_connection_t
 //  try {
 //      cno_connection_init(client ? CNO_CLIENT : CNO_SERVER)
 //      connection.on_write = ...
-//      connection.on_message_start = ...
+//      connection.on_message_head = ...
 //      ...
 //      cno_connection_made(negotiated http2 ? CNO_HTTP2 : CNO_HTTP1)
 //      while (i/o is open) {

@@ -240,11 +240,12 @@ static int cno_frame_write_rst_stream(struct cno_connection_t *conn,
 }
 
 static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
-                                       struct cno_stream_t     *stream)
+                                       struct cno_stream_t     *stream,
+                                       struct cno_message_t    *trailers)
 {
     if (stream->remaining_payload && stream->remaining_payload != (uint64_t) -1)
         return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
-    if (CNO_FIRE(conn, on_message_end, stream->id))
+    if (CNO_FIRE(conn, on_message_tail, stream->id, trailers))
         return CNO_ERROR_UP();
     return !(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream);
 }
@@ -371,9 +372,7 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
         stream->accept &= ~CNO_ACCEPT_INBOUND;
         if (!(frame->flags & CNO_FLAG_END_STREAM))
             goto invalid_message;
-        if (CNO_FIRE(conn, on_message_trail, stream->id, msg))
-            return CNO_ERROR_UP();
-        return cno_frame_handle_end_stream(conn, stream);
+        return cno_frame_handle_end_stream(conn, stream, msg);
     }
 
     // >All HTTP/2 requests MUST include exactly one valid value for the :method, :scheme,
@@ -388,11 +387,11 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
     stream->accept &= ~CNO_ACCEPT_HEADERS;
     stream->accept |=  CNO_ACCEPT_TRAILERS | CNO_ACCEPT_DATA;
 
-    if (CNO_FIRE(conn, on_message_start, stream->id, msg))
+    if (CNO_FIRE(conn, on_message_head, stream->id, msg))
         return CNO_ERROR_UP();
 
     if (frame->flags & CNO_FLAG_END_STREAM)
-        return cno_frame_handle_end_stream(conn, stream);
+        return cno_frame_handle_end_stream(conn, stream, NULL);
 
     return CNO_OK;
 
@@ -596,7 +595,7 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
 
     if (frame->flags & CNO_FLAG_END_STREAM)
-        return cno_frame_handle_end_stream(conn, stream);
+        return cno_frame_handle_end_stream(conn, stream, NULL);
 
     if (conn->flags & CNO_CONN_FLAG_MANUAL_FLOW_CONTROL) {
         // Forwarding padding to the application is kind of silly, so that part
@@ -990,7 +989,7 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
         // HTTP/1.0 is probably not really supported either tbh.
         return CNO_ERROR(PROTOCOL, "HTTP/1.%d not supported", minor);
 
-    // Have to switch the state before calling on_message_start; if it decides
+    // Have to switch the state before calling on_message_head; if it decides
     // to respond right away and there is a h2c upgrade in progress, response must be sent as h2.
     conn->state = CNO_CONNECTION_HTTP1_READING;
     // Even if there's no payload, the automaton will (almost) instantly switch back:
@@ -1088,7 +1087,7 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
 
     cno_buffer_dyn_shift(&conn->buffer, (size_t) ok);
 
-    if (CNO_FIRE(conn, on_message_start, stream->id, &msg))
+    if (CNO_FIRE(conn, on_message_head, stream->id, &msg))
         return CNO_ERROR_UP();
 
     return conn->state;
@@ -1102,9 +1101,10 @@ static int cno_when_http1_reading(struct cno_connection_t *conn)
         return CNO_ERROR(ASSERTION, "connection expects HTTP/1.x message body, but stream 1 does not");
 
     if (!stream->remaining_payload || (stream->flags & CNO_STREAM_H1_READING_HEAD_RESPONSE)) {
-        // if still writable, `cno_write_message`/`cno_write_data` will reset it.
-        if (CNO_FIRE(conn, on_message_end, stream->id))
+        // TODO: trailers.
+        if (CNO_FIRE(conn, on_message_tail, stream->id, NULL))
             return CNO_ERROR_UP();
+        // if still writable, `cno_write_message`/`cno_write_data` will reset it.
         if (!(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream))
             return CNO_ERROR_UP();
         return conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE
@@ -1221,7 +1221,7 @@ int cno_connection_lost(struct cno_connection_t *conn)
         struct cno_stream_t * stream = cno_stream_find(conn, 1);
         if (stream) {
             if (conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL) {
-                if (CNO_FIRE(conn, on_message_end, 1))
+                if (CNO_FIRE(conn, on_message_tail, 1, NULL))
                     return CNO_ERROR_UP();
             } else if (stream->accept & CNO_ACCEPT_DATA) {
                 return CNO_ERROR(PROTOCOL, "unclean http/1.x termination");
@@ -1306,7 +1306,7 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
         return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
 
     cno_buffer_dyn_clear(&payload);
-    return CNO_FIRE(conn, on_message_start, child, msg) || CNO_FIRE(conn, on_message_end, child);
+    return CNO_FIRE(conn, on_message_head, child, msg) || CNO_FIRE(conn, on_message_tail, child, NULL);
 }
 
 static int cno_discard_remaining_payload(struct cno_connection_t *conn, struct cno_stream_t *streamobj)

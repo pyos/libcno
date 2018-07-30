@@ -123,7 +123,7 @@ class Connection (raw.Connection, asyncio.Protocol):
     def on_message_data(self, i, data):
         self._data[i].feed_data(data)
 
-    def on_message_end(self, i):
+    def on_message_tail(self, i, trailers):
         self._data.pop(i).feed_eof()
         self._push.pop(i).close()
 
@@ -192,7 +192,7 @@ class Client (Connection):
         self._coro[i] = asyncio.Future(loop=self.loop)
         self._push[parent].put_nowait(Push(self, i, method, path, headers, self._coro[i]))
 
-    def on_message_start(self, i, code, method, path, headers):
+    def on_message_head(self, i, code, method, path, headers):
         self._coro.pop(i).set_result(Response(self, i, code, headers, self._data[i], self._push[i]))
 
     async def request(self, method, path, headers=[], data=b'') -> Response:
@@ -243,7 +243,7 @@ class Server (Connection):
         if self._have_buffered_data:
             self.data_received(b'')
 
-    def on_message_start(self, i, code, method, path, headers):
+    def on_message_head(self, i, code, method, path, headers):
         req = Request(self, i, method, path, headers, self._data[i])
         fut = self._coro[i] = asyncio.ensure_future(self._func(req), loop=self.loop)
 
