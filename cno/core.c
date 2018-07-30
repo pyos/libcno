@@ -21,6 +21,9 @@ static inline uint32_t read3(const uint8_t *p) { return read4(p) >> 8; }
 
 #define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob->cb_data, ##__VA_ARGS__))
 
+#define CNO_WRITEV(conn, ...) CNO_FIRE(conn, on_writev, (struct cno_buffer_t[]){__VA_ARGS__}, \
+    sizeof((struct cno_buffer_t[]){__VA_ARGS__}) / sizeof(struct cno_buffer_t))
+
 // Fake http "request" sent by the client at the beginning of a connection.
 static const struct cno_buffer_t CNO_PREFACE = { "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24 };
 
@@ -140,20 +143,6 @@ static int cno_stream_end_by_local(struct cno_connection_t *conn, struct cno_str
     }
     return cno_stream_end(conn, stream);
 }
-
-static int cno_writev(const struct cno_connection_t *conn, const struct cno_buffer_t *iov, size_t iovcnt)
-{
-    if (conn->on_writev)
-        return conn->on_writev(conn->cb_data, iov, iovcnt);
-    if (conn->on_write)
-        for (; iovcnt--; iov++)
-            if (iov->size && conn->on_write(conn->cb_data, iov->data, iov->size))
-                return CNO_ERROR_UP();
-    return CNO_OK;
-}
-
-#define CNO_WRITEV(conn, ...) cno_writev(conn, (struct cno_buffer_t[]){__VA_ARGS__}, \
-    sizeof((struct cno_buffer_t[]){__VA_ARGS__}) / sizeof(struct cno_buffer_t))
 
 // Send a single non-flow-controlled* frame, splitting DATA/HEADERS if they are too big.
 // (*meaning that it isn't counted; in case of DATA, this must be done by the caller.)

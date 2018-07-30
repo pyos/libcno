@@ -209,9 +209,7 @@ struct cno_connection_t
     // Passed as the first argument to all callbacks.
     void *cb_data;
     // There is something to send to the other side. Transport level is outside
-    // the scope of this library. NOTE: `on_write` is inefficient without buffering.
-    int (*on_write)(void *, const char *, size_t);
-    // Alternatively, define this callback. If it is non-NULL, `on_write` is not used.
+    // the scope of this library.
     int (*on_writev)(void *, const struct cno_buffer_t *, size_t count);
     // A new stream has been created due to sending/receiving a request or sending
     // a push promise. In the latter two cases, `on_message_head` will be called
@@ -262,7 +260,7 @@ struct cno_connection_t
 //  connection = new cno_connection_t
 //  try {
 //      cno_connection_init(client ? CNO_CLIENT : CNO_SERVER)
-//      connection.on_write = ...
+//      connection.on_writev = ...
 //      connection.on_message_head = ...
 //      ...
 //      cno_connection_made(negotiated http2 ? CNO_HTTP2 : CNO_HTTP1)
