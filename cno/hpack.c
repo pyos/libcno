@@ -103,13 +103,13 @@ static int cno_hpack_lookup_inverse(struct cno_hpack_t *state, const struct cno_
         possible = i;                    \
 } while (0)
 
-    size_t i = 1, possible = 0;
+    int i = 1, possible = 0;
     for (const struct cno_header_t *h = CNO_HPACK_STATIC_TABLE; i <= CNO_HPACK_STATIC_TABLE_SIZE; ++h, ++i)
         TRY(h->name, h->value);
     for (const struct cno_header_table_t *t = state->first; t != (struct cno_header_table_t *) state; t = t->next, ++i)
         TRY(((struct cno_buffer_t) { &t->data[0], t->k_size }),
             ((struct cno_buffer_t) { &t->data[t->k_size], t->v_size }));
-    return -possible;
+    return possible;
 
 #undef TRY
 }
