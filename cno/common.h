@@ -60,9 +60,6 @@ int cno_error_set(int code, const char *fmt, ...) __attribute__ ((format(printf,
 #define CNO_ERROR_UP() (-1)
 
 
-static const struct cno_buffer_t     CNO_BUFFER_EMPTY     = { NULL, 0 };
-static const struct cno_buffer_dyn_t CNO_BUFFER_DYN_EMPTY = { NULL, 0, 0, 0 };
-
 // cffi does not compile inline functions
 #if !CFFI_CDEF_MODE
 
@@ -105,7 +102,7 @@ static inline struct cno_buffer_t cno_buffer_shift(const struct cno_buffer_t x, 
 static inline void cno_buffer_dyn_clear(struct cno_buffer_dyn_t *x)
 {
     free(x->data - x->offset);
-    *x = CNO_BUFFER_DYN_EMPTY;
+    *x = (struct cno_buffer_dyn_t) {};
 }
 
 

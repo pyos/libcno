@@ -409,7 +409,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
                                         struct cno_frame_t      *frame)
 {
     struct cno_header_t headers[CNO_MAX_HEADERS];
-    struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, headers, CNO_MAX_HEADERS };
+    struct cno_message_t msg = { 0, {}, {}, headers, CNO_MAX_HEADERS };
     if (cno_hpack_decode(&conn->decoder, CNO_BUFFER_VIEW(conn->continued), headers, &msg.headers_len)) {
         cno_buffer_dyn_clear(&conn->continued);
         cno_frame_write_goaway(conn, CNO_RST_COMPRESSION_ERROR);
@@ -422,7 +422,6 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
     for (size_t i = 0; i < msg.headers_len; i++)
         cno_hpack_free_header(&msg.headers[i]);
     cno_buffer_dyn_clear(&conn->continued);
-    conn->continued = CNO_BUFFER_DYN_EMPTY;
     conn->continued_stream = 0;
     conn->continued_promise = 0;
     return failed;
@@ -726,7 +725,7 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
     if (cno_hpack_setlimit(&conn->encoder, limit))
         return CNO_ERROR_UP();
 
-    struct cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK, 0, CNO_BUFFER_EMPTY };
+    struct cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK, 0, {} };
     if (cno_frame_write(conn, &ack))
         return CNO_ERROR_UP();
     return CNO_FIRE(conn, on_settings);
@@ -969,7 +968,7 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
     }
 
     // Reserve one for :scheme. (Even on clients, just in case.)
-    struct cno_message_t msg = { 0, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, NULL, CNO_MAX_HEADERS - 1 };
+    struct cno_message_t msg = { 0, {}, {}, NULL, CNO_MAX_HEADERS - 1 };
     struct phr_header headers_phr[CNO_MAX_HEADERS];
 
     int minor = 0;
@@ -1037,7 +1036,7 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
                     { CNO_BUFFER_STRING("connection"), CNO_BUFFER_STRING("upgrade"), 0 },
                     { CNO_BUFFER_STRING("upgrade"),    CNO_BUFFER_STRING("h2c"),     0 },
                 };
-                struct cno_message_t upgrade_msg = { 101, CNO_BUFFER_EMPTY, CNO_BUFFER_EMPTY, upgrade_headers, 2 };
+                struct cno_message_t upgrade_msg = { 101, {}, {}, upgrade_headers, 2 };
                 // If we send the SETTINGS now, we'll be able to send HTTP 2 frames
                 // while in the HTTP1_READING_UPGRADE state.
                 if (cno_write_message(conn, 1, &upgrade_msg, 0) || cno_connection_upgrade(conn))
@@ -1295,7 +1294,7 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
         return CNO_ERROR_UP();
     childobj->accept = CNO_ACCEPT_WRITE_HEADERS;
 
-    struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_EMPTY;
+    struct cno_buffer_dyn_t payload = {};
     struct cno_header_t head[2] = {
         { CNO_BUFFER_STRING(":method"), msg->method, 0 },
         { CNO_BUFFER_STRING(":path"),   msg->path,   0 },
@@ -1426,7 +1425,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
             is_informational = 0;
         }
     } else {
-        struct cno_buffer_dyn_t payload = CNO_BUFFER_DYN_EMPTY;
+        struct cno_buffer_dyn_t payload = {};
 
         if (conn->client) {
             struct cno_header_t head[] = {
