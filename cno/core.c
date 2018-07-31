@@ -1459,39 +1459,39 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
     if (!cno_connection_is_http2(conn)) {
         if (streamobj->flags & CNO_STREAM_H1_WRITING_CHUNKED) {
             char lenbuf[24];
-            struct cno_buffer_t len = { lenbuf, snprintf(lenbuf, sizeof(lenbuf), "%zX\r\n", length) };
+            struct cno_buffer_t len = { lenbuf, snprintf(lenbuf, sizeof(lenbuf), "%zX\r\n", buf.size) };
             struct cno_buffer_t chunk[] = { len, buf, CNO_BUFFER_STRING("\r\n"), CNO_BUFFER_STRING("0\r\n\r\n") };
-            if (length ? CNO_FIRE(conn, on_writev, chunk, 3 + !!final) : CNO_FIRE(conn, on_writev, chunk + 3, !!final))
+            if (buf.size ? CNO_FIRE(conn, on_writev, chunk, 3 + !!final) : CNO_FIRE(conn, on_writev, chunk + 3, !!final))
                 return CNO_ERROR_UP();
-        } else if (length && CNO_FIRE(conn, on_writev, &buf, 1)) {
+        } else if (buf.size && CNO_FIRE(conn, on_writev, &buf, 1)) {
             return CNO_ERROR_UP();
         }
     } else {
         if (conn->window_send < 0 || streamobj->window_send < 0)
             return 0;
 
-        if (length > (uint32_t) conn->window_send) {
-            length = (uint32_t) conn->window_send;
-            final  = 0;
+        if (buf.size > (uint32_t) conn->window_send) {
+            buf.size = (uint32_t) conn->window_send;
+            final = 0;
         }
 
-        if (length > (uint32_t) streamobj->window_send) {
-            length = (uint32_t) streamobj->window_send;
-            final  = 0;
+        if (buf.size > (uint32_t) streamobj->window_send) {
+            buf.size = (uint32_t) streamobj->window_send;
+            final = 0;
         }
 
-        if (!length && !final)
+        if (!buf.size && !final)
             return 0;
 
         struct cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, stream, buf };
         if (cno_frame_write(conn, &frame))
             return CNO_ERROR_UP();
 
-        conn->window_send -= length;
-        streamobj->window_send -= length;
+        conn->window_send -= buf.size;
+        streamobj->window_send -= buf.size;
     }
 
-    return final && cno_discard_remaining_payload(conn, streamobj) ? CNO_ERROR_UP() : (int)length;
+    return final && cno_discard_remaining_payload(conn, streamobj) ? CNO_ERROR_UP() : (int)buf.size;
 }
 
 int cno_write_ping(struct cno_connection_t *conn, const char data[8])
