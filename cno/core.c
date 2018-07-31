@@ -266,8 +266,7 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
                                     struct cno_frame_t      *frame,
                                     struct cno_message_t    *msg)
 {
-    int is_push = !!conn->continued_promise;
-    int is_response = conn->client && !is_push;
+    int is_response = conn->client && frame->type != CNO_FRAME_PUSH_PROMISE;
 
     struct cno_header_t *it  = msg->headers;
     struct cno_header_t *end = msg->headers + msg->headers_len;
@@ -383,8 +382,8 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
             (!msg->path.data || !msg->path.size || !msg->method.data || !msg->method.size || !has_scheme))
         goto invalid_message;
 
-    if (is_push)
-        return CNO_FIRE(conn, on_message_push, stream->id, msg, conn->continued_stream);
+    if (frame->type == CNO_FRAME_PUSH_PROMISE)
+        return CNO_FIRE(conn, on_message_push, stream->id, msg, frame->stream);
 
     stream->accept &= ~CNO_ACCEPT_HEADERS;
     stream->accept |=  CNO_ACCEPT_TRAILERS | CNO_ACCEPT_DATA;
@@ -407,21 +406,16 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
 {
     struct cno_header_t headers[CNO_MAX_HEADERS];
     struct cno_message_t msg = { 0, {}, {}, headers, CNO_MAX_HEADERS };
-    if (cno_hpack_decode(&conn->decoder, CNO_BUFFER_VIEW(conn->continued), headers, &msg.headers_len)) {
-        cno_buffer_dyn_clear(&conn->continued);
+    if (cno_hpack_decode(&conn->decoder, frame->payload, headers, &msg.headers_len)) {
         cno_frame_write_goaway(conn, CNO_RST_COMPRESSION_ERROR);
         return CNO_ERROR_UP();
     }
 
     // Just ignore the message if the stream has already been reset.
-    int failed = stream ? cno_frame_handle_message(conn, stream, frame, &msg) : CNO_OK;
-
+    int ret = stream ? cno_frame_handle_message(conn, stream, frame, &msg) : CNO_OK;
     for (size_t i = 0; i < msg.headers_len; i++)
         cno_hpack_free_header(&msg.headers[i]);
-    cno_buffer_dyn_clear(&conn->continued);
-    conn->continued_stream = 0;
-    conn->continued_promise = 0;
-    return failed;
+    return ret;
 }
 
 static int cno_frame_handle_padding(struct cno_connection_t *conn, struct cno_frame_t *frame)
@@ -496,15 +490,13 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected HEADERS");
     }
 
-    conn->continued_flags = frame->flags & CNO_FLAG_END_STREAM;
-    conn->continued_stream = frame->stream;
-    if (cno_buffer_dyn_concat(&conn->continued, frame->payload))
-        // HPACK compression is now out of sync, this error is unrecoverable; don't bother cleaning up.
-        return CNO_ERROR_UP();
-
     if (frame->flags & CNO_FLAG_END_HEADERS)
         return cno_frame_handle_end_headers(conn, stream, frame);
-    return CNO_OK;
+
+    conn->continued_flags = frame->flags;
+    conn->continued_stream = frame->stream;
+    conn->continued_promise = 0;
+    return cno_buffer_dyn_concat(&conn->continued, frame->payload);
 }
 
 static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
@@ -522,23 +514,20 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected PUSH_PROMISE");
 
     uint32_t promised = read4((const uint8_t *) frame->payload.data);
+    frame->payload = cno_buffer_shift(frame->payload, 4);
 
     struct cno_stream_t *child = cno_stream_new(conn, promised, CNO_REMOTE);
     if (child == NULL)
         return CNO_ERROR_UP();
     child->accept = CNO_ACCEPT_HEADERS;
 
-    conn->continued_flags = CNO_FLAG_END_STREAM; // pushed requests cannot have payload
-    conn->continued_stream = frame->stream;
-    conn->continued_promise = promised;
-    struct cno_buffer_t tail = { frame->payload.data + 4, frame->payload.size - 4 };
-    if (cno_buffer_dyn_concat(&conn->continued, tail))
-        // Also a HPACK-desynchronizing error.
-        return CNO_ERROR_UP();
-
     if (frame->flags & CNO_FLAG_END_HEADERS)
         return cno_frame_handle_end_headers(conn, child, frame);
-    return CNO_OK;
+
+    conn->continued_flags = frame->flags;
+    conn->continued_stream = frame->stream;
+    conn->continued_promise = promised;
+    return cno_buffer_dyn_concat(&conn->continued, frame->payload);
 }
 
 
@@ -549,19 +538,26 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
     if (!conn->continued_stream)
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "unexpected CONTINUATION");
 
-    if (conn->continued_promise)
-        stream = cno_stream_find(conn, conn->continued_promise);
-
-    if ((conn->continued_flags += 2) > CNO_MAX_CONTINUATIONS * 2)
+    if (conn->continued.size + frame->payload.size > CNO_MAX_CONTINUATIONS * conn->settings[CNO_LOCAL].max_frame_size)
         // Finally, a chance to use that error code.
         return cno_frame_write_error(conn, CNO_RST_ENHANCE_YOUR_CALM, "too many CONTINUATIONs");
 
     if (cno_buffer_dyn_concat(&conn->continued, frame->payload))
         return CNO_ERROR_UP();
 
-    frame->flags |= (conn->continued_flags & CNO_FLAG_END_STREAM);
-    if (frame->flags & CNO_FLAG_END_HEADERS)
-        return cno_frame_handle_end_headers(conn, stream, frame);
+    if (frame->flags & CNO_FLAG_END_HEADERS) {
+        struct cno_stream_t *s = conn->continued_promise ? cno_stream_find(conn, conn->continued_promise) : stream;
+        struct cno_frame_t f = {
+            conn->continued_promise ? CNO_FRAME_PUSH_PROMISE : CNO_FRAME_HEADERS,
+            conn->continued_flags | CNO_FLAG_END_HEADERS,
+            conn->continued_stream,
+            CNO_BUFFER_VIEW(conn->continued),
+        };
+        if (cno_frame_handle_end_headers(conn, s, &f))
+            return CNO_ERROR_UP();
+        conn->continued_stream = 0;
+        cno_buffer_dyn_clear(&conn->continued);
+    }
     return CNO_OK;
 }
 

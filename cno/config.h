@@ -18,9 +18,8 @@
 #endif
 
 #ifndef CNO_MAX_CONTINUATIONS
-// Maximum number of CONTINUATION frames that can follow HEADERS/PUSH_PROMISE.
-// We can't start processing these frames until we've concatenated them all into
-// a single buffer. Controls peak memory consumption.
+// HEADERS/PUSH_PROMISE plus all CONTINUATIONs cannot exceed the frame size limit
+// more than by this multiplier. Controls peak memory consumption.
 #define CNO_MAX_CONTINUATIONS 3
 #endif
 
