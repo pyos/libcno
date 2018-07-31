@@ -1027,9 +1027,14 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
                 //       the api does not allow associating 2 streams of data with a message, though.
                 conn->state = CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE;
             } else if (msg.code == 101) {
-                conn->state = CNO_CONNECTION_UNKNOWN_PROTOCOL;
+                // Just forward everything else (well, 18 exabytes at most...) to stream 1 as data.
+                stream->remaining_payload = (uint64_t) -2;
             }
         } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length"))) {
+            if (100 <= msg.code && msg.code < 200)
+                // TODO actually support informational responses. (This check only exists
+                //      to avoid overwriting remaining_payload when code is 101.)
+                return CNO_ERROR(PROTOCOL, "informational response with a payload");
             if (stream->remaining_payload == (uint64_t) -1)
                 continue; // Ignore content-length with chunked transfer-encoding.
             if (stream->remaining_payload)
@@ -1037,6 +1042,8 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
             if (cno_parse_content_length(it->value, &stream->remaining_payload))
                 return CNO_ERROR_UP();
         } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("transfer-encoding"))) {
+            if (100 <= msg.code && msg.code < 200)
+                return CNO_ERROR(PROTOCOL, "informational response with a payload");
             if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("identity")))
                 continue; // (This value is probably not actually allowed.)
             // Any non-identity transfer-encoding requires chunked (which should also be listed).
@@ -1117,21 +1124,7 @@ static int cno_when_unknown_protocol_upgrade(struct cno_connection_t *conn)
 {
     if (CNO_FIRE(conn, on_upgrade))
         return CNO_ERROR_UP();
-    // might've sent 101 and switched to the next state as a result
-    if (conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE)
-        return CNO_CONNECTION_HTTP1_READING;
-    return conn->state;
-}
-
-static int cno_when_unknown_protocol(struct cno_connection_t *conn)
-{
-    if (!conn->buffer.size)
-        return CNO_OK;
-    struct cno_buffer_t b = CNO_BUFFER_VIEW(conn->buffer);
-    cno_buffer_dyn_shift(&conn->buffer, b.size);
-    if (CNO_FIRE(conn, on_message_data, 1, b.data, b.size))
-        return CNO_ERROR_UP();
-    return CNO_CONNECTION_UNKNOWN_PROTOCOL;
+    return CNO_CONNECTION_HTTP1_READING;
 }
 
 typedef int cno_state_handler_t(struct cno_connection_t *);
@@ -1147,7 +1140,6 @@ static cno_state_handler_t * const CNO_STATE_MACHINE[] = {
     &cno_when_http1_reading,
     &cno_when_http1_reading,//_upgrade,
     &cno_when_unknown_protocol_upgrade,
-    &cno_when_unknown_protocol,
 };
 
 int cno_connection_made(struct cno_connection_t *conn, enum CNO_HTTP_VERSION version)
@@ -1185,12 +1177,8 @@ int cno_connection_lost(struct cno_connection_t *conn)
     if (!cno_connection_is_http2(conn)) {
         struct cno_stream_t * stream = cno_stream_find(conn, 1);
         if (stream) {
-            if (conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL) {
-                if (CNO_FIRE(conn, on_message_tail, 1, NULL))
-                    return CNO_ERROR_UP();
-            } else if (stream->accept & CNO_ACCEPT_DATA) {
-                return CNO_ERROR(PROTOCOL, "unclean http/1.x termination");
-            }
+            if (stream->accept & CNO_ACCEPT_DATA)
+                return CNO_ERROR(DISCONNECT, "unclean http/1.x termination");
             // If still writable, `cno_write_message`/`cno_write_data` will reset the stream.
             if (!(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream))
                 return CNO_ERROR_UP();
@@ -1366,8 +1354,8 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
             return CNO_ERROR_UP();
 
         if (msg->code == 101 && conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE) {
-            conn->state = CNO_CONNECTION_UNKNOWN_PROTOCOL;
-            is_informational = 0;
+            streamobj->remaining_payload = (uint64_t) -2;
+            is_informational = 0; // Well, it kind of is, but no other message will follow.
         }
     } else {
         struct cno_buffer_dyn_t payload = {};
