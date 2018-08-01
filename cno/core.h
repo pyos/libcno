@@ -39,7 +39,11 @@ enum CNO_CONNECTION_STATE
     CNO_STATE_H2_FRAME,
     CNO_STATE_H1_HEAD,
     CNO_STATE_H1_BODY,
-    CNO_STATE_H1_UPGRADE,
+    CNO_STATE_H1_TAIL,
+    CNO_STATE_H1_CHUNK,
+    CNO_STATE_H1_CHUNK_BODY,
+    CNO_STATE_H1_CHUNK_TAIL,
+    CNO_STATE_H1_TRAILERS,
 };
 
 
@@ -58,7 +62,7 @@ enum CNO_CONNECTION_FLAGS
 enum CNO_STREAM_FLAGS
 {
     CNO_STREAM_H1_WRITING_CHUNKED = 0x01,
-    CNO_STREAM_H1_READING_HEAD_RESPONSE = 0x02,
+    CNO_STREAM_HX_READING_HEAD_RESPONSE = 0x02,
 };
 
 
@@ -184,8 +188,8 @@ struct cno_settings_t
 
 struct cno_connection_t
 {
-    uint8_t /* enum CNO_PEER_KIND        */ client;
-    uint8_t /* enum CNO_HTTP_VERSION     */ mode;
+    uint8_t /* enum CNO_PEER_KIND        */ client : 1;
+    uint8_t /* enum CNO_HTTP_VERSION     */ mode : 1;
     uint8_t /* enum CNO_CONNECTION_STATE */ state;
     uint8_t /* enum CNO_CONNECTION_FLAGS */ flags;
     uint8_t  continued_flags;
@@ -198,6 +202,7 @@ struct cno_connection_t
     uint32_t goaway_sent;
     uint8_t  recently_reset_next;
     uint32_t recently_reset[CNO_STREAM_RESET_HISTORY];
+    uint64_t remaining_h1_payload; // can't be monitored in cno_stream_t because the stream might get reset
     struct cno_settings_t settings[2];
     struct cno_buffer_dyn_t buffer;
     struct cno_buffer_dyn_t continued;

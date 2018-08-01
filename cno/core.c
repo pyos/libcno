@@ -245,8 +245,9 @@ static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
                                        struct cno_stream_t     *stream,
                                        struct cno_message_t    *trailers)
 {
-    if (stream->remaining_payload && stream->remaining_payload != (uint64_t) -1)
-        return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
+    if (!(stream->flags & CNO_STREAM_HX_READING_HEAD_RESPONSE))
+        if (stream->remaining_payload && stream->remaining_payload != (uint64_t) -1)
+            return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
     if (CNO_FIRE(conn, on_message_tail, stream->id, trailers))
         return CNO_ERROR_UP();
     return !(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream);
@@ -968,15 +969,12 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
         // HTTP/1.0 is probably not really supported either tbh.
         return CNO_ERROR(PROTOCOL, "HTTP/1.%d not supported", minor);
 
-    // Have to switch the state before calling on_message_head; if it decides
-    // to respond right away and there is a h2c upgrade in progress, response must be sent as h2.
-    conn->state = CNO_STATE_H1_BODY;
-    // Even if there's no payload, the automaton will (almost) instantly switch back:
     stream->accept &= ~CNO_ACCEPT_HEADERS;
     stream->accept |=  CNO_ACCEPT_DATA;
     if (!conn->client)
         stream->accept |= CNO_ACCEPT_WRITE_HEADERS;
 
+    int upgrade = 0;
     struct cno_header_t *it = headers;
     if (!conn->client) {
         *it++ = (struct cno_header_t) { CNO_BUFFER_STRING(":scheme"), CNO_BUFFER_STRING("unknown"), 0 };
@@ -1002,37 +1000,32 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
                 continue; // If upgrading to h2c, don't notify the application of any upgrades.
             } else if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("h2c"))) {
                 // TODO: client-side h2 upgrade
-                if (conn->client || conn->state != CNO_STATE_H1_BODY
-                 || conn->flags & CNO_CONN_FLAG_DISALLOW_H2_UPGRADE)
+                if (conn->client || upgrade || conn->flags & CNO_CONN_FLAG_DISALLOW_H2_UPGRADE)
                     continue;
 
                 // Technically, server should refuse if HTTP2-Settings are not present. We'll let this slide.
-                struct cno_header_t upgrade_headers[] = {
-                    { CNO_BUFFER_STRING("connection"), CNO_BUFFER_STRING("upgrade"), 0 },
-                    { CNO_BUFFER_STRING("upgrade"),    CNO_BUFFER_STRING("h2c"),     0 },
-                };
-                struct cno_message_t upgrade_msg = { 101, {}, {}, upgrade_headers, 2 };
-                if (cno_write_message(conn, 1, &upgrade_msg, 0) || cno_connection_upgrade(conn))
+                if (CNO_WRITEV(conn, CNO_BUFFER_STRING("HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: h2c\r\n\r\n"))
+                 || cno_connection_upgrade(conn))
                     return CNO_ERROR_UP();
                 continue;
             } else if (!conn->client) {
                 // FIXME technically, http supports upgrade requests with payload (see h2c above).
                 //       the api does not allow associating 2 streams of data with a message, though.
-                conn->state = CNO_STATE_H1_UPGRADE;
+                upgrade = 1;
             } else if (msg.code == 101) {
                 // Just forward everything else (well, 18 exabytes at most...) to stream 1 as data.
-                stream->remaining_payload = (uint64_t) -2;
+                conn->remaining_h1_payload = (uint64_t) -2;
             }
         } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length"))) {
             if (100 <= msg.code && msg.code < 200)
                 // TODO actually support informational responses. (This check only exists
-                //      to avoid overwriting remaining_payload when code is 101.)
+                //      to avoid overwriting remaining_h1_payload when code is 101.)
                 return CNO_ERROR(PROTOCOL, "informational response with a payload");
-            if (stream->remaining_payload == (uint64_t) -1)
+            if (conn->remaining_h1_payload == (uint64_t) -1)
                 continue; // Ignore content-length with chunked transfer-encoding.
-            if (stream->remaining_payload)
+            if (conn->remaining_h1_payload)
                 return CNO_ERROR(PROTOCOL, "multiple content-lengths");
-            if (cno_parse_content_length(it->value, &stream->remaining_payload))
+            if (cno_parse_content_length(it->value, &conn->remaining_h1_payload))
                 return CNO_ERROR_UP();
         } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("transfer-encoding"))) {
             if (100 <= msg.code && msg.code < 200)
@@ -1041,7 +1034,7 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
                 continue; // (This value is probably not actually allowed.)
             // Any non-identity transfer-encoding requires chunked (which should also be listed).
             // (This part is a bit non-compatible with h2. Proxies should probably decode TEs.)
-            stream->remaining_payload = (uint64_t) -1;
+            conn->remaining_h1_payload = (uint64_t) -1;
             if (!cno_remove_chunked_te(&it->value))
                 continue;
         }
@@ -1052,70 +1045,84 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
 
     cno_buffer_dyn_shift(&conn->buffer, (size_t) ok);
 
-    if (CNO_FIRE(conn, on_message_head, stream->id, &msg))
+    // If on_message_head triggers asynchronous handling, this is expected to block until
+    // either 101 has been sent or the server decides not to upgrade.
+    if (CNO_FIRE(conn, on_message_head, stream->id, &msg) || (upgrade && CNO_FIRE(conn, on_upgrade)))
         return CNO_ERROR_UP();
 
-    return conn->state;
+    // XXX can a HEAD request with `upgrade` trigger an upgrade? This prevents it:
+    if (stream->flags & CNO_STREAM_HX_READING_HEAD_RESPONSE)
+        conn->remaining_h1_payload = 0;
+    return conn->remaining_h1_payload == (uint64_t) -1 ? CNO_STATE_H1_CHUNK
+         : conn->remaining_h1_payload ? CNO_STATE_H1_BODY
+         : CNO_STATE_H1_TAIL;
 }
 
-// TODO make this function more readable
 static int cno_when_h1_body(struct cno_connection_t *conn)
 {
-    struct cno_stream_t *stream = cno_stream_find(conn, 1);
-    if (!stream || !(stream->accept & CNO_ACCEPT_DATA))
-        return CNO_ERROR(ASSERTION, "connection expects HTTP/1.x message body, but stream 1 does not");
-
-    if (!stream->remaining_payload || (stream->flags & CNO_STREAM_H1_READING_HEAD_RESPONSE)) {
-        // TODO: trailers.
-        if (CNO_FIRE(conn, on_message_tail, stream->id, NULL))
-            return CNO_ERROR_UP();
-        // if still writable, `cno_write_message`/`cno_write_data` will reset it.
-        if (!(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream))
-            return CNO_ERROR_UP();
-        return conn->mode == CNO_HTTP2 ? CNO_STATE_H2_PREFACE : CNO_STATE_H1_HEAD;
-    }
-
-    if (!conn->buffer.size)
-        return CNO_OK;
-
-    if (stream->remaining_payload == (uint64_t) -1) {
-        char *eol = memchr(conn->buffer.data, '\n', conn->buffer.size);
-        if (eol++ == NULL)
+    while (conn->remaining_h1_payload) {
+        if (!conn->buffer.size)
             return CNO_OK;
-
-        char *end_of_length;
-        size_t length = strtoul(conn->buffer.data, &end_of_length, 16);
-        if (end_of_length == conn->buffer.data || end_of_length + 2 != eol)
-            return CNO_ERROR(PROTOCOL, "HTTP/1.x chunked encoding parse error");
-
-        size_t total = length + (eol - conn->buffer.data) + 2;  // + crlf after data
-        if (conn->buffer.size < total)
-            return CNO_OK;
-        if (conn->buffer.data[total - 2] != '\r' || conn->buffer.data[total - 1] != '\n')
-            return CNO_ERROR(PROTOCOL, "HTTP/1.x chunked encoding parse error");
-
-        if (!length)
-            stream->remaining_payload = 0;
-        else if (CNO_FIRE(conn, on_message_data, stream->id, eol, length))
-            return CNO_ERROR_UP();
-        cno_buffer_dyn_shift(&conn->buffer, total);
-    } else {
         struct cno_buffer_t b = CNO_BUFFER_VIEW(conn->buffer);
-        if (b.size > stream->remaining_payload)
-            b.size = stream->remaining_payload;
-        stream->remaining_payload -= b.size;
+        if (b.size > conn->remaining_h1_payload)
+            b.size = conn->remaining_h1_payload;
+        conn->remaining_h1_payload -= b.size;
         cno_buffer_dyn_shift(&conn->buffer, b.size);
-        if (CNO_FIRE(conn, on_message_data, stream->id, b.data, b.size))
+        struct cno_stream_t *stream = cno_stream_find(conn, 1);
+        if (stream && CNO_FIRE(conn, on_message_data, stream->id, b.data, b.size))
             return CNO_ERROR_UP();
     }
-    return conn->state;
+    return conn->state == CNO_STATE_H1_BODY ? CNO_STATE_H1_TAIL : CNO_STATE_H1_CHUNK_TAIL;
 }
 
-static int cno_when_h1_upgrade(struct cno_connection_t *conn)
+static int cno_when_h1_tail(struct cno_connection_t *conn)
 {
-    if (CNO_FIRE(conn, on_upgrade))
+    struct cno_stream_t *stream = cno_stream_find(conn, 1);
+    if (stream && CNO_FIRE(conn, on_message_tail, stream->id, NULL))
         return CNO_ERROR_UP();
-    return CNO_STATE_H1_BODY;
+    // on_message_tail might've reset it.
+    stream = cno_stream_find(conn, 1);
+    if (stream && !(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream))
+        return CNO_ERROR_UP();
+    return conn->mode == CNO_HTTP2 ? CNO_STATE_H2_PREFACE : CNO_STATE_H1_HEAD;
+}
+
+static int cno_when_h1_chunk(struct cno_connection_t *conn)
+{
+    if (memchr(conn->buffer.data, '\n', conn->buffer.size) == NULL)
+        return CNO_OK;
+    const char *p = conn->buffer.data;
+    size_t length = 0;
+    for (; *p != '\r' && *p != '\n'; p++) {
+        size_t prev = length;
+        length = length * 16 + ('0' <= *p && *p <= '9' ? *p - '0' :
+                                'A' <= *p && *p <= 'F' ? *p - 'A' :
+                                'a' <= *p && *p <= 'f' ? *p - 'a' : -1);
+        if (length < prev)
+            return CNO_ERROR(PROTOCOL, "invalid h1 chunk length");
+    }
+    if (*p++ != '\r' || *p++ != '\n')
+        return CNO_ERROR(PROTOCOL, "invalid h1 line separator");
+    cno_buffer_dyn_shift(&conn->buffer, p - conn->buffer.data);
+    conn->remaining_h1_payload = length;
+    return length ? CNO_STATE_H1_CHUNK_BODY : CNO_STATE_H1_TRAILERS;
+}
+
+static int cno_when_h1_chunk_tail(struct cno_connection_t *conn)
+{
+    if (conn->buffer.size < 2)
+        return CNO_OK;
+    if (conn->buffer.data[0] != '\r' || conn->buffer.data[1] != '\n')
+        return CNO_ERROR(PROTOCOL, "invalid h1 chunk terminator");
+    cno_buffer_dyn_shift(&conn->buffer, 2);
+    return CNO_STATE_H1_CHUNK;
+}
+
+static int cno_when_h1_trailers(struct cno_connection_t *conn)
+{
+    // TODO actually support trailers (they come before the tail).
+    int ret = cno_when_h1_chunk_tail(conn);
+    return ret < 0 ? CNO_ERROR_UP() : ret > 0 ? CNO_STATE_H1_TAIL : CNO_OK;
 }
 
 typedef int cno_state_handler_t(struct cno_connection_t *);
@@ -1129,7 +1136,11 @@ static cno_state_handler_t * const CNO_STATE_MACHINE[] = {
     &cno_when_h2_frame,
     &cno_when_h1_head,
     &cno_when_h1_body,
-    &cno_when_h1_upgrade,
+    &cno_when_h1_tail,
+    &cno_when_h1_chunk,
+    &cno_when_h1_body,
+    &cno_when_h1_chunk_tail,
+    &cno_when_h1_trailers,
 };
 
 int cno_connection_made(struct cno_connection_t *conn, enum CNO_HTTP_VERSION version)
@@ -1206,8 +1217,6 @@ int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST
 
     if (!stream)
         return cno_frame_write_goaway(conn, code);
-    if (conn->state >= CNO_STATE_H1_HEAD)
-        return cno_frame_write_goaway(conn, code) ? CNO_ERROR_UP() : CNO_ERROR(DISCONNECT, "did not consume h1 payload");
     struct cno_stream_t *obj = cno_stream_find(conn, stream);
     return obj ? cno_frame_write_rst_stream(conn, obj, code) : CNO_OK; // assume idle streams have already been reset
 }
@@ -1286,6 +1295,10 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         }
         if (!cno_connection_is_http2(conn) && !(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
             return CNO_ERROR(WOULD_BLOCK, "HTTP/1.x request already in progress");
+        if (cno_buffer_eq(msg->method, CNO_BUFFER_STRING("HEAD")))
+            streamobj->flags |= CNO_STREAM_HX_READING_HEAD_RESPONSE;
+        else
+            streamobj->flags &= CNO_STREAM_HX_READING_HEAD_RESPONSE;
     } else {
         if (!streamobj || !(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
             return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
@@ -1293,11 +1306,6 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
     if (!cno_connection_is_http2(conn)) {
         if (conn->client) {
-            if (cno_buffer_eq(msg->method, CNO_BUFFER_STRING("HEAD")))
-                streamobj->flags |= CNO_STREAM_H1_READING_HEAD_RESPONSE;
-            else
-                streamobj->flags &= CNO_STREAM_H1_READING_HEAD_RESPONSE;
-
             if (CNO_WRITEV(conn, msg->method, CNO_BUFFER_STRING(" "), msg->path, CNO_BUFFER_STRING(" HTTP/1.1\r\n")))
                 return CNO_ERROR_UP();
         } else {
@@ -1344,8 +1352,8 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
           : CNO_WRITEV(conn, CNO_BUFFER_STRING("\r\n")))
             return CNO_ERROR_UP();
 
-        if (msg->code == 101 && conn->state == CNO_STATE_H1_UPGRADE) {
-            streamobj->remaining_payload = (uint64_t) -2;
+        if (msg->code == 101 && conn->state == CNO_STATE_H1_HEAD && streamobj->accept & CNO_ACCEPT_DATA) {
+            conn->remaining_h1_payload = (uint64_t) -2;
             is_informational = 0; // Well, it kind of is, but no other message will follow.
         }
     } else {
