@@ -1206,7 +1206,8 @@ int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST
 
     if (!stream)
         return cno_frame_write_goaway(conn, code);
-
+    if (conn->state >= CNO_STATE_H1_HEAD)
+        return cno_frame_write_goaway(conn, code) ? CNO_ERROR_UP() : CNO_ERROR(DISCONNECT, "did not consume h1 payload");
     struct cno_stream_t *obj = cno_stream_find(conn, stream);
     return obj ? cno_frame_write_rst_stream(conn, obj, code) : CNO_OK; // assume idle streams have already been reset
 }
