@@ -674,16 +674,12 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
         return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "bad SETTINGS");
 
     struct cno_settings_t *cfg = &conn->settings[CNO_REMOTE];
-    const uint8_t *ptr = (const uint8_t *) frame->payload.data;
-    const uint8_t *end = (const uint8_t *) frame->payload.data + frame->payload.size;
     const int32_t old_window = cfg->initial_window_size;
 
-    for (; ptr != end; ptr += 6) {
-        uint16_t setting = read2(ptr);
-        uint32_t value   = read4(ptr + 2);
-
+    for (const char *p = frame->payload.data, *e = p + frame->payload.size; p != e; p += 6) {
+        uint16_t setting = read2((const uint8_t *)p);
         if (setting && setting < CNO_SETTINGS_UNDEFINED)
-            cfg->array[setting - 1] = value;
+            cfg->array[setting - 1] = read4((const uint8_t *)p + 2);
     }
 
     if (cfg->enable_push > 1)
@@ -698,16 +694,15 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
     const int32_t window_diff = (int32_t)cfg->initial_window_size - old_window;
     if (window_diff != 0) {
         for (int i = 0; i < CNO_STREAM_BUCKETS; i++) {
-            for (struct cno_stream_t *s = conn->streams[i], *n; s; s = n) {
-                if (window_diff > 0 ? s->window_send > 0x7FFFFFFFL - window_diff : -s->window_send > 0x7FFFFFFFL + window_diff)
+            for (struct cno_stream_t *s = conn->streams[i]; s; s = s->next) {
+                if (window_diff > 0 ? s->window_send > +0x7FFFFFFFL - window_diff
+                                    : s->window_send < -0x7FFFFFFFL - window_diff)
                     return cno_frame_write_error(conn, CNO_RST_FLOW_CONTROL_ERROR, "initial_window_size overflow");
-
-                n = s->next; // on_flow_increase may destroy this stream. Assume it doesn't destroy anything else.
                 s->window_send += window_diff;
-                if (window_diff > 0 && CNO_FIRE(conn, on_flow_increase, s->id))
-                    return CNO_ERROR_UP();
             }
         }
+        if (window_diff > 0 && CNO_FIRE(conn, on_flow_increase, 0))
+            return CNO_ERROR_UP();
     }
 
     size_t limit = conn->encoder.limit_upper = cfg->header_table_size;
@@ -717,9 +712,7 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
 
     struct cno_frame_t ack = { CNO_FRAME_SETTINGS, CNO_FLAG_ACK, 0, {} };
-    if (cno_frame_write(conn, &ack))
-        return CNO_ERROR_UP();
-    return CNO_FIRE(conn, on_settings);
+    return cno_frame_write(conn, &ack) || CNO_FIRE(conn, on_settings);
 }
 
 static int cno_frame_handle_window_update(struct cno_connection_t *conn,

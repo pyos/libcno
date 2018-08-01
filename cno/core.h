@@ -227,10 +227,6 @@ struct cno_connection_t
     // There is a global limit (shared between all streams) and one for each stream;
     // `cno_write_data` will send as much data as the lowest of the two allows.
     // When the global limit is updated, this function is called with stream id = 0.
-    //
-    // NOTE: this function may be called while iterating over all streams; it should
-    //       not destroy any streams other than the one passed as the argument.
-    //
     int (*on_flow_increase)(void *, uint32_t id);
     // A request/response has been received (depending on whether this is a server
     // connection or not). Each stream carries exactly one request/response pair.
