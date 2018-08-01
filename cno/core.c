@@ -91,6 +91,8 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
         .next        = conn->streams[id % CNO_STREAM_BUCKETS],
         .window_recv = conn->settings[CNO_LOCAL] .initial_window_size,
         .window_send = conn->settings[CNO_REMOTE].initial_window_size,
+        .accept      = local ? CNO_ACCEPT_WRITE_HEADERS | (conn->client ? CNO_ACCEPT_HEADERS | CNO_ACCEPT_PUSH : 0)
+                             : CNO_ACCEPT_HEADERS | (conn->client ? 0 : CNO_ACCEPT_WRITE_HEADERS | CNO_ACCEPT_WRITE_PUSH),
     };
 
     // Gotta love C for not having any standard library to speak of.
@@ -481,7 +483,6 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
             stream = cno_stream_new(conn, frame->stream, CNO_REMOTE);
             if (stream == NULL)
                 return CNO_ERROR_UP();
-            stream->accept = CNO_ACCEPT_HEADERS | CNO_ACCEPT_WRITE_HEADERS | CNO_ACCEPT_WRITE_PUSH;
         }
     } else if (stream->accept & CNO_ACCEPT_TRAILERS) {
         stream->accept &= ~CNO_ACCEPT_DATA;
@@ -520,7 +521,6 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *conn,
     struct cno_stream_t *child = cno_stream_new(conn, promised, CNO_REMOTE);
     if (child == NULL)
         return CNO_ERROR_UP();
-    child->accept = CNO_ACCEPT_HEADERS;
 
     if (frame->flags & CNO_FLAG_END_HEADERS)
         return cno_frame_handle_end_headers(conn, child, frame);
@@ -937,7 +937,6 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
             stream = cno_stream_new(conn, 1, CNO_REMOTE);
             if (!stream)
                 return CNO_ERROR_UP();
-            stream->accept = CNO_ACCEPT_HEADERS;
         }
         if (!(stream->accept & CNO_ACCEPT_HEADERS))
             return CNO_ERROR(WOULD_BLOCK, "already handling an HTTP/1.x message");
@@ -971,8 +970,6 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
 
     stream->accept &= ~CNO_ACCEPT_HEADERS;
     stream->accept |=  CNO_ACCEPT_DATA;
-    if (!conn->client)
-        stream->accept |= CNO_ACCEPT_WRITE_HEADERS;
 
     int upgrade = 0;
     struct cno_header_t *it = headers;
@@ -1241,7 +1238,6 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
     struct cno_stream_t *childobj = cno_stream_new(conn, child, CNO_LOCAL);
     if (childobj == NULL)
         return CNO_ERROR_UP();
-    childobj->accept = CNO_ACCEPT_WRITE_HEADERS;
 
     struct cno_buffer_dyn_t payload = {};
     struct cno_header_t head[2] = {
@@ -1291,7 +1287,6 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
             streamobj = cno_stream_new(conn, stream, CNO_LOCAL);
             if (streamobj == NULL)
                 return CNO_ERROR_UP();
-            streamobj->accept = CNO_ACCEPT_HEADERS | CNO_ACCEPT_PUSH | CNO_ACCEPT_WRITE_HEADERS;
         }
         if (!cno_connection_is_http2(conn) && !(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
             return CNO_ERROR(WOULD_BLOCK, "HTTP/1.x request already in progress");
