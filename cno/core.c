@@ -791,7 +791,7 @@ int cno_connection_set_config(struct cno_connection_t *conn, const struct cno_se
     if (settings->max_frame_size < 16384 || settings->max_frame_size > 16777215)
         return CNO_ERROR(ASSERTION, "maximum frame size out of bounds (2^14..2^24-1)");
 
-    if (conn->state != CNO_CONNECTION_INIT && cno_connection_is_http2(conn))
+    if (conn->state != CNO_STATE_H2_INIT && cno_connection_is_http2(conn))
         // If not yet in HTTP2 mode, `cno_connection_upgrade` will send the SETTINGS frame.
         if (cno_frame_write_settings(conn, &conn->settings[CNO_LOCAL], settings))
             return CNO_ERROR_UP();
@@ -835,15 +835,12 @@ void cno_connection_reset(struct cno_connection_t *conn)
 
 int cno_connection_is_http2(struct cno_connection_t *conn)
 {
-    return conn->state == CNO_CONNECTION_INIT ||
-           conn->state == CNO_CONNECTION_PREFACE ||
-           conn->state == CNO_CONNECTION_SETTINGS ||
-           conn->state == CNO_CONNECTION_READY ||
-           conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE;
+    return conn->mode == CNO_HTTP2;
 }
 
 static int cno_connection_upgrade(struct cno_connection_t *conn)
 {
+    conn->mode = CNO_HTTP2;
     if (conn->client && CNO_FIRE(conn, on_writev, &CNO_PREFACE, 1))
         return CNO_ERROR_UP();
     return cno_frame_write_settings(conn, &CNO_SETTINGS_STANDARD, &conn->settings[CNO_LOCAL]);
@@ -864,19 +861,19 @@ static size_t cno_remove_chunked_te(struct cno_buffer_t *buf)
 
 // NOTE these functions have tri-state returns now: negative for errors, 0 (CNO_OK)
 //      to wait for more data, and positive (CNO_CONNECTION_STATE) to switch to another state.
-static int cno_when_undefined(struct cno_connection_t *conn __attribute__((unused)))
+static int cno_when_closed(struct cno_connection_t *conn __attribute__((unused)))
 {
     return CNO_OK; // Wait until connection_made before processing data.
 }
 
-static int cno_when_init(struct cno_connection_t *conn)
+static int cno_when_h2_init(struct cno_connection_t *conn)
 {
     if (cno_connection_upgrade(conn))
         return CNO_ERROR_UP();
-    return CNO_CONNECTION_PREFACE;
+    return CNO_STATE_H2_PREFACE;
 }
 
-static int cno_when_preface(struct cno_connection_t *conn)
+static int cno_when_h2_preface(struct cno_connection_t *conn)
 {
     if (!conn->client) {
         if (strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size))
@@ -885,19 +882,19 @@ static int cno_when_preface(struct cno_connection_t *conn)
             return CNO_OK;
         cno_buffer_dyn_shift(&conn->buffer, CNO_PREFACE.size);
     }
-    return CNO_CONNECTION_SETTINGS;
+    return CNO_STATE_H2_SETTINGS;
 }
 
-static int cno_when_settings(struct cno_connection_t *conn)
+static int cno_when_h2_settings(struct cno_connection_t *conn)
 {
     if (conn->buffer.size < 5)
         return CNO_OK;
     if (conn->buffer.data[3] != CNO_FRAME_SETTINGS || conn->buffer.data[4] != 0)
         return CNO_ERROR(PROTOCOL, "invalid HTTP 2 preface: no initial SETTINGS");
-    return CNO_CONNECTION_READY;
+    return CNO_STATE_H2_FRAME;
 }
 
-static int cno_when_ready(struct cno_connection_t *conn)
+static int cno_when_h2_frame(struct cno_connection_t *conn)
 {
     if (conn->buffer.size < 9)
         return CNO_OK;
@@ -917,10 +914,10 @@ static int cno_when_ready(struct cno_connection_t *conn)
         return CNO_ERROR_UP();
 
     cno_buffer_dyn_shift(&conn->buffer, 9 + len);
-    return CNO_CONNECTION_READY;
+    return CNO_STATE_H2_FRAME;
 }
 
-static int cno_when_http1_ready(struct cno_connection_t *conn)
+static int cno_when_h1_head(struct cno_connection_t *conn)
 {
     if (!conn->buffer.size)
         return CNO_OK;
@@ -934,7 +931,7 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
             // Only allow upgrading with prior knowledge if no h1 requests have yet been received.
             if (!(conn->flags & CNO_CONN_FLAG_DISALLOW_H2_PRIOR_KNOWLEDGE) && conn->last_stream[CNO_REMOTE] == 0)
                 if (!strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size))
-                    return conn->buffer.size < CNO_PREFACE.size ? CNO_OK : CNO_CONNECTION_INIT;
+                    return conn->buffer.size < CNO_PREFACE.size ? CNO_OK : CNO_STATE_H2_INIT;
 
             stream = cno_stream_new(conn, 1, CNO_REMOTE);
             if (!stream)
@@ -973,7 +970,7 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
 
     // Have to switch the state before calling on_message_head; if it decides
     // to respond right away and there is a h2c upgrade in progress, response must be sent as h2.
-    conn->state = CNO_CONNECTION_HTTP1_READING;
+    conn->state = CNO_STATE_H1_BODY;
     // Even if there's no payload, the automaton will (almost) instantly switch back:
     stream->accept &= ~CNO_ACCEPT_HEADERS;
     stream->accept |=  CNO_ACCEPT_DATA;
@@ -1001,31 +998,27 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
             // TODO decode & emit on_frame
             continue;
         } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("upgrade"))) {
-            if (conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE) {
+            if (conn->mode != CNO_HTTP1) {
                 continue; // If upgrading to h2c, don't notify the application of any upgrades.
             } else if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("h2c"))) {
                 // TODO: client-side h2 upgrade
-                if (conn->client || conn->state != CNO_CONNECTION_HTTP1_READING
+                if (conn->client || conn->state != CNO_STATE_H1_BODY
                  || conn->flags & CNO_CONN_FLAG_DISALLOW_H2_UPGRADE)
                     continue;
 
+                // Technically, server should refuse if HTTP2-Settings are not present. We'll let this slide.
                 struct cno_header_t upgrade_headers[] = {
                     { CNO_BUFFER_STRING("connection"), CNO_BUFFER_STRING("upgrade"), 0 },
                     { CNO_BUFFER_STRING("upgrade"),    CNO_BUFFER_STRING("h2c"),     0 },
                 };
                 struct cno_message_t upgrade_msg = { 101, {}, {}, upgrade_headers, 2 };
-                // If we send the SETTINGS now, we'll be able to send HTTP 2 frames
-                // while in the HTTP1_READING_UPGRADE state.
                 if (cno_write_message(conn, 1, &upgrade_msg, 0) || cno_connection_upgrade(conn))
                     return CNO_ERROR_UP();
-
-                // Technically, server should refuse if HTTP2-Settings are not present. We'll let this slide.
-                conn->state = CNO_CONNECTION_HTTP1_READING_UPGRADE;
                 continue;
             } else if (!conn->client) {
                 // FIXME technically, http supports upgrade requests with payload (see h2c above).
                 //       the api does not allow associating 2 streams of data with a message, though.
-                conn->state = CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE;
+                conn->state = CNO_STATE_H1_UPGRADE;
             } else if (msg.code == 101) {
                 // Just forward everything else (well, 18 exabytes at most...) to stream 1 as data.
                 stream->remaining_payload = (uint64_t) -2;
@@ -1066,7 +1059,7 @@ static int cno_when_http1_ready(struct cno_connection_t *conn)
 }
 
 // TODO make this function more readable
-static int cno_when_http1_reading(struct cno_connection_t *conn)
+static int cno_when_h1_body(struct cno_connection_t *conn)
 {
     struct cno_stream_t *stream = cno_stream_find(conn, 1);
     if (!stream || !(stream->accept & CNO_ACCEPT_DATA))
@@ -1079,9 +1072,7 @@ static int cno_when_http1_reading(struct cno_connection_t *conn)
         // if still writable, `cno_write_message`/`cno_write_data` will reset it.
         if (!(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream))
             return CNO_ERROR_UP();
-        return conn->state == CNO_CONNECTION_HTTP1_READING_UPGRADE
-            ? CNO_CONNECTION_PREFACE
-            : CNO_CONNECTION_HTTP1_READY;
+        return conn->mode == CNO_HTTP2 ? CNO_STATE_H2_PREFACE : CNO_STATE_H1_HEAD;
     }
 
     if (!conn->buffer.size)
@@ -1120,40 +1111,39 @@ static int cno_when_http1_reading(struct cno_connection_t *conn)
     return conn->state;
 }
 
-static int cno_when_unknown_protocol_upgrade(struct cno_connection_t *conn)
+static int cno_when_h1_upgrade(struct cno_connection_t *conn)
 {
     if (CNO_FIRE(conn, on_upgrade))
         return CNO_ERROR_UP();
-    return CNO_CONNECTION_HTTP1_READING;
+    return CNO_STATE_H1_BODY;
 }
 
 typedef int cno_state_handler_t(struct cno_connection_t *);
 
 static cno_state_handler_t * const CNO_STATE_MACHINE[] = {
     // Should be synced to enum CNO_CONNECTION_STATE.
-    &cno_when_undefined,
-    &cno_when_init,
-    &cno_when_preface,
-    &cno_when_settings,
-    &cno_when_ready,
-    &cno_when_http1_ready,
-    &cno_when_http1_reading,
-    &cno_when_http1_reading,//_upgrade,
-    &cno_when_unknown_protocol_upgrade,
+    &cno_when_closed,
+    &cno_when_h2_init,
+    &cno_when_h2_preface,
+    &cno_when_h2_settings,
+    &cno_when_h2_frame,
+    &cno_when_h1_head,
+    &cno_when_h1_body,
+    &cno_when_h1_upgrade,
 };
 
 int cno_connection_made(struct cno_connection_t *conn, enum CNO_HTTP_VERSION version)
 {
-    if (conn->state != CNO_CONNECTION_UNDEFINED)
+    if (conn->state != CNO_STATE_CLOSED)
         return CNO_ERROR(ASSERTION, "called connection_made twice");
 
-    conn->state = version == CNO_HTTP2 ? CNO_CONNECTION_INIT : CNO_CONNECTION_HTTP1_READY;
+    conn->state = version == CNO_HTTP2 ? CNO_STATE_H2_INIT : CNO_STATE_H1_HEAD;
     return cno_connection_data_received(conn, NULL, 0);
 }
 
 int cno_connection_data_received(struct cno_connection_t *conn, const char *data, size_t length)
 {
-    if (conn->state == CNO_CONNECTION_UNDEFINED)
+    if (conn->state == CNO_STATE_CLOSED)
         return CNO_ERROR(DISCONNECT, "connection closed");
 
     if (length && cno_buffer_dyn_concat(&conn->buffer, (struct cno_buffer_t) { data, length }))
@@ -1187,7 +1177,7 @@ int cno_connection_lost(struct cno_connection_t *conn)
     }
 
     // h2 won't work over half-closed connections.
-    conn->state = CNO_CONNECTION_UNDEFINED;
+    conn->state = CNO_STATE_CLOSED;
     for (struct cno_stream_t **s = &conn->streams[0]; s != &conn->streams[CNO_STREAM_BUCKETS]; s++)
         while (*s)
             if (cno_stream_end(conn, *s))
@@ -1223,7 +1213,7 @@ int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST
 
 int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct cno_message_t *msg)
 {
-    if (conn->state == CNO_CONNECTION_UNDEFINED)
+    if (conn->state == CNO_STATE_CLOSED)
         return CNO_ERROR(DISCONNECT, "connection closed");
 
     if (conn->client)
@@ -1273,7 +1263,7 @@ static int cno_discard_remaining_payload(struct cno_connection_t *conn, struct c
 
 int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const struct cno_message_t *msg, int final)
 {
-    if (conn->state == CNO_CONNECTION_UNDEFINED)
+    if (conn->state == CNO_STATE_CLOSED)
         return CNO_ERROR(DISCONNECT, "connection closed");
 
     int is_informational = 100 <= msg->code && msg->code < 200;
@@ -1353,7 +1343,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
           : CNO_WRITEV(conn, CNO_BUFFER_STRING("\r\n")))
             return CNO_ERROR_UP();
 
-        if (msg->code == 101 && conn->state == CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE) {
+        if (msg->code == 101 && conn->state == CNO_STATE_H1_UPGRADE) {
             streamobj->remaining_payload = (uint64_t) -2;
             is_informational = 0; // Well, it kind of is, but no other message will follow.
         }
@@ -1403,7 +1393,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
 int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *data, size_t length, int final)
 {
-    if (conn->state == CNO_CONNECTION_UNDEFINED)
+    if (conn->state == CNO_STATE_CLOSED)
         return CNO_ERROR(DISCONNECT, "connection closed");
 
     struct cno_stream_t *streamobj = cno_stream_find(conn, stream);

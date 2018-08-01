@@ -32,15 +32,14 @@ enum CNO_HTTP_VERSION
 
 enum CNO_CONNECTION_STATE
 {
-    CNO_CONNECTION_UNDEFINED,
-    CNO_CONNECTION_INIT,
-    CNO_CONNECTION_PREFACE,
-    CNO_CONNECTION_SETTINGS,
-    CNO_CONNECTION_READY,
-    CNO_CONNECTION_HTTP1_READY,
-    CNO_CONNECTION_HTTP1_READING,
-    CNO_CONNECTION_HTTP1_READING_UPGRADE,  // reading HTTP/1.x request, writing HTTP 2 responses
-    CNO_CONNECTION_UNKNOWN_PROTOCOL_UPGRADE,
+    CNO_STATE_CLOSED,
+    CNO_STATE_H2_INIT,
+    CNO_STATE_H2_PREFACE,
+    CNO_STATE_H2_SETTINGS,
+    CNO_STATE_H2_FRAME,
+    CNO_STATE_H1_HEAD,
+    CNO_STATE_H1_BODY,
+    CNO_STATE_H1_UPGRADE,
 };
 
 
@@ -186,6 +185,7 @@ struct cno_settings_t
 struct cno_connection_t
 {
     uint8_t /* enum CNO_PEER_KIND        */ client;
+    uint8_t /* enum CNO_HTTP_VERSION     */ mode;
     uint8_t /* enum CNO_CONNECTION_STATE */ state;
     uint8_t /* enum CNO_CONNECTION_FLAGS */ flags;
     uint8_t  continued_flags;
