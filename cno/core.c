@@ -862,9 +862,7 @@ static int cno_when_closed(struct cno_connection_t *conn __attribute__((unused))
 
 static int cno_when_h2_init(struct cno_connection_t *conn)
 {
-    if (cno_connection_upgrade(conn))
-        return CNO_ERROR_UP();
-    return CNO_STATE_H2_PREFACE;
+    return cno_connection_upgrade(conn) ? CNO_ERROR_UP() : CNO_STATE_H2_PREFACE;
 }
 
 static int cno_when_h2_preface(struct cno_connection_t *conn)
@@ -1281,8 +1279,11 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
             if (streamobj == NULL)
                 return CNO_ERROR_UP();
         }
-        if (!cno_connection_is_http2(conn) && !(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
-            return CNO_ERROR(WOULD_BLOCK, "HTTP/1.x request already in progress");
+        if (!(streamobj->accept & CNO_ACCEPT_WRITE_HEADERS))
+            return cno_connection_is_http2(conn)
+                 ? CNO_ERROR(WOULD_BLOCK, "HTTP/1.x request already in progress")
+                 : CNO_ERROR(INVALID_STREAM, "this stream is not writable");
+
         if (cno_buffer_eq(msg->method, CNO_BUFFER_STRING("HEAD")))
             streamobj->flags |= CNO_STREAM_HX_READING_HEAD_RESPONSE;
         else
