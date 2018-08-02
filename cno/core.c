@@ -255,13 +255,18 @@ static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
     return !(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream);
 }
 
-static int cno_parse_content_length(struct cno_buffer_t value, uint64_t *cl)
+static int cno_is_informational(int code)
 {
-    uint64_t prev = *cl = 0;
-    for (const char *ptr = value.data, *end = ptr + value.size; ptr != end; ptr++, prev = *cl)
-        if (*ptr < '0' || '9' < *ptr || (*cl = prev * 10 + (*ptr - '0')) < prev)
-            return CNO_ERROR(PROTOCOL, "invalid content-length");
-    return CNO_OK;
+    return 100 <= code && code < 200;
+}
+
+static uint64_t cno_parse_uint(struct cno_buffer_t value)
+{
+    uint64_t prev = 0, ret = 0;
+    for (const char *ptr = value.data, *end = ptr + value.size; ptr != end; ptr++, prev = ret)
+        if (*ptr < '0' || '9' < *ptr || (ret = prev * 10 + (*ptr - '0')) < prev)
+            return (uint64_t) -1;
+    return ret;
 }
 
 static int cno_frame_handle_message(struct cno_connection_t *conn,
@@ -366,9 +371,9 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
         && !cno_buffer_eq(it->value, CNO_BUFFER_STRING("trailers")))
             goto invalid_message;
 
-        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length"))
-         && cno_parse_content_length(it->value, &stream->remaining_payload))
-            goto invalid_message;
+        if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length")))
+            if ((stream->remaining_payload = cno_parse_uint(it->value)) == (uint64_t) -1)
+                goto invalid_message;
     }
 
     if (stream->accept & CNO_ACCEPT_TRAILERS) {
@@ -388,8 +393,12 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
     if (frame->type == CNO_FRAME_PUSH_PROMISE)
         return CNO_FIRE(conn, on_message_push, stream->id, msg, frame->stream);
 
-    stream->accept &= ~CNO_ACCEPT_HEADERS;
-    stream->accept |=  CNO_ACCEPT_TRAILERS | CNO_ACCEPT_DATA;
+    if (!cno_is_informational(msg->code)) {
+        stream->accept &= ~CNO_ACCEPT_HEADERS;
+        stream->accept |=  CNO_ACCEPT_TRAILERS | CNO_ACCEPT_DATA;
+    } else if (stream->remaining_payload != (uint64_t) -1) {
+        goto invalid_message;
+    }
 
     if (CNO_FIRE(conn, on_message_head, stream->id, msg))
         return CNO_ERROR_UP();
@@ -959,9 +968,6 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
         // HTTP/1.0 is probably not really supported either tbh.
         return CNO_ERROR(PROTOCOL, "HTTP/1.%d not supported", minor);
 
-    stream->accept &= ~CNO_ACCEPT_HEADERS;
-    stream->accept |=  CNO_ACCEPT_DATA;
-
     int upgrade = 0;
     struct cno_header_t *it = headers;
     if (!conn->client) {
@@ -1000,24 +1006,15 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
                 // FIXME technically, http supports upgrade requests with payload (see h2c above).
                 //       the api does not allow associating 2 streams of data with a message, though.
                 upgrade = 1;
-            } else if (msg.code == 101) {
-                // Just forward everything else (well, 18 exabytes at most...) to stream 1 as data.
-                conn->remaining_h1_payload = (uint64_t) -2;
             }
         } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length"))) {
-            if (100 <= msg.code && msg.code < 200)
-                // TODO actually support informational responses. (This check only exists
-                //      to avoid overwriting remaining_h1_payload when code is 101.)
-                return CNO_ERROR(PROTOCOL, "informational response with a payload");
             if (conn->remaining_h1_payload == (uint64_t) -1)
                 continue; // Ignore content-length with chunked transfer-encoding.
             if (conn->remaining_h1_payload)
                 return CNO_ERROR(PROTOCOL, "multiple content-lengths");
-            if (cno_parse_content_length(it->value, &conn->remaining_h1_payload))
-                return CNO_ERROR_UP();
+            if ((conn->remaining_h1_payload = cno_parse_uint(it->value)) == (uint64_t) -1)
+                return CNO_ERROR(PROTOCOL, "invalid content-length");
         } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("transfer-encoding"))) {
-            if (100 <= msg.code && msg.code < 200)
-                return CNO_ERROR(PROTOCOL, "informational response with a payload");
             if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("identity")))
                 continue; // (This value is probably not actually allowed.)
             // Any non-identity transfer-encoding requires chunked (which should also be listed).
@@ -1037,6 +1034,18 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
     // either 101 has been sent or the server decides not to upgrade.
     if (CNO_FIRE(conn, on_message_head, stream->id, &msg) || (upgrade && CNO_FIRE(conn, on_upgrade)))
         return CNO_ERROR_UP();
+
+    if (!cno_is_informational(msg.code) || msg.code == 101) {
+        stream->accept &= ~CNO_ACCEPT_HEADERS;
+        stream->accept |=  CNO_ACCEPT_DATA;
+        if (msg.code == 101)
+            // Just forward everything else (well, 18 exabytes at most...) to stream 1 as data.
+            conn->remaining_h1_payload = (uint64_t) -2;
+    } else {
+        if (conn->remaining_h1_payload)
+            return CNO_ERROR(PROTOCOL, "informational response with a payload");
+        return CNO_STATE_H1_HEAD;
+    }
 
     // XXX can a HEAD request with `upgrade` trigger an upgrade? This prevents it:
     if (stream->flags & CNO_STREAM_HX_READING_HEAD_RESPONSE)
@@ -1165,13 +1174,8 @@ int cno_connection_lost(struct cno_connection_t *conn)
 {
     if (!cno_connection_is_http2(conn)) {
         struct cno_stream_t * stream = cno_stream_find(conn, 1);
-        if (stream) {
-            if (stream->accept & CNO_ACCEPT_DATA)
-                return CNO_ERROR(DISCONNECT, "unclean http/1.x termination");
-            // If still writable, `cno_write_message`/`cno_write_data` will reset the stream.
-            if (!(stream->accept &= ~CNO_ACCEPT_INBOUND) && cno_stream_end(conn, stream))
-                return CNO_ERROR_UP();
-        }
+        if (stream && stream->accept & CNO_ACCEPT_INBOUND)
+            return CNO_ERROR(DISCONNECT, "unclean http/1.x termination");
         return CNO_OK;
     }
 
@@ -1263,7 +1267,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
     if (conn->state == CNO_STATE_CLOSED)
         return CNO_ERROR(DISCONNECT, "connection closed");
 
-    int is_informational = 100 <= msg->code && msg->code < 200;
+    int is_informational = cno_is_informational(msg->code);
     if (is_informational && final)
         return CNO_ERROR(ASSERTION, "1xx codes cannot end the stream");
 
@@ -1341,7 +1345,8 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
           : CNO_WRITEV(conn, CNO_BUFFER_STRING("\r\n")))
             return CNO_ERROR_UP();
 
-        if (msg->code == 101 && conn->state == CNO_STATE_H1_HEAD && streamobj->accept & CNO_ACCEPT_DATA) {
+        // Only handle upgrades if still in on_message_head/on_upgrade.
+        if (msg->code == 101 && conn->state == CNO_STATE_H1_HEAD && streamobj->accept & CNO_ACCEPT_INBOUND) {
             conn->remaining_h1_payload = (uint64_t) -2;
             is_informational = 0; // Well, it kind of is, but no other message will follow.
         }
