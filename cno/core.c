@@ -87,12 +87,10 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
         return CNO_ERROR(NO_MEMORY, "%zu bytes", sizeof(struct cno_stream_t)), NULL;
 
     *stream = (struct cno_stream_t) {
-        .id          = conn->last_stream[local] = id,
-        .next        = conn->streams[id % CNO_STREAM_BUCKETS],
-        .window_recv = conn->settings[CNO_LOCAL] .initial_window_size,
-        .window_send = conn->settings[CNO_REMOTE].initial_window_size,
-        .accept      = local ? CNO_ACCEPT_WRITE_HEADERS | (conn->client ? CNO_ACCEPT_HEADERS | CNO_ACCEPT_PUSH : 0)
-                             : CNO_ACCEPT_HEADERS | (conn->client ? 0 : CNO_ACCEPT_WRITE_HEADERS | CNO_ACCEPT_WRITE_PUSH),
+        .id     = conn->last_stream[local] = id,
+        .next   = conn->streams[id % CNO_STREAM_BUCKETS],
+        .accept = local ? CNO_ACCEPT_WRITE_HEADERS | (conn->client ? CNO_ACCEPT_HEADERS | CNO_ACCEPT_PUSH : 0)
+                        : CNO_ACCEPT_HEADERS | (conn->client ? 0 : CNO_ACCEPT_WRITE_HEADERS | CNO_ACCEPT_WRITE_PUSH),
     };
 
     // Gotta love C for not having any standard library to speak of.
@@ -565,13 +563,12 @@ static int cno_frame_handle_continuation(struct cno_connection_t *conn,
     return CNO_OK;
 }
 
-
 static int cno_frame_handle_data(struct cno_connection_t *conn,
                                  struct cno_stream_t     *stream,
                                  struct cno_frame_t      *frame)
 {
     // For purposes of flow control, padding counts.
-    int32_t length = frame->payload.size;
+    uint32_t length = frame->payload.size;
     if (cno_frame_handle_padding(conn, frame))
         return CNO_ERROR_UP();
 
@@ -586,7 +583,7 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
     if (!(stream->accept & CNO_ACCEPT_DATA))
         return cno_frame_write_rst_stream(conn, stream, CNO_RST_STREAM_CLOSED);
 
-    if (length && length > stream->window_recv)
+    if (length && length > stream->window_recv + conn->settings[CNO_LOCAL].initial_window_size)
         return cno_frame_write_rst_stream(conn, stream, CNO_RST_FLOW_CONTROL_ERROR);
 
     if (stream->remaining_payload != (uint64_t) -1)
@@ -677,7 +674,7 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
         return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "bad SETTINGS");
 
     struct cno_settings_t *cfg = &conn->settings[CNO_REMOTE];
-    const int32_t old_window = cfg->initial_window_size;
+    const uint32_t old_window = cfg->initial_window_size;
 
     for (const char *p = frame->payload.data, *e = p + frame->payload.size; p != e; p += 6) {
         uint16_t setting = read2((const uint8_t *)p);
@@ -694,19 +691,8 @@ static int cno_frame_handle_settings(struct cno_connection_t *conn,
     if (cfg->max_frame_size < 16384 || cfg->max_frame_size > 16777215)
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "max_frame_size out of bounds");
 
-    const int32_t window_diff = (int32_t)cfg->initial_window_size - old_window;
-    if (window_diff != 0) {
-        for (int i = 0; i < CNO_STREAM_BUCKETS; i++) {
-            for (struct cno_stream_t *s = conn->streams[i]; s; s = s->next) {
-                if (window_diff > 0 ? s->window_send > +0x7FFFFFFFL - window_diff
-                                    : s->window_send < -0x7FFFFFFFL - window_diff)
-                    return cno_frame_write_error(conn, CNO_RST_FLOW_CONTROL_ERROR, "initial_window_size overflow");
-                s->window_send += window_diff;
-            }
-        }
-        if (window_diff > 0 && CNO_FIRE(conn, on_flow_increase, 0))
-            return CNO_ERROR_UP();
-    }
+    if (cfg->initial_window_size > old_window && CNO_FIRE(conn, on_flow_increase, 0))
+        return CNO_ERROR_UP();
 
     size_t limit = conn->encoder.limit_upper = cfg->header_table_size;
     if (limit > conn->settings[CNO_LOCAL].header_table_size)
@@ -731,18 +717,15 @@ static int cno_frame_handle_window_update(struct cno_connection_t *conn,
         return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "window increment out of bounds");
 
     if (!frame->stream) {
-        if (conn->window_send > 0x7FFFFFFFL - increment)
-            return cno_frame_write_error(conn, CNO_RST_FLOW_CONTROL_ERROR, "window increment too big");
-
         conn->window_send += increment;
-    } else {
-        if (stream == NULL)
-            return cno_frame_handle_invalid_stream(conn, frame);
-
-        if (stream->window_send > 0x7FFFFFFFL - increment)
-            return cno_frame_write_rst_stream(conn, stream, CNO_RST_FLOW_CONTROL_ERROR);
-
+        if (conn->window_send > 0x7FFFFFFFL)
+            return cno_frame_write_error(conn, CNO_RST_FLOW_CONTROL_ERROR, "window increment too big");
+    } else if (stream) {
         stream->window_send += increment;
+        if (stream->window_send + conn->settings[CNO_REMOTE].initial_window_size > 0x7FFFFFFFL)
+            return cno_frame_write_rst_stream(conn, stream, CNO_RST_FLOW_CONTROL_ERROR);
+    } else {
+        return cno_frame_handle_invalid_stream(conn, frame);
     }
 
     return CNO_FIRE(conn, on_flow_increase, frame->stream);
@@ -793,12 +776,6 @@ int cno_connection_set_config(struct cno_connection_t *conn, const struct cno_se
         if (cno_frame_write_settings(conn, &conn->settings[CNO_LOCAL], settings))
             return CNO_ERROR_UP();
 
-    const int64_t window_diff = (int64_t)settings->initial_window_size - conn->settings[CNO_LOCAL].initial_window_size;
-    if (window_diff != 0) {
-        for (int i = 0; i < CNO_STREAM_BUCKETS; i++)
-            for (struct cno_stream_t *s = conn->streams[i]; s; s = s->next)
-                s->window_recv += window_diff;
-    }
     conn->decoder.limit_upper = settings->header_table_size;
     memcpy(&conn->settings[CNO_LOCAL], settings, sizeof(*settings));
     return CNO_OK;
@@ -1409,16 +1386,13 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
             return CNO_ERROR_UP();
         }
     } else {
-        if (conn->window_send < 0 || streamobj->window_send < 0)
-            return 0;
-
-        if (buf.size > (uint32_t) conn->window_send) {
-            buf.size = (uint32_t) conn->window_send;
-            final = 0;
-        }
-
-        if (buf.size > (uint32_t) streamobj->window_send) {
-            buf.size = (uint32_t) streamobj->window_send;
+        int64_t sw = streamobj->window_send + conn->settings[CNO_REMOTE].initial_window_size;
+        if (sw > conn->window_send)
+            sw = conn->window_send;
+        if (sw < 0)
+            sw = 0;
+        if (buf.size > (uint64_t) sw) {
+            buf.size = sw;
             final = 0;
         }
 
