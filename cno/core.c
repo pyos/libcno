@@ -283,7 +283,7 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
     // >(ASCII 0x3a) [to convey the target URI, ...]
     for (; it != end && cno_buffer_startswith(it->name, CNO_BUFFER_STRING(":")); it++)
         // >Pseudo-header fields MUST NOT appear in trailers.
-        if (stream->accept & CNO_ACCEPT_TRAILERS)
+        if (stream->accept & CNO_ACCEPT_DATA)
             goto invalid_message;
 
     struct cno_header_t *first_non_pseudo = it;
@@ -376,13 +376,9 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
                 goto invalid_message;
     }
 
-    if (stream->accept & CNO_ACCEPT_TRAILERS) {
-        // There is no data after trailers.
-        stream->accept &= ~CNO_ACCEPT_INBOUND;
-        if (!(frame->flags & CNO_FLAG_END_STREAM))
-            goto invalid_message;
+    if (stream->accept & CNO_ACCEPT_DATA)
+        // Already checked for `CNO_FLAG_END_STREAM` in `cno_frame_handle_headers`.
         return cno_frame_handle_end_stream(conn, stream, msg);
-    }
 
     // >All HTTP/2 requests MUST include exactly one valid value for the :method, :scheme,
     // >and :path pseudo-header fields, unless it is a CONNECT request (Section 8.3).
@@ -394,8 +390,7 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
         return CNO_FIRE(conn, on_message_push, stream->id, msg, frame->stream);
 
     if (!cno_is_informational(msg->code)) {
-        stream->accept &= ~CNO_ACCEPT_HEADERS;
-        stream->accept |=  CNO_ACCEPT_TRAILERS | CNO_ACCEPT_DATA;
+        stream->accept = (stream->accept & ~CNO_ACCEPT_HEADERS) | CNO_ACCEPT_DATA;
     } else if (stream->remaining_payload != (uint64_t) -1) {
         goto invalid_message;
     }
@@ -493,8 +488,7 @@ static int cno_frame_handle_headers(struct cno_connection_t *conn,
             if (stream == NULL)
                 return CNO_ERROR_UP();
         }
-    } else if (stream->accept & CNO_ACCEPT_TRAILERS) {
-        stream->accept &= ~CNO_ACCEPT_DATA;
+    } else if (stream->accept & CNO_ACCEPT_DATA) {
         if (!(frame->flags & CNO_FLAG_END_STREAM))
             return cno_frame_write_error(conn, CNO_RST_PROTOCOL_ERROR, "trailers without END_STREAM");
     } else if (!(stream->accept & CNO_ACCEPT_HEADERS)) {
