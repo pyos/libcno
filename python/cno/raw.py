@@ -60,7 +60,7 @@ except NameError:
     def _make_callbacks():
         def _except(t, v, tb):
             _thread_local.err = v.with_traceback(tb)
-            return cno_error_set(b'?', 1, 127, b'Python exception')
+            return cno_error_set(127, b'Python exception')
 
         for name, f in _CALLBACKS.items():
             @ffi.def_extern(name, onerror=_except)
