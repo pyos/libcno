@@ -66,16 +66,11 @@ enum CNO_STREAM_FLAGS
 };
 
 
-enum CNO_STREAM_ACCEPT
+enum CNO_STREAM_STATE
 {
-    CNO_ACCEPT_HEADERS       = 0x01,
-    CNO_ACCEPT_DATA          = 0x02,
-    CNO_ACCEPT_PUSH          = 0x04,
-    CNO_ACCEPT_INBOUND       = 0x07,
-    CNO_ACCEPT_WRITE_HEADERS = 0x10,
-    CNO_ACCEPT_WRITE_DATA    = 0x20,
-    CNO_ACCEPT_WRITE_PUSH    = 0x40,
-    CNO_ACCEPT_OUTBOUND      = 0x70,
+    CNO_STREAM_HEADERS,
+    CNO_STREAM_DATA,
+    CNO_STREAM_CLOSED,
 };
 
 
@@ -159,8 +154,9 @@ struct cno_stream_t
 {
     struct cno_stream_t *next; // in hashmap bucket
     uint32_t id;
-    uint8_t /* enum CNO_STREAM_ACCEPT */ accept;
-    uint8_t /* enum CNO_STREAM_FLAGS  */ flags;
+    uint8_t /* enum CNO_STREAM_STATE */ r_state;
+    uint8_t /* enum CNO_STREAM_STATE */ w_state;
+    uint8_t /* enum CNO_STREAM_FLAGS */ flags;
      int64_t window_recv;
      int64_t window_send;
     uint64_t remaining_payload;
