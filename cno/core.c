@@ -1060,11 +1060,13 @@ static int cno_when_h1_tail(struct cno_connection_t *conn)
 
 static int cno_when_h1_chunk(struct cno_connection_t *conn)
 {
-    if (memchr(conn->buffer.data, '\n', conn->buffer.size) == NULL)
-        return CNO_OK;
+    const char *eol = memchr(conn->buffer.data, '\n', conn->buffer.size);
+    if (eol == NULL)
+        return conn->buffer.size >= conn->settings[CNO_LOCAL].max_frame_size
+             ? CNO_ERROR(PROTOCOL, "too many h1 chunk extensions") : CNO_OK;
     const char *p = conn->buffer.data;
     size_t length = 0;
-    for (; *p != '\r' && *p != '\n'; p++) {
+    for (; *p != '\r' && *p != '\n' && *p != ';'; p++) {
         size_t prev = length;
         length = length * 16 + ('0' <= *p && *p <= '9' ? *p - '0' :
                                 'A' <= *p && *p <= 'F' ? *p - 'A' :
@@ -1072,7 +1074,9 @@ static int cno_when_h1_chunk(struct cno_connection_t *conn)
         if (length < prev)
             return CNO_ERROR(PROTOCOL, "invalid h1 chunk length");
     }
-    if (*p++ != '\r' || *p++ != '\n')
+    if (*p == ';')
+        p = eol + 1;
+    else if (*p++ != '\r' || *p++ != '\n')
         return CNO_ERROR(PROTOCOL, "invalid h1 line separator");
     cno_buffer_dyn_shift(&conn->buffer, p - conn->buffer.data);
     conn->remaining_h1_payload = length;
