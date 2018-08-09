@@ -268,6 +268,13 @@ static uint64_t cno_parse_uint(struct cno_buffer_t value)
     return ret;
 }
 
+static const char CNO_HEADER_TRANSFORM[] =
+    "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0!\0#$%&'\0\0*+\0-.\0"
+    "0123456789\0\0\0\0\0\0\0abcdefghijklmnopqrstuvwxyz\0\0\0^_`abcdefghijklmnopqrstuvwxyz"
+    "\0|\0~\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+    "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+    "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+
 static int cno_frame_handle_message(struct cno_connection_t *conn,
                                     struct cno_stream_t     *stream,
                                     struct cno_frame_t      *frame,
@@ -348,15 +355,11 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
 
     stream->remaining_payload = (uint64_t) -1;
     for (it = first_non_pseudo; it != end; ++it) {
-        // >All pseudo-header fields MUST appear in the header block
-        // >before regular header fields.
-        if (cno_buffer_startswith(it->name, CNO_BUFFER_STRING(":")))
-            goto invalid_message;
-
-        // >However, header field names MUST be converted to lowercase
-        // >prior to their encoding in HTTP/2.
-        for (const char *p = it->name.data; p != it->name.data + it->name.size; p++)
-            if (isupper(*p))
+        // >All pseudo-header fields MUST appear in the header block before regular
+        // >header fields. [...] However, header field names MUST be converted
+        // >to lowercase prior to their encoding in HTTP/2.
+        for (uint8_t *p = (uint8_t *) it->name.data, *e = p + it->name.size; p != e; p++)
+            if (CNO_HEADER_TRANSFORM[*p] != *p) // this also rejects invalid symbols, incl. `:`
                 goto invalid_message;
 
         // >HTTP/2 does not use the Connection header field to indicate
@@ -953,8 +956,9 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
             .value = { headers_phr[i].value, headers_phr[i].value_len },
         };
 
-        for (char *p = (char *) it->name.data, *e = p + it->name.size; p != e; p++)
-            *p = tolower(*p);
+        for (uint8_t *p = (uint8_t *) it->name.data, *e = p + it->name.size; p != e; p++)
+            if (!(*p = CNO_HEADER_TRANSFORM[*p]))
+                return CNO_ERROR(PROTOCOL, "invalid character in h1 header");
 
         if (!conn->client && cno_buffer_eq(it->name, CNO_BUFFER_STRING("host"))) {
             headers[1].value = it->value;
