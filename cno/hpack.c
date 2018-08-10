@@ -253,8 +253,6 @@ int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t buf, struct 
         size_t limit = 0;
         if (cno_hpack_decode_uint(&buf, 0x1F, &limit))
             return CNO_ERROR_UP();
-        if (limit > state->limit_upper)
-            return CNO_ERROR(PROTOCOL, "requested table size is too big");
         cno_hpack_evict(state, state->limit = limit);
     }
 
@@ -263,16 +261,10 @@ int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t buf, struct 
 
     size_t read = 0, limit = *n;
     for (; buf.size; rs++, read++) {
-        if (read == limit) {
+        if (read == limit || cno_hpack_decode_one(state, &buf, rs)) {
             while (read--)
                 cno_hpack_free_header(--rs);
-            return CNO_ERROR(PROTOCOL, "header list too long");
-        }
-
-        if (cno_hpack_decode_one(state, &buf, rs)) {
-            while (read--)
-                cno_hpack_free_header(--rs);
-            return CNO_ERROR_UP();
+            return read == limit ? CNO_ERROR(PROTOCOL, "header list too long") : CNO_ERROR_UP();
         }
     }
     *n = read;
