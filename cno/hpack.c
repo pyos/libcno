@@ -296,48 +296,32 @@ static int cno_hpack_encode_uint(struct cno_buffer_dyn_t *buf, uint8_t prefix, u
 
 static int cno_hpack_encode_string(struct cno_buffer_dyn_t *buf, const struct cno_buffer_t s)
 {
-    if (!s.size)
-        goto huffman_inefficient;
+    size_t total = 0;
+    for (const uint8_t *p = (const uint8_t *) s.data, *e = p + s.size; p != e; p++)
+        total += CNO_HUFFMAN_TABLE[*p].bits;
+    total = (total + 7) / 8;
 
-    uint8_t *out = malloc(s.size);
-    uint8_t *ptr = out;
-    if (out == NULL)
-        return CNO_ERROR(NO_MEMORY, "%zu bytes", s.size);
+    if (total >= s.size)
+        return cno_hpack_encode_uint(buf, 0, 0x7F, s.size) || cno_buffer_dyn_concat(buf, s);
 
-    const uint8_t *src = (const uint8_t *) s.data;
-    const uint8_t *end = src + s.size;
+    if (cno_hpack_encode_uint(buf, 0x80, 0x7F, total) || cno_buffer_dyn_reserve(buf, buf->size + total))
+        return CNO_ERROR_UP();
 
-    uint64_t bits = 0;
-    uint8_t  used = 0;
-
-    while (src != end) {
-        const struct cno_huffman_table_t it = CNO_HUFFMAN_TABLE[*src++];
-
-        bits  = it.code | bits << it.bits;
-        used += it.bits;
-
-        while (used >= 8) {
-            *ptr++ = bits >> (used -= 8);
-
-            if (ptr == out + s.size) {
-                free(out);
-                goto huffman_inefficient;
-            }
-        }
+    uint8_t *out = (uint8_t *) buf->data + buf->size;
+    uint64_t code = 0;
+    int bits = 0;
+    for (const uint8_t *p = (const uint8_t *) s.data, *e = p + s.size; p != e; p++) {
+        const struct cno_huffman_table_t it = CNO_HUFFMAN_TABLE[*p];
+        code  = it.code | code << it.bits;
+        bits += it.bits;
+        while (bits >= 8)
+            *out++ = code >> (bits -= 8);
     }
+    if (bits)
+        *out++ = (0xff | code << 8) >> bits;
 
-    if (used)
-        *ptr++ = (0xff | bits << 8) >> used;
-
-    int err = cno_hpack_encode_uint(buf, 0x80, 0x7F, ptr - out)
-           || cno_buffer_dyn_concat(buf, (struct cno_buffer_t) { (char *) out, ptr - out });
-
-    free(out);
-    return err;
-
-huffman_inefficient:
-    return cno_hpack_encode_uint(buf, 0, 0x7F, s.size)
-        || cno_buffer_dyn_concat(buf, s);
+    buf->size += total;
+    return CNO_OK;
 }
 
 static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf, const struct cno_header_t *h)
@@ -351,9 +335,8 @@ static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_dyn
         : cno_hpack_encode_uint(buf, 0x40, 0x3F, index) || cno_hpack_insert(state, h))
             return CNO_ERROR_UP();
 
-    if (!index)
-        if (cno_hpack_encode_string(buf, h->name))
-            return CNO_ERROR_UP();
+    if (!index && cno_hpack_encode_string(buf, h->name))
+        return CNO_ERROR_UP();
 
     return cno_hpack_encode_string(buf, h->value);
 }
