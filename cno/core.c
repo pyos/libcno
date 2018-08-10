@@ -4,15 +4,10 @@
 #include "core.h"
 #include "../picohttpparser/picohttpparser.h"
 
-// Endian-independent fixed-size reads. (These actually compile to efficient code.)
-// `read3` is kind of unsafe because it reads 4, but it's only used in one place where there
-// is at least 9 bytes available, so whatever.
 static inline uint8_t  read1(const uint8_t *p) { return p[0]; }
 static inline uint16_t read2(const uint8_t *p) { return p[0] <<  8 | p[1]; }
 static inline uint32_t read4(const uint8_t *p) { return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
-static inline uint32_t read3(const uint8_t *p) { return read4(p) >> 8; }
 
-// Construct a stack-allocated array of bytes in place.
 #define PACK(...) ((struct cno_buffer_t) { (char *) (uint8_t []) { __VA_ARGS__ }, sizeof((uint8_t []) { __VA_ARGS__ }) })
 #define I8(x)  (x)
 #define I16(x) (x) >> 8,  (x)
@@ -872,7 +867,7 @@ static int cno_when_h2_frame(struct cno_connection_t *conn)
         return CNO_OK;
 
     const uint8_t *base = (const uint8_t *) conn->buffer.data;
-    const size_t len = read3(base);
+    const size_t len = read4(base) >> 8;
 
     if (len > conn->settings[CNO_LOCAL].max_frame_size)
         return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "frame too big");
