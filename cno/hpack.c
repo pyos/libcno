@@ -2,6 +2,20 @@
 #include "hpack.h"
 #include "hpack-data.h"
 
+void cno_hpack_free_header(struct cno_header_t *h)
+{
+    if (h->flags & CNO_HEADER_OWNS_NAME)
+        free((void *) h->name.data);
+    if (h->flags & CNO_HEADER_OWNS_VALUE)
+        free((void *) h->value.data);
+    if (h->flags & CNO_HEADER_REFS_TABLE) {
+        struct cno_header_table_t *entry = ((struct cno_header_table_t *)h->name.data) - 1;
+        if (!--entry->refcnt)
+            free(entry);
+    }
+    *h = CNO_HEADER_EMPTY;
+}
+
 void cno_hpack_init(struct cno_hpack_t *state, uint32_t limit)
 {
     state->last = state->first = (struct cno_header_table_t *) state;
@@ -19,7 +33,8 @@ static void cno_hpack_evict(struct cno_hpack_t *state, uint32_t limit)
         state->size -= entry->k_size + entry->v_size + 32;
         entry->next->prev = entry->prev;
         entry->prev->next = entry->next;
-        free(entry);
+        if (!--entry->refcnt)
+            free(entry);
     }
 }
 
@@ -54,6 +69,7 @@ static int cno_hpack_insert(struct cno_hpack_t *state, const struct cno_header_t
 
         memcpy(&entry->data[0],            h->name.data,  entry->k_size = h->name.size);
         memcpy(&entry->data[h->name.size], h->value.data, entry->v_size = h->value.size);
+        entry->refcnt = 1;
         entry->prev = (struct cno_header_table_t *) state;
         entry->next = state->first;
         state->first->prev = entry;
@@ -74,20 +90,15 @@ static int cno_hpack_lookup(struct cno_hpack_t *state, size_t index, struct cno_
         return CNO_OK;
     }
 
-    const struct cno_header_table_t *hdr = (struct cno_header_table_t *) state;
+    struct cno_header_table_t *hdr = (struct cno_header_table_t *) state;
     for (index -= CNO_HPACK_STATIC_TABLE_SIZE; index--;)
         if ((hdr = hdr->next) == (struct cno_header_table_t *) state)
             return CNO_ERROR(PROTOCOL, "dynamic table index out of bounds");
 
-    // A peer may send an index into the dynamic table followed by an indexed header that
-    // overflows the table and evicts the entry. Thus, the copying.
-    char *buf = malloc(hdr->k_size + hdr->v_size);
-    if (!buf)
-        return CNO_ERROR(NO_MEMORY, "%zu bytes", hdr->k_size + hdr->v_size);
-    memcpy(buf, hdr->data, hdr->k_size + hdr->v_size);
-    out->name  = (struct cno_buffer_t){buf, hdr->k_size};
-    out->value = (struct cno_buffer_t){buf + hdr->k_size, hdr->v_size};
-    out->flags |= CNO_HEADER_OWNS_NAME;
+    out->name  = (struct cno_buffer_t){ &hdr->data[0], hdr->k_size };
+    out->value = (struct cno_buffer_t){ &hdr->data[hdr->k_size], hdr->v_size };
+    out->flags |= CNO_HEADER_REFS_TABLE;
+    hdr->refcnt++;
     return CNO_OK;
 }
 

@@ -11,6 +11,7 @@ enum CNO_HEADER_FLAGS
     CNO_HEADER_OWNS_NAME   = 0x01,  // owned strings should be free-d
     CNO_HEADER_OWNS_VALUE  = 0x02,
     CNO_HEADER_NOT_INDEXED = 0x04,
+    CNO_HEADER_REFS_TABLE  = 0x08,
 };
 
 
@@ -28,6 +29,7 @@ struct cno_header_table_t
     struct cno_header_table_t *next;
     size_t k_size;
     size_t v_size;
+    size_t refcnt;
     char data[];
 };
 
@@ -47,6 +49,9 @@ struct cno_hpack_t
 // Initial value for an uninitialized `cno_header_t`.
 static const struct cno_header_t CNO_HEADER_EMPTY = { { NULL, 0 }, { NULL, 0 }, 0 };
 
+// Carefully deallocate buffers used to construct a header. (Some of them may be shared.)
+void cno_hpack_free_header(struct cno_header_t *h);
+
 // Construct an empty dynamic table with a given default size limit.
 void cno_hpack_init(struct cno_hpack_t *, uint32_t limit);
 
@@ -65,20 +70,6 @@ int cno_hpack_decode(struct cno_hpack_t *, struct cno_buffer_t, struct cno_heade
 // Encode exactly `n` headers into a dynamic buffer. If it errors, the buffer may contain
 // partially encoded data. Clear it yourself.
 int cno_hpack_encode(struct cno_hpack_t *, struct cno_buffer_dyn_t *, const struct cno_header_t *, size_t n);
-
-#if !CFFI_CDEF_MODE
-
-// Carefully deallocate buffers used to construct a header. (Some of them may be shared.)
-static inline void cno_hpack_free_header(struct cno_header_t *h)
-{
-    if (h->flags & CNO_HEADER_OWNS_NAME)
-        free((void *) h->name.data);
-    if (h->flags & CNO_HEADER_OWNS_VALUE)
-        free((void *) h->value.data);
-    *h = CNO_HEADER_EMPTY;
-}
-
-#endif
 
 #if __cplusplus
 }
