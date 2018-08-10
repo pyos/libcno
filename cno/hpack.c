@@ -346,13 +346,12 @@ int cno_hpack_encode(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf,
 {
     // Force the other side to evict the same number of entries first...
     if (state->limit != state->limit_update_min)
-        if (cno_hpack_encode_uint(buf, 0x20, 0x1F, state->limit_update_min))
+        if (cno_hpack_encode_uint(buf, 0x20, 0x1F, state->limit = state->limit_update_min))
             return CNO_ERROR_UP();
     // ...then set the limit to its actual value.
     if (state->limit != state->limit_update_end)
-        if (cno_hpack_encode_uint(buf, 0x20, 0x1F, state->limit_update_end))
+        if (cno_hpack_encode_uint(buf, 0x20, 0x1F, state->limit = state->limit_update_min = state->limit_update_end))
             return CNO_ERROR_UP();
-    state->limit_update_min = state->limit = state->limit_update_end;
 
     while (n--)
         if (cno_hpack_encode_one(state, buf, headers++))
