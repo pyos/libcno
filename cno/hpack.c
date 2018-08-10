@@ -152,26 +152,21 @@ static int cno_hpack_decode_string(struct cno_buffer_t *source, struct cno_buffe
         return CNO_ERROR(PROTOCOL, "expected %zu octets, got %zu", length, source->size);
 
     if (length && huffman) {
-        const uint8_t *src = (const uint8_t *) source->data;
-        const uint8_t *end = length + src;
         // min. length of a Huffman code = 5 bits => max length after decoding = x * 8 / 5.
         uint8_t *buf = malloc(length * 2);
         uint8_t *ptr = buf;
-
         if (!buf)
             return CNO_ERROR(NO_MEMORY, "%zu bytes", length * 2);
 
         struct cno_huffman_state_t state = CNO_HUFFMAN_STATE_INIT;
-        do {
-            uint8_t chr = *src++;
-
-            for (int i = 0; i < 8 / CNO_HUFFMAN_INPUT_BITS; i++, chr <<= CNO_HUFFMAN_INPUT_BITS) {
+        for (const uint8_t *p = (const uint8_t *) source->data, *e = length + p; p != e; p++) {
+            uint8_t chr = *p;
+            for (int i = 0; i < 8; i += CNO_HUFFMAN_INPUT_BITS, chr <<= CNO_HUFFMAN_INPUT_BITS) {
                 state = CNO_HUFFMAN_STATE[state.next | (chr >> (8 - CNO_HUFFMAN_INPUT_BITS))];
-
                 if (state.flags & CNO_HUFFMAN_APPEND)
                     *ptr++ = state.byte;
             }
-        } while (src != end);
+        }
 
         if (!(state.flags & CNO_HUFFMAN_ACCEPT)) {
             free(buf);
@@ -195,25 +190,23 @@ static int cno_hpack_decode_one(struct cno_hpack_t  *state,
                                 struct cno_header_t *target)
 {
     *target = CNO_HEADER_EMPTY;
-    if (!source->size)
-        return CNO_ERROR(PROTOCOL, "expected header, got EOF");
-    const uint8_t head = * (const uint8_t *) source->data;
 
+    const uint8_t head = * (const uint8_t *) source->data;
     size_t index = 0;
-    if (head & 0x80) {
+    if (head >= 0x80) {
         // 1....... -- name & value taken from the table
         return cno_hpack_decode_uint(source, 0x7F, &index)
             || cno_hpack_lookup(state, index, target);
-    } else if ((head & 0xC0) == 0x40) {
+    } else if (head >= 0x40) {
         // 01...... -- name taken from the table, value included as a literal
         if (cno_hpack_decode_uint(source, 0x3F, &index))
             return CNO_ERROR_UP();
-    } else if ((head & 0xE0) == 0x20) {
+    } else if (head >= 0x20) {
         // 001..... -- table size limit update; see cno_hpack_decode
         return CNO_ERROR(PROTOCOL, "unexpected table size limit update");
     } else {
-        // 0000.... -- same as 0x40, but we shouldn't insert this header into the table.
-        // 0001.... -- same as 0x00, but proxies must not encode differently.
+        // 000x.... -- same as 0x40, but we shouldn't insert this header into the table.
+        // `x` is set if proxies must use the same encoding.
         target->flags |= CNO_HEADER_NOT_INDEXED;
         if (cno_hpack_decode_uint(source, 0x0F, &index))
             return CNO_ERROR_UP();
@@ -231,24 +224,17 @@ static int cno_hpack_decode_one(struct cno_hpack_t  *state,
     }
 
     int borrow = 0;
-    if (cno_hpack_decode_string(source, &target->value, &borrow)) {
-        cno_hpack_free_header(target);
+    if (cno_hpack_decode_string(source, &target->value, &borrow))
         return CNO_ERROR_UP();
-    }
     if (!borrow)
         target->flags |= CNO_HEADER_OWNS_VALUE;
 
-    if (!(target->flags & CNO_HEADER_NOT_INDEXED) && cno_hpack_insert(state, target)) {
-        cno_hpack_free_header(target);
-        return CNO_ERROR_UP();
-    }
-
-    return CNO_OK;
+    return target->flags & CNO_HEADER_NOT_INDEXED ? CNO_OK : cno_hpack_insert(state, target);
 }
 
 int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t buf, struct cno_header_t *rs, size_t *n)
 {
-    while (buf.size && (*buf.data & 0xE0) == 0x20) {
+    while (buf.size && ((* (const uint8_t *) buf.data) & 0xE0) == 0x20) {
         // 001..... -- a new size limit for the table
         size_t limit = 0;
         if (cno_hpack_decode_uint(&buf, 0x1F, &limit))
@@ -262,6 +248,8 @@ int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t buf, struct 
     size_t read = 0, limit = *n;
     for (; buf.size; rs++, read++) {
         if (read == limit || cno_hpack_decode_one(state, &buf, rs)) {
+            if (read != limit)
+                cno_hpack_free_header(rs);
             while (read--)
                 cno_hpack_free_header(--rs);
             return read == limit ? CNO_ERROR(PROTOCOL, "header list too long") : CNO_ERROR_UP();
