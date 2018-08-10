@@ -97,7 +97,7 @@ class Connection:
 
     @property
     def is_http2(self):
-        return cno_connection_is_http2(self.__c)
+        return self.__c.mode == CNO_HTTP2
 
     @property
     def next_stream(self):

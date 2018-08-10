@@ -70,7 +70,7 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
         return (local ? CNO_ERROR(INVALID_STREAM, "incorrect stream id parity")
                       : CNO_ERROR(PROTOCOL, "incorrect stream id parity")), NULL;
 
-    if (cno_connection_is_http2(conn)) {
+    if (conn->mode == CNO_HTTP2) {
         if (id <= conn->last_stream[local])
             return (local ? CNO_ERROR(INVALID_STREAM, "nonmonotonic stream id")
                           : CNO_ERROR(PROTOCOL, "nonmonotonic stream id")), NULL;
@@ -600,7 +600,7 @@ static int cno_frame_handle_data(struct cno_connection_t *conn,
     if (frame->flags & CNO_FLAG_END_STREAM)
         return cno_frame_handle_end_stream(conn, stream, NULL);
 
-    if (conn->flags & CNO_CONN_FLAG_MANUAL_FLOW_CONTROL) {
+    if (conn->manual_flow_control) {
         // Forwarding padding to the application is kind of silly, so that part
         // of the frame will be flow-controlled automatically anyway.
         stream->window_recv -= frame->payload.size;
@@ -776,7 +776,7 @@ int cno_connection_set_config(struct cno_connection_t *conn, const struct cno_se
     if (settings->max_frame_size < 16384 || settings->max_frame_size > 16777215)
         return CNO_ERROR(ASSERTION, "maximum frame size out of bounds (2^14..2^24-1)");
 
-    if (conn->state != CNO_STATE_H2_INIT && cno_connection_is_http2(conn))
+    if (conn->state != CNO_STATE_H2_INIT && conn->mode == CNO_HTTP2)
         // If not yet in HTTP2 mode, `cno_connection_upgrade` will send the SETTINGS frame.
         if (cno_frame_write_settings(conn, &conn->settings[CNO_LOCAL], settings))
             return CNO_ERROR_UP();
@@ -810,11 +810,6 @@ void cno_connection_reset(struct cno_connection_t *conn)
     for (size_t i = 0; i < CNO_STREAM_BUCKETS; i++)
         while (conn->streams[i])
             cno_stream_free(conn, conn->streams[i]);
-}
-
-int cno_connection_is_http2(struct cno_connection_t *conn)
-{
-    return conn->mode == CNO_HTTP2;
 }
 
 static int cno_connection_upgrade(struct cno_connection_t *conn)
@@ -906,7 +901,7 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
     } else {
         if (!stream) {
             // Only allow upgrading with prior knowledge if no h1 requests have yet been received.
-            if (!(conn->flags & CNO_CONN_FLAG_DISALLOW_H2_PRIOR_KNOWLEDGE) && conn->last_stream[CNO_REMOTE] == 0)
+            if (!conn->disallow_h2_prior_knowledge && conn->last_stream[CNO_REMOTE] == 0)
                 if (!strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size))
                     return conn->buffer.size < CNO_PREFACE.size ? CNO_OK : CNO_STATE_H2_INIT;
 
@@ -971,7 +966,7 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
                 continue; // If upgrading to h2c, don't notify the application of any upgrades.
             } else if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("h2c"))) {
                 // TODO: client-side h2 upgrade
-                if (conn->client || upgrade || conn->flags & CNO_CONN_FLAG_DISALLOW_H2_UPGRADE)
+                if (conn->client || upgrade || conn->disallow_h2_upgrade)
                     continue;
 
                 // Technically, server should refuse if HTTP2-Settings are not present. We'll let this slide.
@@ -1154,7 +1149,7 @@ int cno_connection_stop(struct cno_connection_t *conn)
 
 int cno_connection_lost(struct cno_connection_t *conn)
 {
-    if (!cno_connection_is_http2(conn)) {
+    if (conn->mode != CNO_HTTP2) {
         struct cno_stream_t * stream = cno_stream_find(conn, 1);
         if (stream && stream->r_state != CNO_STREAM_CLOSED)
             return CNO_ERROR(DISCONNECT, "unclean http/1.x termination");
@@ -1172,7 +1167,7 @@ int cno_connection_lost(struct cno_connection_t *conn)
 
 uint32_t cno_connection_next_stream(struct cno_connection_t *conn)
 {
-    if (!cno_connection_is_http2(conn))
+    if (conn->mode != CNO_HTTP2)
         return 1;
     uint32_t last = conn->last_stream[CNO_LOCAL];
     return conn->client && !last ? 1 : last + 2;
@@ -1180,7 +1175,7 @@ uint32_t cno_connection_next_stream(struct cno_connection_t *conn)
 
 int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST_STREAM_CODE code)
 {
-    if (!cno_connection_is_http2(conn)) {
+    if (conn->mode != CNO_HTTP2) {
         if (!stream && code == CNO_RST_NO_ERROR)
             return CNO_OK;
         struct cno_stream_t *obj = cno_stream_find(conn, 1);
@@ -1203,7 +1198,7 @@ int cno_write_push(struct cno_connection_t *conn, uint32_t stream, const struct 
     if (conn->client)
         return CNO_ERROR(ASSERTION, "clients can't push");
 
-    if (!cno_connection_is_http2(conn) || !conn->settings[CNO_REMOTE].enable_push)
+    if (conn->mode != CNO_HTTP2 || !conn->settings[CNO_REMOTE].enable_push)
         return CNO_OK;
 
     struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
@@ -1240,7 +1235,7 @@ static int cno_discard_remaining_payload(struct cno_connection_t *conn, struct c
     streamobj->w_state = CNO_STREAM_CLOSED;
     if (streamobj->r_state == CNO_STREAM_CLOSED)
         return cno_stream_end_by_local(conn, streamobj);
-    if (!conn->client && cno_connection_is_http2(conn) && cno_frame_write_rst_stream(conn, streamobj, CNO_RST_NO_ERROR))
+    if (!conn->client && conn->mode == CNO_HTTP2 && cno_frame_write_rst_stream(conn, streamobj, CNO_RST_NO_ERROR))
         return CNO_ERROR_UP();
     return CNO_OK;
 }
@@ -1266,9 +1261,9 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
             if (streamobj == NULL)
                 return CNO_ERROR_UP();
         } else if (streamobj->w_state != CNO_STREAM_HEADERS) {
-            return cno_connection_is_http2(conn)
-                 ? CNO_ERROR(WOULD_BLOCK, "HTTP/1.x request already in progress")
-                 : CNO_ERROR(INVALID_STREAM, "this stream is not writable");
+            return conn->mode == CNO_HTTP2
+                 ? CNO_ERROR(INVALID_STREAM, "this stream is not writable")
+                 : CNO_ERROR(WOULD_BLOCK, "HTTP/1.x request already in progress");
         }
 
         if (cno_buffer_eq(msg->method, CNO_BUFFER_STRING("HEAD")))
@@ -1280,7 +1275,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
             return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
     }
 
-    if (!cno_connection_is_http2(conn)) {
+    if (conn->mode != CNO_HTTP2) {
         if (conn->client) {
             if (CNO_WRITEV(conn, msg->method, CNO_BUFFER_STRING(" "), msg->path, CNO_BUFFER_STRING(" HTTP/1.1\r\n")))
                 return CNO_ERROR_UP();
@@ -1385,7 +1380,7 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
         return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
     struct cno_buffer_t buf = { data, length };
-    if (!cno_connection_is_http2(conn)) {
+    if (conn->mode != CNO_HTTP2) {
         if (streamobj->flags & CNO_STREAM_H1_WRITING_CHUNKED) {
             char lenbuf[24];
             struct cno_buffer_t len = { lenbuf, snprintf(lenbuf, sizeof(lenbuf), "%zX\r\n", buf.size) };
@@ -1422,7 +1417,7 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
 
 int cno_write_ping(struct cno_connection_t *conn, const char data[8])
 {
-    if (!cno_connection_is_http2(conn))
+    if (conn->mode != CNO_HTTP2)
         return CNO_ERROR(ASSERTION, "cannot ping HTTP/1.x endpoints");
     struct cno_frame_t ping = { CNO_FRAME_PING, 0, 0, { data, 8 } };
     return cno_frame_write(conn, &ping);
@@ -1430,14 +1425,14 @@ int cno_write_ping(struct cno_connection_t *conn, const char data[8])
 
 int cno_write_frame(struct cno_connection_t *conn, const struct cno_frame_t *frame)
 {
-    if (!cno_connection_is_http2(conn))
+    if (conn->mode != CNO_HTTP2)
         return CNO_ERROR(ASSERTION, "cannot send HTTP2 frames to HTTP/1.x endpoints");
     return cno_frame_write(conn, frame);
 }
 
 int cno_increase_flow_window(struct cno_connection_t *conn, uint32_t stream, uint32_t bytes)
 {
-    if (!bytes || !stream || !cno_connection_is_http2(conn))
+    if (!bytes || !stream || conn->mode != CNO_HTTP2)
         return CNO_OK;
     struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
     if (!streamobj)

@@ -42,7 +42,6 @@ pip3 install git+https://github.com/pyos/libcno
 | `cno_connection_made(c, CNO_HTTP2)`              | `c.connection_made(is_http2=True)`                            |
 | `cno_connection_lost(c)`                         | `c.connection_lost()`                                         |
 | `cno_connection_data_received(c, data, length)`  | `c.data_received(data)`                                       |
-| `cno_connection_is_http2(c)`                     | `c.is_http2`                                                  |
 | `cno_connection_next_stream(c)`                  | `c.next_stream`                                               |
 | `cno_write_reset(c, stream, code)`               | `c.write_reset(stream, code)`                                 |
 | `cno_write_push(c, stream, msg)`                 | `c.write_push(stream, method, path, headers)`                 |

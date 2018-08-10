@@ -47,18 +47,6 @@ enum CNO_CONNECTION_STATE
 };
 
 
-enum CNO_CONNECTION_FLAGS
-{
-    // Disable automatic sending of stream WINDOW_UPDATEs after receiving DATA;
-    // application must call `cno_increase_flow_window` after processing a chunk from `on_message_data`.
-    CNO_CONN_FLAG_MANUAL_FLOW_CONTROL = 0x01,
-    // Disable special handling of the "Upgrade: h2c" header in HTTP/1.x mode.
-    CNO_CONN_FLAG_DISALLOW_H2_UPGRADE = 0x02,
-    // Disable special handling of the HTTP2 preface in HTTP/1.x mode.
-    CNO_CONN_FLAG_DISALLOW_H2_PRIOR_KNOWLEDGE = 0x04,
-};
-
-
 enum CNO_STREAM_FLAGS
 {
     CNO_STREAM_H1_WRITING_CHUNKED = 0x01,
@@ -183,8 +171,20 @@ struct cno_settings_t
 
 struct cno_connection_t
 {
-    uint8_t /* enum CNO_PEER_KIND        */ client : 1;
-    uint8_t /* enum CNO_HTTP_VERSION     */ mode : 1;
+// public:
+    // Disable automatic sending of stream WINDOW_UPDATEs after receiving DATA; application
+    // must call `cno_increase_flow_window` after processing a chunk from `on_message_data`.
+    uint8_t manual_flow_control : 1;
+    // Disable special handling of the "Upgrade: h2c" header in HTTP/1.x mode.
+    uint8_t disallow_h2_upgrade : 1;
+    // Disable special handling of the HTTP2 preface in HTTP/1.x mode.
+    uint8_t disallow_h2_prior_knowledge : 1;
+    // Whether `cno_connection_init` was called with `CNO_CLIENT`.
+    uint8_t client : 1;
+    // Whether `cno_connection_made` was called with `CNO_HTTP2` or an upgrade has beed performed.
+    uint8_t mode : 1;
+
+// private:
     uint8_t /* enum CNO_CONNECTION_STATE */ state;
     uint8_t /* enum CNO_CONNECTION_FLAGS */ flags;
     uint8_t  continued_flags;
@@ -274,10 +274,6 @@ int  cno_connection_data_received (struct cno_connection_t *, const char *, size
 int  cno_connection_lost          (struct cno_connection_t *);
 void cno_connection_reset         (struct cno_connection_t *);
 int  cno_connection_stop          (struct cno_connection_t *);
-// Returns whether the next message will be sent in HTTP 2 mode.
-// `cno_write_push` does nothing if this returns false. On the other hand,
-// you can't switch protocols (e.g. to websockets) if this returns true.
-int  cno_connection_is_http2(struct cno_connection_t *);
 // Send a new configuration/schedule it to be sent when upgrading to HTTP 2.
 // The current configuration can be read through `conn->settings[CNO_LOCAL]`.
 // DO NOT modify `conn->settings` directly -- it is used to compute the delta.
