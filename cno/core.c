@@ -773,6 +773,7 @@ void cno_connection_init(struct cno_connection_t *conn, enum CNO_CONNECTION_KIND
         .window_send = CNO_SETTINGS_STANDARD.initial_window_size,
         .settings    = { /* remote = */ CNO_SETTINGS_CONSERVATIVE,
                          /* local  = */ CNO_SETTINGS_INITIAL, },
+        .disallow_h2_upgrade = 1,
     };
 
     cno_hpack_init(&conn->decoder, CNO_SETTINGS_INITIAL .header_table_size);

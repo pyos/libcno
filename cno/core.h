@@ -170,6 +170,10 @@ struct cno_connection_t
     // must call `cno_increase_flow_window` after processing a chunk from `on_message_data`.
     uint8_t manual_flow_control : 1;
     // Disable special handling of the "Upgrade: h2c" header in HTTP/1.x mode.
+    // NOTE: this is set by default because:
+    //   1. when using tls, you *have* to set this to be compliant;
+    //   2. most browsers/servers only support h2 over tls anyway;
+    //   3. weird things may happen if you reset stream 1 without consuming the whole payload.
     uint8_t disallow_h2_upgrade : 1;
     // Disable special handling of the HTTP2 preface in HTTP/1.x mode.
     uint8_t disallow_h2_prior_knowledge : 1;
