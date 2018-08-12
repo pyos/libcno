@@ -65,15 +65,12 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
         return (local ? CNO_ERROR(INVALID_STREAM, "incorrect stream id parity")
                       : CNO_ERROR(PROTOCOL, "incorrect stream id parity")), NULL;
 
-    if (conn->mode == CNO_HTTP2) {
         if (id <= conn->last_stream[local])
             return (local ? CNO_ERROR(INVALID_STREAM, "nonmonotonic stream id")
                           : CNO_ERROR(PROTOCOL, "nonmonotonic stream id")), NULL;
-    } else if (id != 1) {
-        return CNO_ERROR(INVALID_STREAM, "HTTP/1.x has only one stream"), NULL;
-    }
 
-    if (conn->stream_count[local] >= conn->settings[!local].max_concurrent_streams)
+    // TODO h1 pipelining (need to select stream with least id in cno_when_h1_*)
+    if (conn->stream_count[local] >= (conn->mode == CNO_HTTP2 ? conn->settings[!local].max_concurrent_streams : 1))
         return (local ? CNO_ERROR(WOULD_BLOCK, "wait for on_stream_end")
                       : CNO_ERROR(PROTOCOL, "peer exceeded stream limit")), NULL;
 
@@ -876,7 +873,7 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
     if (!conn->buffer.size)
         return CNO_OK;
 
-    struct cno_stream_t *stream = cno_stream_find(conn, 1);
+    struct cno_stream_t *stream = cno_stream_find(conn, conn->last_stream[conn->client]);
     if (conn->client) {
         if (!stream || stream->r_state != CNO_STREAM_HEADERS)
             return CNO_ERROR(PROTOCOL, "server sent an HTTP/1.x response, but there was no request");
@@ -887,7 +884,7 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
                 if (!strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size))
                     return conn->buffer.size < CNO_PREFACE.size ? CNO_OK : CNO_STATE_H2_INIT;
 
-            stream = cno_stream_new(conn, 1, CNO_REMOTE);
+            stream = cno_stream_new(conn, (conn->last_stream[CNO_REMOTE] + 1) | 1, CNO_REMOTE);
             if (!stream)
                 return CNO_ERROR_UP();
         } else if (stream->r_state != CNO_STREAM_HEADERS) {
@@ -1019,7 +1016,7 @@ static int cno_when_h1_body(struct cno_connection_t *conn)
             b.size = conn->remaining_h1_payload;
         conn->remaining_h1_payload -= b.size;
         cno_buffer_dyn_shift(&conn->buffer, b.size);
-        struct cno_stream_t *stream = cno_stream_find(conn, 1);
+        struct cno_stream_t *stream = cno_stream_find(conn, conn->last_stream[conn->client]);
         if (stream && CNO_FIRE(conn, on_message_data, stream->id, b.data, b.size))
             return CNO_ERROR_UP();
     }
@@ -1028,11 +1025,11 @@ static int cno_when_h1_body(struct cno_connection_t *conn)
 
 static int cno_when_h1_tail(struct cno_connection_t *conn)
 {
-    struct cno_stream_t *stream = cno_stream_find(conn, 1);
+    struct cno_stream_t *stream = cno_stream_find(conn, conn->last_stream[conn->client]);
     if (stream && CNO_FIRE(conn, on_message_tail, stream->id, NULL))
         return CNO_ERROR_UP();
     // on_message_tail might've reset it.
-    if ((stream = cno_stream_find(conn, 1))) {
+    if ((stream = cno_stream_find(conn, conn->last_stream[conn->client]))) {
         stream->r_state = CNO_STREAM_CLOSED;
         if (stream->w_state == CNO_STREAM_CLOSED && cno_stream_end(conn, stream))
             return CNO_ERROR_UP();
@@ -1133,7 +1130,7 @@ int cno_connection_stop(struct cno_connection_t *conn)
 int cno_connection_lost(struct cno_connection_t *conn)
 {
     if (conn->mode != CNO_HTTP2) {
-        struct cno_stream_t * stream = cno_stream_find(conn, 1);
+        struct cno_stream_t * stream = cno_stream_find(conn, conn->last_stream[conn->client]);
         if (stream && stream->r_state != CNO_STREAM_CLOSED)
             return CNO_ERROR(DISCONNECT, "unclean http/1.x termination");
         return CNO_OK;
@@ -1150,22 +1147,14 @@ int cno_connection_lost(struct cno_connection_t *conn)
 
 uint32_t cno_connection_next_stream(struct cno_connection_t *conn)
 {
-    if (conn->mode != CNO_HTTP2)
-        return 1;
     uint32_t last = conn->last_stream[CNO_LOCAL];
     return conn->client && !last ? 1 : last + 2;
 }
 
 int cno_write_reset(struct cno_connection_t *conn, uint32_t stream, enum CNO_RST_STREAM_CODE code)
 {
-    if (conn->mode != CNO_HTTP2) {
-        if (!stream && code == CNO_RST_NO_ERROR)
-            return CNO_OK;
-        struct cno_stream_t *obj = cno_stream_find(conn, 1);
-        if (obj && cno_stream_end(conn, obj))
-            return CNO_ERROR_UP();
-        return CNO_ERROR(DISCONNECT, "HTTP/1.x connection rejected");
-    }
+    if (conn->mode != CNO_HTTP2)
+        return CNO_OK; // if code != NO_ERROR, this requires simply closing the transport ¯\_(ツ)_/¯
 
     if (!stream)
         return cno_frame_write_goaway(conn, code);
@@ -1238,22 +1227,15 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
                 return CNO_ERROR(ASSERTION, "header names should be lowercase");
 
     struct cno_stream_t *streamobj = cno_stream_find(conn, stream);
-    if (conn->client) {
-        if (streamobj == NULL) {
-            streamobj = cno_stream_new(conn, stream, CNO_LOCAL);
-            if (streamobj == NULL)
-                return CNO_ERROR_UP();
-        } else if (streamobj->w_state != CNO_STREAM_HEADERS) {
-            return conn->mode == CNO_HTTP2
-                 ? CNO_ERROR(INVALID_STREAM, "this stream is not writable")
-                 : CNO_ERROR(WOULD_BLOCK, "HTTP/1.x request already in progress");
-        }
-
-        streamobj->reading_head_response = cno_buffer_eq(msg->method, CNO_BUFFER_STRING("HEAD"));
-    } else {
-        if (!streamobj || streamobj->w_state != CNO_STREAM_HEADERS)
-            return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
+    if (conn->client && !streamobj) {
+        streamobj = cno_stream_new(conn, stream, CNO_LOCAL);
+        if (streamobj == NULL)
+            return CNO_ERROR_UP();
     }
+    if (!streamobj || streamobj->w_state != CNO_STREAM_HEADERS)
+        return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
+
+    streamobj->reading_head_response = cno_buffer_eq(msg->method, CNO_BUFFER_STRING("HEAD"));
 
     if (conn->mode != CNO_HTTP2) {
         if (conn->client) {
