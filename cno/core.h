@@ -47,13 +47,6 @@ enum CNO_CONNECTION_STATE
 };
 
 
-enum CNO_STREAM_FLAGS
-{
-    CNO_STREAM_H1_WRITING_CHUNKED = 0x01,
-    CNO_STREAM_HX_READING_HEAD_RESPONSE = 0x02,
-};
-
-
 enum CNO_STREAM_STATE
 {
     CNO_STREAM_HEADERS,
@@ -144,7 +137,8 @@ struct cno_stream_t
     uint32_t id;
     uint8_t /* enum CNO_STREAM_STATE */ r_state;
     uint8_t /* enum CNO_STREAM_STATE */ w_state;
-    uint8_t /* enum CNO_STREAM_FLAGS */ flags;
+    uint8_t writing_chunked : 1;
+    uint8_t reading_head_response : 1;
      int64_t window_recv;
      int64_t window_send;
     uint64_t remaining_payload;

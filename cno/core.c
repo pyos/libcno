@@ -240,9 +240,8 @@ static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
                                        struct cno_stream_t     *stream,
                                        struct cno_message_t    *trailers)
 {
-    if (!(stream->flags & CNO_STREAM_HX_READING_HEAD_RESPONSE))
-        if (stream->remaining_payload && stream->remaining_payload != (uint64_t) -1)
-            return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
+    if (!stream->reading_head_response && stream->remaining_payload && stream->remaining_payload != (uint64_t) -1)
+        return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
     if (CNO_FIRE(conn, on_message_tail, stream->id, trailers))
         return CNO_ERROR_UP();
     stream->r_state = CNO_STREAM_CLOSED;
@@ -923,6 +922,7 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
         return CNO_ERROR(PROTOCOL, "HTTP/1.%d not supported", minor);
 
     int upgrade = 0;
+    conn->remaining_h1_payload = 0;
     struct cno_header_t *it = headers;
     if (!conn->client) {
         *it++ = (struct cno_header_t) { CNO_BUFFER_STRING(":scheme"), CNO_BUFFER_STRING("unknown"), 0 };
@@ -983,27 +983,27 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
     }
     msg.headers_len = it - msg.headers;
 
-    cno_buffer_dyn_shift(&conn->buffer, (size_t) ok);
+    if (msg.code == 101)
+        // Just forward everything else (well, 18 exabytes at most...) to stream 1 as data.
+        conn->remaining_h1_payload = (uint64_t) -2;
+    else if (cno_is_informational(msg.code) && conn->remaining_h1_payload)
+        return CNO_ERROR(PROTOCOL, "informational response with a payload");
+
+    // XXX can a HEAD request with `upgrade` trigger an upgrade? This prevents it:
+    if (stream->reading_head_response)
+        conn->remaining_h1_payload = 0;
 
     // If on_message_head triggers asynchronous handling, this is expected to block until
     // either 101 has been sent or the server decides not to upgrade.
     if (CNO_FIRE(conn, on_message_head, stream->id, &msg) || (upgrade && CNO_FIRE(conn, on_upgrade)))
         return CNO_ERROR_UP();
 
-    if (!cno_is_informational(msg.code) || msg.code == 101) {
-        stream->r_state = CNO_STREAM_DATA;
-        if (msg.code == 101)
-            // Just forward everything else (well, 18 exabytes at most...) to stream 1 as data.
-            conn->remaining_h1_payload = (uint64_t) -2;
-    } else {
-        if (conn->remaining_h1_payload)
-            return CNO_ERROR(PROTOCOL, "informational response with a payload");
-        return CNO_STATE_H1_HEAD;
-    }
+    cno_buffer_dyn_shift(&conn->buffer, (size_t) ok);
 
-    // XXX can a HEAD request with `upgrade` trigger an upgrade? This prevents it:
-    if (stream->flags & CNO_STREAM_HX_READING_HEAD_RESPONSE)
-        conn->remaining_h1_payload = 0;
+    if (cno_is_informational(msg.code) && msg.code != 101)
+        return CNO_STATE_H1_HEAD;
+
+    stream->r_state = CNO_STREAM_DATA;
     return conn->remaining_h1_payload == (uint64_t) -1 ? CNO_STATE_H1_CHUNK
          : conn->remaining_h1_payload ? CNO_STATE_H1_BODY
          : CNO_STATE_H1_TAIL;
@@ -1249,10 +1249,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
                  : CNO_ERROR(WOULD_BLOCK, "HTTP/1.x request already in progress");
         }
 
-        if (cno_buffer_eq(msg->method, CNO_BUFFER_STRING("HEAD")))
-            streamobj->flags |= CNO_STREAM_HX_READING_HEAD_RESPONSE;
-        else
-            streamobj->flags &= CNO_STREAM_HX_READING_HEAD_RESPONSE;
+        streamobj->reading_head_response = cno_buffer_eq(msg->method, CNO_BUFFER_STRING("HEAD"));
     } else {
         if (!streamobj || streamobj->w_state != CNO_STREAM_HEADERS)
             return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
@@ -1271,10 +1268,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         struct cno_header_t *it  = msg->headers;
         struct cno_header_t *end = msg->headers_len + it;
 
-        if (is_informational || final)
-            streamobj->flags &= ~CNO_STREAM_H1_WRITING_CHUNKED;
-        else
-            streamobj->flags |= CNO_STREAM_H1_WRITING_CHUNKED;
+        streamobj->writing_chunked = !is_informational && !final;
 
         for (; it != end; ++it) {
             struct cno_buffer_t name = it->name;
@@ -1288,7 +1282,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
 
             else if (cno_buffer_eq(name, CNO_BUFFER_STRING("content-length"))
                   || cno_buffer_eq(name, CNO_BUFFER_STRING("upgrade")))
-                streamobj->flags &= ~CNO_STREAM_H1_WRITING_CHUNKED;
+                streamobj->writing_chunked = 0;
 
             else if (cno_buffer_eq(name, CNO_BUFFER_STRING("transfer-encoding"))) {
                 // either CNO_STREAM_H1_WRITING_CHUNKED is set, there's no body at all, or message
@@ -1301,7 +1295,7 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
                 return CNO_ERROR_UP();
         }
 
-        if (streamobj->flags & CNO_STREAM_H1_WRITING_CHUNKED
+        if (streamobj->writing_chunked
           ? CNO_WRITEV(conn, CNO_BUFFER_STRING("transfer-encoding: chunked\r\n\r\n"))
           : CNO_WRITEV(conn, CNO_BUFFER_STRING("\r\n")))
             return CNO_ERROR_UP();
@@ -1364,7 +1358,7 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
 
     struct cno_buffer_t buf = { data, length };
     if (conn->mode != CNO_HTTP2) {
-        if (streamobj->flags & CNO_STREAM_H1_WRITING_CHUNKED) {
+        if (streamobj->writing_chunked) {
             char lenbuf[24];
             struct cno_buffer_t len = { lenbuf, snprintf(lenbuf, sizeof(lenbuf), "%zX\r\n", buf.size) };
             struct cno_buffer_t chunk[] = { len, buf, CNO_BUFFER_STRING("\r\n"), CNO_BUFFER_STRING("0\r\n\r\n") };
