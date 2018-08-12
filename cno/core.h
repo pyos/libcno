@@ -186,7 +186,6 @@ struct cno_connection_t
 
 // private:
     uint8_t /* enum CNO_CONNECTION_STATE */ state;
-    uint8_t /* enum CNO_CONNECTION_FLAGS */ flags;
     uint8_t  continued_flags;
     uint32_t continued_stream;
     uint32_t continued_promise;
