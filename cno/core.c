@@ -947,7 +947,7 @@ static int cno_when_h1_head(struct cno_connection_t *conn)
                 continue; // If upgrading to h2c, don't notify the application of any upgrades.
             } else if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("h2c"))) {
                 // TODO: client-side h2 upgrade
-                if (conn->client || upgrade || conn->disallow_h2_upgrade)
+                if (conn->client || stream->id != 1 || upgrade || conn->disallow_h2_upgrade)
                     continue;
 
                 // Technically, server should refuse if HTTP2-Settings are not present. We'll let this slide.
