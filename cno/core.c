@@ -1213,6 +1213,23 @@ static int cno_discard_remaining_payload(struct cno_connection_t *conn, struct c
     return CNO_OK;
 }
 
+struct cno_buffer_t cno_fmt_uint(char *b, size_t s, unsigned n)
+{
+    size_t r = s;
+    do b[--r] = '0' + (n % 10); while (n /= 10);
+    return (struct cno_buffer_t){ b + r, s - r };
+}
+
+struct cno_buffer_t cno_fmt_chunk_length(char *b, size_t s, size_t n)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t r = s;
+    b[--r] = '\n';
+    b[--r] = '\r';
+    do b[--r] = hex[n % 16]; while (n /= 16);
+    return (struct cno_buffer_t){ b + r, s - r };
+}
+
 int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const struct cno_message_t *msg, int final)
 {
     if (conn->state == CNO_STATE_CLOSED)
@@ -1290,25 +1307,13 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
         }
     } else {
         struct cno_buffer_dyn_t payload = {};
-
-        if (conn->client) {
-            struct cno_header_t head[] = {
-                { CNO_BUFFER_STRING(":method"), msg->method, 0 },
-                { CNO_BUFFER_STRING(":path"),   msg->path,   0 },
-            };
-
-            if (cno_hpack_encode(&conn->encoder, &payload, head, 2))
-                return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
-        } else {
-            char code[8];
-            struct cno_header_t head[] = {
-                { CNO_BUFFER_STRING(":status"), {code, snprintf(code, sizeof(code), "%d", msg->code)}, 0 }
-            };
-
-            if (cno_hpack_encode(&conn->encoder, &payload, head, 1))
-                return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
-        }
-
+        struct cno_header_t head[] = {
+            { CNO_BUFFER_STRING(":status"), cno_fmt_uint((char[12]){}, 12, msg->code), 0 },
+            { CNO_BUFFER_STRING(":method"), msg->method, 0 },
+            { CNO_BUFFER_STRING(":path"),   msg->path,   0 },
+        };
+        if (cno_hpack_encode(&conn->encoder, &payload, conn->client ? head + 1 : head, conn->client ? 2 : 1))
+            return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
         if (cno_hpack_encode(&conn->encoder, &payload, msg->headers, msg->headers_len))
             return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
 
@@ -1317,7 +1322,6 @@ int cno_write_message(struct cno_connection_t *conn, uint32_t stream, const stru
             frame.flags |= CNO_FLAG_END_STREAM;
         if (cno_frame_write(conn, &frame))
             return cno_buffer_dyn_clear(&payload), CNO_ERROR_UP();
-
         cno_buffer_dyn_clear(&payload);
     }
 
@@ -1341,13 +1345,14 @@ int cno_write_data(struct cno_connection_t *conn, uint32_t stream, const char *d
 
     struct cno_buffer_t buf = { data, length };
     if (conn->mode != CNO_HTTP2) {
-        if (streamobj->writing_chunked) {
-            char lenbuf[24];
-            struct cno_buffer_t len = { lenbuf, snprintf(lenbuf, sizeof(lenbuf), "%zX\r\n", buf.size) };
-            struct cno_buffer_t chunk[] = { len, buf, CNO_BUFFER_STRING("\r\n"), CNO_BUFFER_STRING("0\r\n\r\n") };
-            if (buf.size ? CNO_FIRE(conn, on_writev, chunk, 3 + !!final) : CNO_FIRE(conn, on_writev, chunk + 3, !!final))
+        if (!buf.size) {
+            if (final && streamobj->writing_chunked && CNO_WRITEV(conn, CNO_BUFFER_STRING("0\r\n\r\n")))
                 return CNO_ERROR_UP();
-        } else if (buf.size && CNO_FIRE(conn, on_writev, &buf, 1)) {
+        } else if (streamobj->writing_chunked) {
+            struct cno_buffer_t tail = final ? CNO_BUFFER_STRING("\r\n0\r\n\r\n") : CNO_BUFFER_STRING("\r\n");
+            if (CNO_WRITEV(conn, cno_fmt_chunk_length((char[24]){}, 24, buf.size), buf, tail))
+                return CNO_ERROR_UP();
+        } else if (CNO_FIRE(conn, on_writev, &buf, 1)) {
             return CNO_ERROR_UP();
         }
     } else {
