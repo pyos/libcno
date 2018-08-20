@@ -202,6 +202,7 @@ struct cno_connection_t
     struct cno_hpack_t encoder;
     struct cno_stream_t *streams[CNO_STREAM_BUCKETS];
 
+//public:
     // Passed as the first argument to all callbacks.
     void *cb_data;
     // There is something to send to the other side. Transport level is outside
@@ -212,8 +213,6 @@ struct cno_connection_t
     // shortly afterwards.
     int (*on_stream_start)(void *, uint32_t id);
     // Either a response has been sent/received fully, or the stream has been reset.
-    // For HTTP 2, all stream ids are only used once; for 1.1, stream id 1 can be reused,
-    // but multiple request/response pairs do not overlap.
     int (*on_stream_end)(void *, uint32_t id);
     // The other side has signaled that it is willing to accept more data.
     // There is a global limit (shared between all streams) and one for each stream;
