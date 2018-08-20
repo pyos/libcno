@@ -174,6 +174,7 @@ with open(os.path.join(os.path.dirname(__file__), 'hpack-data.h'), 'w') as fd:
             CNO_HUFFMAN_ACCEPT = {},
             CNO_HUFFMAN_APPEND = {},
             CNO_HUFFMAN_INPUT_BITS = {},
+            CNO_HUFFMAN_MIN_BITS_PER_CHAR = {},
         }};
 
         static const struct cno_header_t CNO_HPACK_STATIC_TABLE[] = {{ {} }};
@@ -182,6 +183,7 @@ with open(os.path.join(os.path.dirname(__file__), 'hpack-data.h'), 'w') as fd:
         static const struct cno_huffman_state_t CNO_HUFFMAN_STATE_INIT = {{ 0, 0, CNO_HUFFMAN_ACCEPT }};
         ''').format(
             len(STATIC_TABLE), HUFFMAN_ACCEPT, HUFFMAN_APPEND, HUFFMAN_INPUT_BITS,
+            min(bits for code, bits in HUFFMAN),
             ','.join('{{"%s",%s},{"%s",%s},0}' % (k, len(k), v, len(v)) for k, v in STATIC_TABLE),
             ','.join('{%s,%s}'    % h for h in HUFFMAN),
             ','.join('{%s,%s,%s}' % h for h in huffman_dfa(HUFFMAN, HUFFMAN_INPUT_BITS)),

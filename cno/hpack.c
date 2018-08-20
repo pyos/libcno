@@ -163,8 +163,7 @@ static int cno_hpack_decode_string(struct cno_buffer_t *source, struct cno_buffe
         return CNO_ERROR(PROTOCOL, "expected %zu octets, got %zu", length, source->size);
 
     if (length && huffman) {
-        // min. length of a Huffman code = 5 bits => max length after decoding = x * 8 / 5.
-        uint8_t *buf = malloc(length * 2);
+        uint8_t *buf = malloc(length * 8 / CNO_HUFFMAN_MIN_BITS_PER_CHAR);
         uint8_t *ptr = buf;
         if (!buf)
             return CNO_ERROR(NO_MEMORY, "%zu bytes", length * 2);
