@@ -1144,8 +1144,8 @@ static int cno_discard_remaining_payload(struct cno_connection_t *c, struct cno_
 
 static struct cno_buffer_t cno_fmt_uint(char *b, size_t s, unsigned n) {
     char *q = b + s;
-    do *q = '0' + (n % 10); while (n /= 10);
-    return (struct cno_buffer_t){ q, q - b };
+    do *--q = '0' + (n % 10); while (n /= 10);
+    return (struct cno_buffer_t){ q, b + s - q };
 }
 
 static struct cno_buffer_t cno_fmt_chunk_length(char *b, size_t s, size_t n) {
@@ -1154,7 +1154,7 @@ static struct cno_buffer_t cno_fmt_chunk_length(char *b, size_t s, size_t n) {
     *--q = '\n';
     *--q = '\r';
     do *--q = hex[n % 16]; while (n /= 16);
-    return (struct cno_buffer_t){ q, q - b };
+    return (struct cno_buffer_t){ q, b + s - q };
 }
 
 static int cno_h1_write_head(struct cno_connection_t *c, struct cno_stream_t *s, const struct cno_message_t *m, int final) {
