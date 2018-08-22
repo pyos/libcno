@@ -280,39 +280,32 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
                 if (msg->code || code > 0xFFFF) // kind of an arbitrary limit, really
                     return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
                 msg->code = code;
-                cno_hpack_free_header(h);
                 continue;
             }
         } else {
-            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":path"))) {
-                if (msg->path.data)
-                    return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
+            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":path")) && !msg->path.data) {
                 msg->path = h->value;
-                cno_hpack_free_header(h);
                 continue;
             }
 
-            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":method"))) {
-                if (msg->method.data)
-                    return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
+            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":method")) && !msg->method.data) {
                 msg->method = h->value;
-                cno_hpack_free_header(h);
                 continue;
             }
 
-            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":authority"))) {
-                if (has_authority)
-                    return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
+            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":authority")) && !has_authority) {
                 has_authority = 1;
-                *--it = *h;
+                struct cno_header_t tmp = *--it;
+                *it = *h;
+                *h = tmp;
                 continue;
             }
 
-            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":scheme"))) {
-                if (has_scheme)
-                    return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
+            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":scheme")) && !has_scheme) {
                 has_scheme = 1;
-                *--it = *h;
+                struct cno_header_t tmp = *--it;
+                *it = *h;
+                *h = tmp;
                 continue;
             }
         }
@@ -396,10 +389,11 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
         return CNO_ERROR_UP();
     }
 
+    const size_t nheaders = msg.headers_len;
     // Just ignore the message if the stream has already been reset.
     int ret = stream ? cno_frame_handle_message(conn, stream, frame, &msg) : CNO_OK;
-    for (size_t i = 0; i < msg.headers_len; i++)
-        cno_hpack_free_header(&msg.headers[i]);
+    for (size_t i = 0; i < nheaders; i++)
+        cno_hpack_free_header(&headers[i]);
     return ret;
 }
 
