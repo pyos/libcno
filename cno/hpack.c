@@ -2,8 +2,7 @@
 #include "hpack.h"
 #include "hpack-data.h"
 
-void cno_hpack_free_header(struct cno_header_t *h)
-{
+void cno_hpack_free_header(struct cno_header_t *h) {
     if (h->flags & CNO_HEADER_OWNS_NAME)
         free((void *) h->name.data);
     if (h->flags & CNO_HEADER_OWNS_VALUE)
@@ -16,8 +15,7 @@ void cno_hpack_free_header(struct cno_header_t *h)
     *h = CNO_HEADER_EMPTY;
 }
 
-void cno_hpack_init(struct cno_hpack_t *state, uint32_t limit)
-{
+void cno_hpack_init(struct cno_hpack_t *state, uint32_t limit) {
     state->last = state->first = (struct cno_header_table_t *) state;
     state->size = 0;
     state->limit            = \
@@ -26,8 +24,7 @@ void cno_hpack_init(struct cno_hpack_t *state, uint32_t limit)
     state->limit_update_end = limit;
 }
 
-static void cno_hpack_evict(struct cno_hpack_t *state, uint32_t limit)
-{
+static void cno_hpack_evict(struct cno_hpack_t *state, uint32_t limit) {
     while (state->size > limit) {
         struct cno_header_table_t *entry = state->last;
         state->size -= entry->k_size + entry->v_size + 32;
@@ -38,13 +35,11 @@ static void cno_hpack_evict(struct cno_hpack_t *state, uint32_t limit)
     }
 }
 
-void cno_hpack_clear(struct cno_hpack_t *state)
-{
+void cno_hpack_clear(struct cno_hpack_t *state) {
     cno_hpack_evict(state, 0);
 }
 
-int cno_hpack_setlimit(struct cno_hpack_t *state, uint32_t limit)
-{
+int cno_hpack_setlimit(struct cno_hpack_t *state, uint32_t limit) {
     if (limit > state->limit_upper)
         return CNO_ERROR(ASSERTION, "dynamic table size limit higher than allowed by peer");
     // The update will be encoded the next time we send a header block.
@@ -54,8 +49,7 @@ int cno_hpack_setlimit(struct cno_hpack_t *state, uint32_t limit)
     return CNO_OK;
 }
 
-static int cno_hpack_insert(struct cno_hpack_t *state, const struct cno_header_t *h)
-{
+static int cno_hpack_insert(struct cno_hpack_t *state, const struct cno_header_t *h) {
     size_t recorded = h->name.size + h->value.size + 32;
     if (recorded > state->limit) {
         cno_hpack_evict(state, 0);
@@ -79,8 +73,7 @@ static int cno_hpack_insert(struct cno_hpack_t *state, const struct cno_header_t
     return CNO_OK;
 }
 
-static int cno_hpack_lookup(struct cno_hpack_t *state, size_t index, struct cno_header_t *out)
-{
+static int cno_hpack_lookup(struct cno_hpack_t *state, size_t index, struct cno_header_t *out) {
     if (index == 0)
         return CNO_ERROR(PROTOCOL, "header index 0 is reserved");
 
@@ -103,8 +96,7 @@ static int cno_hpack_lookup(struct cno_hpack_t *state, size_t index, struct cno_
 }
 
 // Return value is either 0 (not found), index (name match), or -index (full match).
-static int cno_hpack_lookup_inverse(struct cno_hpack_t *state, const struct cno_header_t *needle)
-{
+static int cno_hpack_lookup_inverse(struct cno_hpack_t *state, const struct cno_header_t *needle) {
 #define TRY(k, v) do {                   \
     if (!cno_buffer_eq(needle->name, k)) \
         break;                           \
@@ -126,8 +118,7 @@ static int cno_hpack_lookup_inverse(struct cno_hpack_t *state, const struct cno_
 }
 
 // Format: the value as 1 byte if less than mask, else {mask, 0x80 | <7 bits>, ..., <last 7 bits>} (little-endian).
-static int cno_hpack_decode_uint(struct cno_buffer_t *source, uint8_t mask, size_t *out)
-{
+static int cno_hpack_decode_uint(struct cno_buffer_t *source, uint8_t mask, size_t *out) {
     if (!source->size)
         return CNO_ERROR(PROTOCOL, "expected uint, got EOF");
 
@@ -150,8 +141,7 @@ static int cno_hpack_decode_uint(struct cno_buffer_t *source, uint8_t mask, size
 }
 
 // Format: 1 bit is a flag for Huffman encoding, then a varint for length, then raw data.
-static int cno_hpack_decode_string(struct cno_buffer_t *source, struct cno_buffer_t *out, int *borrow)
-{
+static int cno_hpack_decode_string(struct cno_buffer_t *source, struct cno_buffer_t *out, int *borrow) {
     if (!source->size)
         return CNO_ERROR(PROTOCOL, "expected string, got EOF");
     const uint8_t huffman = (* (const uint8_t *) source->data) & 0x80;
@@ -242,8 +232,7 @@ static int cno_hpack_decode_one(struct cno_hpack_t  *state,
     return target->flags & CNO_HEADER_NOT_INDEXED ? CNO_OK : cno_hpack_insert(state, target);
 }
 
-int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t buf, struct cno_header_t *rs, size_t *n)
-{
+int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t buf, struct cno_header_t *rs, size_t *n) {
     while (buf.size && ((* (const uint8_t *) buf.data) & 0xE0) == 0x20) {
         // 001..... -- a new size limit for the table
         size_t limit = 0;
@@ -269,8 +258,7 @@ int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t buf, struct 
     return CNO_OK;
 }
 
-static int cno_hpack_encode_uint(struct cno_buffer_dyn_t *buf, uint8_t prefix, uint8_t mask, size_t num)
-{
+static int cno_hpack_encode_uint(struct cno_buffer_dyn_t *buf, uint8_t prefix, uint8_t mask, size_t num) {
     if (num < mask) {
         prefix |= num;
         return cno_buffer_dyn_concat(buf, (struct cno_buffer_t) { (char *) &prefix, 1 });
@@ -284,8 +272,7 @@ static int cno_hpack_encode_uint(struct cno_buffer_dyn_t *buf, uint8_t prefix, u
     return cno_buffer_dyn_concat(buf, (struct cno_buffer_t) { (char *) tmp, ptr - tmp });
 }
 
-static int cno_hpack_encode_string(struct cno_buffer_dyn_t *buf, const struct cno_buffer_t s)
-{
+static int cno_hpack_encode_string(struct cno_buffer_dyn_t *buf, const struct cno_buffer_t s) {
     size_t total = 0;
     for (const uint8_t *p = (const uint8_t *) s.data, *e = p + s.size; p != e; p++)
         total += CNO_HUFFMAN_TABLE[*p].bits;
@@ -314,8 +301,7 @@ static int cno_hpack_encode_string(struct cno_buffer_dyn_t *buf, const struct cn
     return CNO_OK;
 }
 
-static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf, const struct cno_header_t *h)
-{
+static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf, const struct cno_header_t *h) {
     int index = cno_hpack_lookup_inverse(state, h);
     if (index < 0)
         return cno_hpack_encode_uint(buf, 0x80, 0x7F, -index);

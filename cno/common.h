@@ -11,8 +11,7 @@
 extern "C" {
 #endif
 
-enum CNO_ERRNO
-{
+enum CNO_ERRNO {
     CNO_OK                    = 0,
     CNO_ERRNO_ASSERTION       = 1,
     CNO_ERRNO_NO_MEMORY       = 2,
@@ -23,32 +22,10 @@ enum CNO_ERRNO
     CNO_ERRNO_DISCONNECT      = 9,  // connection has already been closed
 };
 
-
-struct cno_error_t
-{
+struct cno_error_t {
     int  code;
     char text[256];
 };
-
-
-struct cno_buffer_t
-{
-    // depending on where this thing is used, it may hold either binary octets
-    // or human-readable data (http headers). casting the buffer to uint8_t
-    // where necessary is easy, converting all string literals to uint8_t is not.
-    const char *data;
-    size_t size;
-};
-
-
-struct cno_buffer_dyn_t
-{
-    char  *data;
-    size_t size;
-    size_t offset;
-    size_t cap;
-};
-
 
 // Return some information about the last error in the current thread.
 const struct cno_error_t * cno_error(void);
@@ -59,64 +36,61 @@ int cno_error_set(int code, const char *fmt, ...) __attribute__ ((format(printf,
 #define CNO_ERROR(n, ...) cno_error_set(CNO_ERRNO_##n, __VA_ARGS__)
 #define CNO_ERROR_UP() (-1)
 
+struct cno_buffer_t {
+    // depending on where this thing is used, it may hold either binary octets
+    // or human-readable data (http headers). casting the buffer to uint8_t
+    // where necessary is easy, converting all string literals to uint8_t is not.
+    const char *data;
+    size_t size;
+};
+
+struct cno_buffer_dyn_t {
+    char  *data;
+    size_t size;
+    size_t offset;
+    size_t cap;
+};
 
 // cffi does not compile inline functions
 #if !CFFI_CDEF_MODE
 
-static inline struct cno_buffer_t CNO_BUFFER_STRING(const char *s)
-{
+static inline struct cno_buffer_t CNO_BUFFER_STRING(const char *s) {
     return (struct cno_buffer_t) { s, strlen(s) };
 }
 
-
-static inline struct cno_buffer_t CNO_BUFFER_VIEW(const struct cno_buffer_dyn_t b)
-{
+static inline struct cno_buffer_t CNO_BUFFER_VIEW(const struct cno_buffer_dyn_t b) {
     return (struct cno_buffer_t) { b.data, b.size };
 }
 
-
-static inline int cno_buffer_eq(const struct cno_buffer_t a, const struct cno_buffer_t b)
-{
+static inline int cno_buffer_eq(const struct cno_buffer_t a, const struct cno_buffer_t b) {
     return a.size == b.size && 0 == memcmp(a.data, b.data, b.size);
 }
 
-
-static inline int cno_buffer_startswith(const struct cno_buffer_t a, const struct cno_buffer_t b)
-{
+static inline int cno_buffer_startswith(const struct cno_buffer_t a, const struct cno_buffer_t b) {
     return a.size >= b.size && 0 == memcmp(a.data, b.data, b.size);
 }
 
-
-static inline int cno_buffer_endswith(const struct cno_buffer_t a, const struct cno_buffer_t b)
-{
+static inline int cno_buffer_endswith(const struct cno_buffer_t a, const struct cno_buffer_t b) {
     return a.size >= b.size && 0 == memcmp(a.data + a.size - b.size, b.data, b.size);
 }
 
-
-static inline struct cno_buffer_t cno_buffer_shift(const struct cno_buffer_t x, size_t offset)
-{
+static inline struct cno_buffer_t cno_buffer_shift(const struct cno_buffer_t x, size_t offset) {
     return (struct cno_buffer_t) {x.data + offset, x.size - offset};
 }
 
-
-static inline void cno_buffer_dyn_clear(struct cno_buffer_dyn_t *x)
-{
+static inline void cno_buffer_dyn_clear(struct cno_buffer_dyn_t *x) {
     free(x->data - x->offset);
     *x = (struct cno_buffer_dyn_t) {};
 }
 
-
-static inline void cno_buffer_dyn_shift(struct cno_buffer_dyn_t *x, size_t off)
-{
+static inline void cno_buffer_dyn_shift(struct cno_buffer_dyn_t *x, size_t off) {
     x->data   += off;
     x->size   -= off;
     x->cap    -= off;
     x->offset += off;
 }
 
-
-static inline int cno_buffer_dyn_reserve(struct cno_buffer_dyn_t *x, size_t n)
-{
+static inline int cno_buffer_dyn_reserve(struct cno_buffer_dyn_t *x, size_t n) {
     if (n <= x->cap)
         return CNO_OK;
 
@@ -147,9 +121,7 @@ static inline int cno_buffer_dyn_reserve(struct cno_buffer_dyn_t *x, size_t n)
     return CNO_OK;
 }
 
-
-static inline int cno_buffer_dyn_concat(struct cno_buffer_dyn_t *a, const struct cno_buffer_t b)
-{
+static inline int cno_buffer_dyn_concat(struct cno_buffer_dyn_t *a, const struct cno_buffer_t b) {
     if (b.size == 0)
         return CNO_OK;
 

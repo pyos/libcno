@@ -6,25 +6,25 @@
 extern "C" {
 #endif
 
-enum CNO_HEADER_FLAGS
-{
-    CNO_HEADER_OWNS_NAME   = 0x01,  // owned strings should be free-d
-    CNO_HEADER_OWNS_VALUE  = 0x02,
+enum CNO_HEADER_FLAGS {
+    // The headers marked with this flag are not inserted into the dynamic table (in case
+    // they contain sensitive data; or maybe they're just long and contain a random value
+    // that will never be repeated, so remembering them is pointless).
     CNO_HEADER_NOT_INDEXED = 0x04,
+
+    // These are set by `cno_hpack_decode` and should not be used manually.
+    CNO_HEADER_OWNS_NAME   = 0x01,
+    CNO_HEADER_OWNS_VALUE  = 0x02,
     CNO_HEADER_REFS_TABLE  = 0x08,
 };
 
-
-struct cno_header_t
-{
+struct cno_header_t {
     struct cno_buffer_t name;
     struct cno_buffer_t value;
     uint8_t /* enum CNO_HEADER_FLAGS */ flags;
 };
 
-
-struct cno_header_table_t
-{
+struct cno_header_table_t {
     struct cno_header_table_t *prev;
     struct cno_header_table_t *next;
     size_t k_size;
@@ -33,9 +33,7 @@ struct cno_header_table_t
     char data[];
 };
 
-
-struct cno_hpack_t
-{
+struct cno_hpack_t {
     struct cno_header_table_t *last;
     struct cno_header_table_t *first;
     uint32_t size;
@@ -44,7 +42,6 @@ struct cno_hpack_t
     uint32_t limit_update_min;  // only used by an encoder
     uint32_t limit_update_end;
 };
-
 
 // Initial value for an uninitialized `cno_header_t`.
 static const struct cno_header_t CNO_HEADER_EMPTY = { { NULL, 0 }, { NULL, 0 }, 0 };

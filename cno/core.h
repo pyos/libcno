@@ -8,30 +8,22 @@
 extern "C" {
 #endif
 
-// Skip to struct cno_connection_t for useful stuff.
-enum CNO_PEER_KIND
-{
-    CNO_REMOTE = 0,
-    CNO_LOCAL  = 1,
+enum CNO_PEER_KIND {
+    CNO_REMOTE,
+    CNO_LOCAL,
 };
 
-
-enum CNO_CONNECTION_KIND
-{
-    CNO_SERVER = 0,
-    CNO_CLIENT = 1,
+enum CNO_CONNECTION_KIND {
+    CNO_SERVER,
+    CNO_CLIENT,
 };
 
-
-enum CNO_HTTP_VERSION
-{
-    CNO_HTTP1 = 0,
-    CNO_HTTP2 = 1,
+enum CNO_HTTP_VERSION {
+    CNO_HTTP1,
+    CNO_HTTP2,
 };
 
-
-enum CNO_CONNECTION_STATE
-{
+enum CNO_CONNECTION_STATE { // TODO move to .c
     CNO_STATE_CLOSED,
     CNO_STATE_H2_INIT,
     CNO_STATE_H2_PREFACE,
@@ -46,17 +38,13 @@ enum CNO_CONNECTION_STATE
     CNO_STATE_H1_TRAILERS,
 };
 
-
-enum CNO_STREAM_STATE
-{
+enum CNO_STREAM_STATE { // TODO move to .c
     CNO_STREAM_HEADERS,
     CNO_STREAM_DATA,
     CNO_STREAM_CLOSED,
 };
 
-
-enum CNO_FRAME_TYPE
-{
+enum CNO_FRAME_TYPE {
     CNO_FRAME_DATA          = 0x0,
     CNO_FRAME_HEADERS       = 0x1,
     CNO_FRAME_PRIORITY      = 0x2,
@@ -70,9 +58,7 @@ enum CNO_FRAME_TYPE
     CNO_FRAME_UNKNOWN       = 0xa,
 };
 
-
-enum CNO_RST_STREAM_CODE
-{
+enum CNO_RST_STREAM_CODE {
     CNO_RST_NO_ERROR            = 0x0,
     CNO_RST_PROTOCOL_ERROR      = 0x1,
     CNO_RST_INTERNAL_ERROR      = 0x2,
@@ -89,9 +75,7 @@ enum CNO_RST_STREAM_CODE
     CNO_RST_HTTP_1_1_REQUIRED   = 0xd,
 };
 
-
-enum CNO_FRAME_FLAGS
-{
+enum CNO_FRAME_FLAGS {
     CNO_FLAG_ACK         = 0x1,
     CNO_FLAG_END_STREAM  = 0x1,
     CNO_FLAG_END_HEADERS = 0x4,
@@ -99,9 +83,7 @@ enum CNO_FRAME_FLAGS
     CNO_FLAG_PRIORITY    = 0x20,
 };
 
-
-enum CNO_CONNECTION_SETTINGS
-{
+enum CNO_CONNECTION_SETTINGS {
     CNO_SETTINGS_HEADER_TABLE_SIZE      = 0x1,
     CNO_SETTINGS_ENABLE_PUSH            = 0x2,
     CNO_SETTINGS_MAX_CONCURRENT_STREAMS = 0x3,
@@ -111,18 +93,14 @@ enum CNO_CONNECTION_SETTINGS
     CNO_SETTINGS_UNDEFINED              = 0x7,
 };
 
-
-struct cno_frame_t
-{
+struct cno_frame_t {
     uint8_t /* enum CNO_FRAME_TYPE  */ type;
     uint8_t /* enum CNO_FRAME_FLAGS */ flags;
     uint32_t stream;
     struct cno_buffer_t payload;
 };
 
-
-struct cno_message_t
-{
+struct cno_message_t {
     int code;
     struct cno_buffer_t method;
     struct cno_buffer_t path;
@@ -130,9 +108,7 @@ struct cno_message_t
     size_t headers_len;
 };
 
-
-struct cno_stream_t
-{
+struct cno_stream_t {
     struct cno_stream_t *next; // in hashmap bucket
     uint32_t id;
     uint8_t /* enum CNO_STREAM_STATE */ r_state;
@@ -144,9 +120,7 @@ struct cno_stream_t
     uint64_t remaining_payload;
 };
 
-
-struct cno_settings_t
-{
+struct cno_settings_t {
     union {
         // TODO implement this in a way not dependent on alignment
         // TODO extensions
@@ -162,9 +136,7 @@ struct cno_settings_t
     };
 };
 
-
-struct cno_connection_t
-{
+struct cno_connection_t {
 // public:
     // Disable automatic sending of stream WINDOW_UPDATEs after receiving DATA; application
     // must call `cno_increase_flow_window` after processing a chunk from `on_message_data`.
@@ -238,85 +210,76 @@ struct cno_connection_t
     int (*on_pong)(void *, const char[8]);
     // New connection-wide settings have been chosen by the peer.
     int (*on_settings)(void *);
-    // HTTP 1 server only: the previous request (see on_message_head) has requested
-    // an update to a different protocol. If `cno_write_message` is called with code 101
+    // HTTP 1 server only: the previous request (see `on_message_head`) has requested
+    // an upgrade to a different protocol. If `cno_write_message` is called with code 101
     // before the next call to `cno_connection_data_received`, all further data will
-    // be forwarded as payload to stream 1. Otherwise, the upgrade is ignored.
+    // be forwarded as payload. Otherwise, the upgrade is ignored.
     int (*on_upgrade)(void *);
 };
 
+// Initialize a freshly constructed connection object. (Set up the callbacks after this.)
+void cno_connection_init(struct cno_connection_t *, enum CNO_CONNECTION_KIND);
 
-// Lifetime of a connection:
-//
-//  connection = new cno_connection_t
-//  try {
-//      cno_connection_init(client ? CNO_CLIENT : CNO_SERVER)
-//      connection.on_writev = ...
-//      connection.on_message_head = ...
-//      ...
-//      cno_connection_made(negotiated http2 ? CNO_HTTP2 : CNO_HTTP1)
-//      while (i/o is open) {
-//          cno_connection_data_received
-//      }
-//      cno_connection_lost
-//  } finally {
-//      cno_connection_reset
-//      delete connection
-//  }
-//
-void cno_connection_init          (struct cno_connection_t *, enum CNO_CONNECTION_KIND);
-int  cno_connection_made          (struct cno_connection_t *, enum CNO_HTTP_VERSION);
-int  cno_connection_data_received (struct cno_connection_t *, const char *, size_t);
-int  cno_connection_lost          (struct cno_connection_t *);
-void cno_connection_reset         (struct cno_connection_t *);
-int  cno_connection_stop          (struct cno_connection_t *);
-// Send a new configuration/schedule it to be sent when upgrading to HTTP 2.
-// The current configuration can be read through `conn->settings[CNO_LOCAL]`.
-// DO NOT modify `conn->settings` directly -- it is used to compute the delta.
-int  cno_connection_set_config(struct cno_connection_t *, const struct cno_settings_t *);
+// Free all resources associated with a connection. *Does not emit events*: if you store
+// additional per-stream data, discard it.
+void cno_connection_reset(struct cno_connection_t *);
 
-// (As a client) sending requests:
-//
-//  headers = new cno_header_t[] { {name, value}, ... }
-//  message = new cno_message_t { 0, method, path, headers, length(headers) }
-//  stream  = cno_connection_next_stream
-//  cno_write_message where final = 1 if there is no payload
-//  for (chunk in payload) {
-//      while (length(chunk) != 0) {
-//          sent = cno_write_data
-//          if (sent == 0)
-//              await on_flow_increase(0) or on_flow_increase(stream)
-//          chunk = drop(chunk, sent)
-//      }
-//  }
-//
-// (As a server) sending responses:
-//
-//  Same as sending a request, but specify the status code instead of `0`, leave
-//  method/path empty, and use the stream id provided by the on_message_{start,data,end}
-//  events.
-//
-// (Also as a server) pushing resources:
-//
-//  Same as sending a request, but use cno_write_push instead of cno_write_message
-//  and get the stream id from an event, not from cno_connection_next_stream.
-//
-// (As a client again) aborting a push:
-//
-//  Call cno_write_reset with a stream id provided by on_message_push and code CNO_RST_CANCEL.
-//
+// Begin the message exchange using the negotiated protocol.
+int cno_connection_made(struct cno_connection_t *, enum CNO_HTTP_VERSION);
+
+// Handle some new data from the transport level.
+int cno_connection_data_received(struct cno_connection_t *, const char *, size_t);
+
+// Handle an EOF from a half-closed transport. (After calling this, wait for remaining
+// streams to end, then close the write half as well.)
+int cno_connection_lost(struct cno_connection_t *);
+
+// Gracefully shut down the connection. (After calling this, wait for remaining streams
+// to end, then close the transport.)
+int cno_connection_stop(struct cno_connection_t *);
+
+// Set a new configuration for HTTP 2. (The current one can be read as `c->settings[CNO_LOCAL]`.)
+int cno_connection_set_config(struct cno_connection_t *, const struct cno_settings_t *);
+
+// Obtain a new stream id to send a request with.
 uint32_t cno_connection_next_stream (struct cno_connection_t *);
-int cno_write_reset    (struct cno_connection_t *, uint32_t stream, enum CNO_RST_STREAM_CODE);
-int cno_write_push     (struct cno_connection_t *, uint32_t stream, const struct cno_message_t *);
-int cno_write_message  (struct cno_connection_t *, uint32_t stream, const struct cno_message_t *, int final);
-int cno_write_data     (struct cno_connection_t *, uint32_t stream, const char *, size_t, int final);
-int cno_write_ping     (struct cno_connection_t *, const char[8]);
-int cno_write_frame    (struct cno_connection_t *, const struct cno_frame_t *);
 
-// By default, cno assumes that `on_message_data` does not retain the data after returning.
-// If it does copy the data somewhere, you should enable manual stream-level flow control,
-// then ask to increase the window once the copy is deallocated.
-int cno_increase_flow_window(struct cno_connection_t *, uint32_t stream, uint32_t bytes);
+// Client: send a new request. Server: respond to a previously received one. If `final` is 0
+// (only allowed for requests and non-1xx responses), one or more calls to `cno_write_data`
+// must follow. For a 1xx response, call this function again with a proper code later.
+// 101 responses must only be sent while `cno_connection_data_received` is blocked in
+// `on_message_head` or `on_upgrade` of an HTTP 1 connection; see `on_upgrade`.
+int cno_write_message(struct cno_connection_t *, uint32_t stream, const struct cno_message_t *, int final);
+
+// Server: initiate a request in anticipation of the client doing it anyway. This should
+// only be done for safe requests without payload. The function will silently do nothing
+// if the client uses HTTP 1 or has specified that it does not want push messages.
+int cno_write_push(struct cno_connection_t *, uint32_t stream, const struct cno_message_t *);
+
+// Attach more data to the previously sent message. If `final` is 0, more calls must follow.
+// Returns -1 on error, else the number of sent bytes, which may be less than requested
+// due to HTTP 2 flow control. If that's the case, wait for an `on_flow_increase` on
+// the same stream (or on stream 0) before retrying.
+int cno_write_data(struct cno_connection_t *, uint32_t stream, const char *, size_t, int final);
+
+// Reject a stream. Has no effect in HTTP 1 mode (in which case you should simply
+// close the transport) or if the stream has already finished because a response
+// or another reset has been received/sent.
+int cno_write_reset(struct cno_connection_t *, uint32_t stream, enum CNO_RST_STREAM_CODE);
+
+// Send a ping with some data. See also `on_pong`. Only works in HTTP 2 mode.
+int cno_write_ping(struct cno_connection_t *, const char[8]);
+
+// Send a raw HTTP 2 frame. Only works in HTTP 2 mode, and only for non-DATA frames.
+// TODO: reject non-extension frames (type < CNO_FRAME_UNKNOWN).
+int cno_write_frame(struct cno_connection_t *, const struct cno_frame_t *);
+
+// Increase the flow window by the specified amount, allowing the peer to send more data.
+//
+// NOTE: if manual flow control is disabled, the window size is kept constant by increasing
+//       it before emitting `on_message_data`. This function can still be used to make
+//       the window bigger than the default.
+int cno_increase_flow_window(struct cno_connection_t *, uint32_t stream, uint32_t delta);
 
 #ifdef __cplusplus
 }  // extern "C"

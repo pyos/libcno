@@ -53,14 +53,11 @@ static const struct cno_settings_t CNO_SETTINGS_INITIAL = {{{
     .max_header_list_size   = -1, // actually (CNO_MAX_CONTINUATIONS * max_frame_size - 32 * CNO_MAX_HEADERS)
 }}};
 
-// Even streams are initiated by the server, odd streams by the client.
-static int cno_stream_is_local(const struct cno_connection_t *conn, uint32_t id)
-{
+static int cno_stream_is_local(const struct cno_connection_t *conn, uint32_t id) {
     return id % 2 == conn->client;
 }
 
-static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint32_t id, int local)
-{
+static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint32_t id, int local) {
     if (cno_stream_is_local(conn, id) != local)
         return (local ? CNO_ERROR(INVALID_STREAM, "incorrect stream id parity")
                       : CNO_ERROR(PROTOCOL, "incorrect stream id parity")), NULL;
@@ -98,15 +95,13 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *conn, uint3
     return stream;
 }
 
-static struct cno_stream_t * cno_stream_find(const struct cno_connection_t *conn, uint32_t id)
-{
+static struct cno_stream_t * cno_stream_find(const struct cno_connection_t *conn, uint32_t id) {
     struct cno_stream_t *s = conn->streams[id % CNO_STREAM_BUCKETS];
     while (s && s->id != id) s = s->next;
     return s;
 }
 
-static void cno_stream_free(struct cno_connection_t *conn, struct cno_stream_t *stream)
-{
+static void cno_stream_free(struct cno_connection_t *conn, struct cno_stream_t *stream) {
     struct cno_stream_t **s = &conn->streams[stream->id % CNO_STREAM_BUCKETS];
     while (*s != stream) s = &(*s)->next;
     *s = stream->next;
@@ -115,15 +110,13 @@ static void cno_stream_free(struct cno_connection_t *conn, struct cno_stream_t *
     free(stream);
 }
 
-static int cno_stream_end(struct cno_connection_t *conn, struct cno_stream_t *stream)
-{
+static int cno_stream_end(struct cno_connection_t *conn, struct cno_stream_t *stream) {
     uint32_t id = stream->id;
     cno_stream_free(conn, stream);
     return CNO_FIRE(conn, on_stream_end, id);
 }
 
-static int cno_stream_end_by_local(struct cno_connection_t *conn, struct cno_stream_t *stream)
-{
+static int cno_stream_end_by_local(struct cno_connection_t *conn, struct cno_stream_t *stream) {
     // HEADERS, DATA, WINDOW_UPDATE, and RST_STREAM may arrive on streams we have already reset
     // simply because the other side sent the frames before receiving ours. This is not
     // a protocol error according to the standard. (FIXME kinda broken with trailers...)
@@ -138,9 +131,7 @@ static int cno_stream_end_by_local(struct cno_connection_t *conn, struct cno_str
 
 // Send a single non-flow-controlled* frame, splitting DATA/HEADERS if they are too big.
 // (*meaning that it isn't counted; in case of DATA, this must be done by the caller.)
-static int cno_frame_write(struct cno_connection_t *conn,
-                     const struct cno_frame_t      *frame)
-{
+static int cno_frame_write(struct cno_connection_t *conn, const struct cno_frame_t *frame) {
     size_t length = frame->payload.size;
     size_t limit  = conn->settings[CNO_REMOTE].max_frame_size;
 
@@ -176,9 +167,7 @@ static int cno_frame_write(struct cno_connection_t *conn,
     return cno_frame_write(conn, &part);
 }
 
-static int cno_frame_write_goaway(struct cno_connection_t *conn,
-                                  uint32_t /* enum CNO_RST_STREAM_CODE */ code)
-{
+static int cno_frame_write_goaway(struct cno_connection_t *conn, uint32_t /* enum CNO_RST_STREAM_CODE */ code) {
     if (!conn->goaway_sent)
         conn->goaway_sent = conn->last_stream[CNO_REMOTE];
     struct cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, PACK(I32(conn->goaway_sent), I32(code)) };
@@ -190,9 +179,7 @@ static int cno_frame_write_goaway(struct cno_connection_t *conn,
     (cno_frame_write_goaway(conn, type) ? CNO_ERROR_UP() : CNO_ERROR(PROTOCOL, __VA_ARGS__))
 
 // Ignore frames on reset streams, as the spec requires. See `cno_stream_end_by_local`.
-static int cno_frame_handle_invalid_stream(struct cno_connection_t *conn,
-                                           struct cno_frame_t      *frame)
-{
+static int cno_frame_handle_invalid_stream(struct cno_connection_t *conn, struct cno_frame_t *frame) {
     if (frame->stream && frame->stream <= conn->last_stream[cno_stream_is_local(conn, frame->stream)])
         for (uint8_t i = 0; i < CNO_STREAM_RESET_HISTORY; i++)
             if ((frame->type != CNO_FRAME_HEADERS && conn->recently_reset[i] == frame->stream)
@@ -218,8 +205,7 @@ static int cno_frame_write_settings(struct cno_connection_t *conn,
     return cno_frame_write(conn, &frame);
 }
 
-static int cno_frame_write_rst_stream_by_id(struct cno_connection_t *conn, uint32_t id, uint32_t code)
-{
+static int cno_frame_write_rst_stream_by_id(struct cno_connection_t *conn, uint32_t id, uint32_t code) {
     struct cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, id, PACK(I32(code)) };
     return cno_frame_write(conn, &error);
 }
@@ -245,13 +231,11 @@ static int cno_frame_handle_end_stream(struct cno_connection_t *conn,
     return stream->w_state == CNO_STREAM_CLOSED ? cno_stream_end(conn, stream) : CNO_OK;
 }
 
-static int cno_is_informational(int code)
-{
+static int cno_is_informational(int code) {
     return 100 <= code && code < 200;
 }
 
-static uint64_t cno_parse_uint(struct cno_buffer_t value)
-{
+static uint64_t cno_parse_uint(struct cno_buffer_t value) {
     uint64_t prev = 0, ret = 0;
     for (const char *ptr = value.data, *end = ptr + value.size; ptr != end; ptr++, prev = ret)
         if (*ptr < '0' || '9' < *ptr || (ret = prev * 10 + (*ptr - '0')) < prev)
@@ -419,8 +403,7 @@ static int cno_frame_handle_end_headers(struct cno_connection_t *conn,
     return ret;
 }
 
-static int cno_frame_handle_padding(struct cno_connection_t *conn, struct cno_frame_t *frame)
-{
+static int cno_frame_handle_padding(struct cno_connection_t *conn, struct cno_frame_t *frame) {
     if (frame->flags & CNO_FLAG_PADDED) {
         if (frame->payload.size == 0)
             return cno_frame_write_error(conn, CNO_RST_FRAME_SIZE_ERROR, "no padding found");
@@ -733,8 +716,7 @@ static cno_frame_handler_t * const CNO_FRAME_HANDLERS[] = {
     &cno_frame_handle_continuation,
 };
 
-int cno_connection_set_config(struct cno_connection_t *conn, const struct cno_settings_t *settings)
-{
+int cno_connection_set_config(struct cno_connection_t *conn, const struct cno_settings_t *settings) {
     if (settings->enable_push != 0 && settings->enable_push != 1)
         return CNO_ERROR(ASSERTION, "enable_push neither 0 nor 1");
 
@@ -751,8 +733,7 @@ int cno_connection_set_config(struct cno_connection_t *conn, const struct cno_se
     return CNO_OK;
 }
 
-void cno_connection_init(struct cno_connection_t *conn, enum CNO_CONNECTION_KIND kind)
-{
+void cno_connection_init(struct cno_connection_t *conn, enum CNO_CONNECTION_KIND kind) {
     *conn = (struct cno_connection_t) {
         .client      = CNO_CLIENT == kind,
         .window_recv = CNO_SETTINGS_STANDARD.initial_window_size,
@@ -766,8 +747,7 @@ void cno_connection_init(struct cno_connection_t *conn, enum CNO_CONNECTION_KIND
     cno_hpack_init(&conn->encoder, CNO_SETTINGS_STANDARD.header_table_size);
 }
 
-void cno_connection_reset(struct cno_connection_t *conn)
-{
+void cno_connection_reset(struct cno_connection_t *conn) {
     cno_buffer_dyn_clear(&conn->buffer);
     cno_buffer_dyn_clear(&conn->continued);
     cno_hpack_clear(&conn->encoder);
@@ -778,8 +758,7 @@ void cno_connection_reset(struct cno_connection_t *conn)
             cno_stream_free(conn, conn->streams[i]);
 }
 
-static size_t cno_remove_chunked_te(struct cno_buffer_t *buf)
-{
+static size_t cno_remove_chunked_te(struct cno_buffer_t *buf) {
     // assuming the request is valid, chunked can only be the last transfer-encoding
     if (cno_buffer_endswith(*buf, CNO_BUFFER_STRING("chunked"))) {
         buf->size -= 7;
@@ -793,13 +772,11 @@ static size_t cno_remove_chunked_te(struct cno_buffer_t *buf)
 
 // NOTE these functions have tri-state returns now: negative for errors, 0 (CNO_OK)
 //      to wait for more data, and positive (CNO_CONNECTION_STATE) to switch to another state.
-static int cno_when_closed(struct cno_connection_t *conn __attribute__((unused)))
-{
+static int cno_when_closed(struct cno_connection_t *conn __attribute__((unused))) {
     return CNO_OK; // Wait until connection_made before processing data.
 }
 
-static int cno_when_h2_init(struct cno_connection_t *conn)
-{
+static int cno_when_h2_init(struct cno_connection_t *conn) {
     conn->mode = CNO_HTTP2;
     if (conn->client && CNO_FIRE(conn, on_writev, &CNO_PREFACE, 1))
         return CNO_ERROR_UP();
@@ -808,8 +785,7 @@ static int cno_when_h2_init(struct cno_connection_t *conn)
     return CNO_STATE_H2_PREFACE;
 }
 
-static int cno_when_h2_preface(struct cno_connection_t *conn)
-{
+static int cno_when_h2_preface(struct cno_connection_t *conn) {
     if (!conn->client) {
         if (strncmp(conn->buffer.data, CNO_PREFACE.data, conn->buffer.size))
             return CNO_ERROR(PROTOCOL, "invalid HTTP 2 client preface");
@@ -820,8 +796,7 @@ static int cno_when_h2_preface(struct cno_connection_t *conn)
     return CNO_STATE_H2_SETTINGS;
 }
 
-static int cno_when_h2_settings(struct cno_connection_t *conn)
-{
+static int cno_when_h2_settings(struct cno_connection_t *conn) {
     if (conn->buffer.size < 5)
         return CNO_OK;
     if (conn->buffer.data[3] != CNO_FRAME_SETTINGS || conn->buffer.data[4] != 0)
@@ -829,8 +804,7 @@ static int cno_when_h2_settings(struct cno_connection_t *conn)
     return CNO_STATE_H2_FRAME;
 }
 
-static int cno_when_h2_frame(struct cno_connection_t *conn)
-{
+static int cno_when_h2_frame(struct cno_connection_t *conn) {
     if (conn->buffer.size < 9)
         return CNO_OK;
 
