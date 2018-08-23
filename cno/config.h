@@ -18,8 +18,9 @@
 #endif
 
 #ifndef CNO_MAX_CONTINUATIONS
-// HEADERS/PUSH_PROMISE plus all CONTINUATIONs cannot exceed the frame size limit
-// more than by this multiplier. Controls peak memory consumption.
+// In HTTP 2 mode, only this many CONTINUATIONs are accepted in a row. In HTTP 1 mode,
+// the total length of all headers cannot exceed (this value + 1) * (max HTTP 2 frame size)
+// + (size of the transport level read buffer). Controls peak memory consumption.
 #define CNO_MAX_CONTINUATIONS 3
 #endif
 

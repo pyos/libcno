@@ -125,9 +125,6 @@ struct cno_connection_t {
 
 // private:
     uint8_t  state;
-    uint8_t  continued_flags;
-    uint32_t continued_stream;
-    uint32_t continued_promise;
      int64_t window_recv;
      int64_t window_send;
     uint32_t last_stream[2]; // dereferencable with CNO_REMOTE/CNO_LOCAL
@@ -138,7 +135,6 @@ struct cno_connection_t {
     uint64_t remaining_h1_payload; // can't be monitored in cno_stream_t because the stream might get reset
     struct cno_settings_t settings[2];
     struct cno_buffer_dyn_t buffer;
-    struct cno_buffer_dyn_t continued;
     struct cno_hpack_t decoder;
     struct cno_hpack_t encoder;
     struct cno_stream_t *streams[CNO_STREAM_BUCKETS];

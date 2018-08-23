@@ -37,7 +37,6 @@ struct cno_stream_t {
     uint64_t remaining_payload;
 };
 
-static inline uint8_t  read1(const uint8_t *p) { return p[0]; }
 static inline uint16_t read2(const uint8_t *p) { return p[0] <<  8 | p[1]; }
 static inline uint32_t read4(const uint8_t *p) { return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 
@@ -400,15 +399,10 @@ static int cno_frame_handle_message(struct cno_connection_t *c,
 
 static int cno_frame_handle_end_headers(struct cno_connection_t *c,
                                         struct cno_stream_t     *s,
-                                        struct cno_frame_t      *f,
-                                        uint32_t promised)
+                                        struct cno_frame_t      *f)
 {
-    if (!(f->flags & CNO_FLAG_END_HEADERS)) {
-        c->continued_flags = f->flags;
-        c->continued_stream = f->stream;
-        c->continued_promise = promised;
-        return cno_buffer_dyn_concat(&c->continued, f->payload);
-    }
+    if (!(f->flags & CNO_FLAG_END_HEADERS))
+        return CNO_ERROR(ASSERTION, "HEADERS/PUSH_PROMISE not merged with CONTINUATION");
 
     struct cno_header_t headers[CNO_MAX_HEADERS];
     struct cno_message_t m = { 0, {}, {}, headers, CNO_MAX_HEADERS };
@@ -430,7 +424,7 @@ static int cno_frame_handle_padding(struct cno_connection_t *c, struct cno_frame
         if (f->payload.size == 0)
             return cno_frame_write_error(c, CNO_RST_FRAME_SIZE_ERROR, "no padding found");
 
-        size_t padding = read1((const uint8_t *) f->payload.data) + 1;
+        size_t padding = ((const uint8_t *)f->payload.data)[0] + 1;
 
         if (padding > f->payload.size)
             return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "more padding than data");
@@ -458,8 +452,7 @@ static int cno_frame_handle_priority(struct cno_connection_t *c,
                      : cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "PRIORITY depends on itself");
 
         // TODO implement prioritization
-        f->payload.data += 5;
-        f->payload.size -= 5;
+        f->payload = cno_buffer_shift(f->payload, 5);
     }
     return CNO_OK;
 }
@@ -494,7 +487,7 @@ static int cno_frame_handle_headers(struct cno_connection_t *c,
         return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "unexpected HEADERS");
     }
 
-    return cno_frame_handle_end_headers(c, s, f, 0);
+    return cno_frame_handle_end_headers(c, s, f);
 }
 
 static int cno_frame_handle_push_promise(struct cno_connection_t *c,
@@ -512,44 +505,19 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *c,
      || !s || s->r_state == CNO_STREAM_CLOSED)
         return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "unexpected PUSH_PROMISE");
 
-    uint32_t promised = read4((const uint8_t *) f->payload.data);
-    f->payload = cno_buffer_shift(f->payload, 4);
-
-    struct cno_stream_t *child = cno_stream_new(c, promised, CNO_REMOTE);
+    struct cno_stream_t *child = cno_stream_new(c, read4((const uint8_t *) f->payload.data), CNO_REMOTE);
     if (child == NULL)
         return CNO_ERROR_UP();
-    return cno_frame_handle_end_headers(c, child, f, promised);
+    f->payload = cno_buffer_shift(f->payload, 4);
+    return cno_frame_handle_end_headers(c, child, f);
 }
 
-
 static int cno_frame_handle_continuation(struct cno_connection_t *c,
-                                         struct cno_stream_t     *s,
-                                         struct cno_frame_t      *f)
+                                         struct cno_stream_t     *s __attribute__((unused)),
+                                         struct cno_frame_t      *f __attribute__((unused)))
 {
-    if (!c->continued_stream)
-        return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "unexpected CONTINUATION");
-
-    if (c->continued.size + f->payload.size > CNO_MAX_CONTINUATIONS * c->settings[CNO_LOCAL].max_frame_size)
-        // Finally, a chance to use that error code.
-        return cno_frame_write_error(c, CNO_RST_ENHANCE_YOUR_CALM, "too many CONTINUATIONs");
-
-    if (cno_buffer_dyn_concat(&c->continued, f->payload))
-        return CNO_ERROR_UP();
-
-    if (f->flags & CNO_FLAG_END_HEADERS) {
-        s = c->continued_promise ? cno_stream_find(c, c->continued_promise) : s;
-        f = &(struct cno_frame_t){
-            c->continued_promise ? CNO_FRAME_PUSH_PROMISE : CNO_FRAME_HEADERS,
-            c->continued_flags | CNO_FLAG_END_HEADERS,
-            c->continued_stream,
-            CNO_BUFFER_VIEW(c->continued),
-        };
-        if (cno_frame_handle_end_headers(c, s, f, 0))
-            return CNO_ERROR_UP();
-        c->continued_stream = 0;
-        cno_buffer_dyn_clear(&c->continued);
-    }
-    return CNO_OK;
+    // There were no HEADERS (else `cno_when_h2_frame` would've merge the frames).
+    return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "unexpected CONTINUATION");
 }
 
 static int cno_frame_handle_data(struct cno_connection_t *c,
@@ -765,7 +733,6 @@ void cno_connection_init(struct cno_connection_t *c, enum CNO_CONNECTION_KIND ki
 
 void cno_connection_reset(struct cno_connection_t *c) {
     cno_buffer_dyn_clear(&c->buffer);
-    cno_buffer_dyn_clear(&c->continued);
     cno_hpack_clear(&c->encoder);
     cno_hpack_clear(&c->decoder);
 
@@ -828,30 +795,56 @@ static int cno_when_h2_settings(struct cno_connection_t *c) {
 }
 
 static int cno_when_h2_frame(struct cno_connection_t *c) {
+    const uint8_t *base = (const uint8_t *) c->buffer.data;
     if (c->buffer.size < 9)
         return CNO_OK;
 
-    const uint8_t *base = (const uint8_t *) c->buffer.data;
-    const size_t len = read4(base) >> 8;
-
-    if (len > c->settings[CNO_LOCAL].max_frame_size)
+    struct cno_buffer_t payload = { c->buffer.data + 9, read4(base) >> 8 };
+    if (payload.size > c->settings[CNO_LOCAL].max_frame_size)
         return cno_frame_write_error(c, CNO_RST_FRAME_SIZE_ERROR, "frame too big");
-
-    if (c->buffer.size < 9 + len)
+    if (c->buffer.size < payload.size + 9)
         return CNO_OK;
 
-    struct cno_buffer_t payload = { c->buffer.data + 9, len };
-    struct cno_frame_t f = { read1(&base[3]), read1(&base[4]), read4(&base[5]) & 0x7FFFFFFFUL, payload };
+    struct cno_frame_t f = { base[3], base[4], read4(&base[5]) & 0x7FFFFFFFUL, payload };
+    if ((f.type == CNO_FRAME_HEADERS || f.type == CNO_FRAME_PUSH_PROMISE) && !(f.flags & CNO_FLAG_END_HEADERS)) {
+        size_t i = 0;
+        for (size_t offset = f.payload.size + 9;;) {
+            if (++i > CNO_MAX_CONTINUATIONS)
+                return cno_frame_write_error(c, CNO_RST_ENHANCE_YOUR_CALM, "too many CONTINUATIONs");
+            if (c->buffer.size < offset + 9)
+                return CNO_OK;
+
+            size_t size = read4(&base[offset]) >> 8;
+            if (size > c->settings[CNO_LOCAL].max_frame_size)
+                return cno_frame_write_error(c, CNO_RST_FRAME_SIZE_ERROR, "frame too big");
+            if (base[offset + 3] != CNO_FRAME_CONTINUATION)
+                return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "expected CONTINUATION");
+            if (base[offset + 4] & ~CNO_FLAG_END_HEADERS)
+                return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "invalid CONTINUATION flags");
+            if ((read4(&base[offset + 5]) & 0x7FFFFFFFUL) != f.stream)
+                return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "invalid CONTINUATION stream");
+
+            if (c->buffer.size < offset + 9 + size)
+                return CNO_OK;
+            if (base[offset + 4])
+                break;
+            offset += size + 9;
+        }
+        f.flags |= CNO_FLAG_END_HEADERS;
+
+        size_t offset = f.payload.size + 9;
+        for (size_t size; i--; f.payload.size += size, offset += size + 9)
+            memmove((uint8_t *) f.payload.data + f.payload.size, base + offset + 9, size = read4(&base[offset]) >> 8);
+        memmove((uint8_t *) f.payload.data + f.payload.size, base + offset, c->buffer.size - offset);
+        c->buffer.size -= (offset - f.payload.size - 9);
+    }
+
+    cno_buffer_dyn_shift(&c->buffer, f.payload.size + 9);
     if (CNO_FIRE(c, on_frame, &f))
         return CNO_ERROR_UP();
-    if (c->continued_stream)
-        if (f.type != CNO_FRAME_CONTINUATION || f.stream != c->continued_stream)
-            return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "expected a CONTINUATION");
     // >Implementations MUST ignore and discard any frame that has a type that is unknown.
     if (f.type < CNO_FRAME_UNKNOWN && CNO_FRAME_HANDLERS[f.type](c, cno_stream_find(c, f.stream), &f))
         return CNO_ERROR_UP();
-
-    cno_buffer_dyn_shift(&c->buffer, 9 + len);
     return CNO_STATE_H2_FRAME;
 }
 
@@ -890,7 +883,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
             headers_phr, &m.headers_len, 1);
 
     if (ok == -2) {
-        if (c->buffer.size > CNO_MAX_CONTINUATIONS * c->settings[CNO_LOCAL].max_frame_size)
+        if (c->buffer.size > (CNO_MAX_CONTINUATIONS + 1) * c->settings[CNO_LOCAL].max_frame_size)
             return CNO_ERROR(PROTOCOL, "HTTP/1.x message too big");
         return CNO_OK;
     }
