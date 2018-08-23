@@ -132,18 +132,13 @@ static struct cno_stream_t *cno_stream_find(const struct cno_connection_t *c, ui
     return s;
 }
 
-static void cno_stream_free(struct cno_connection_t *c, struct cno_stream_t *s) {
-    struct cno_stream_t **sp = &c->streams[s->id % CNO_STREAM_BUCKETS];
-    while (*sp != s) sp = &(*sp)->next;
-    *sp = s->next;
-
-    c->stream_count[cno_stream_is_local(c, s->id)]--;
-    free(s);
-}
-
 static int cno_stream_end(struct cno_connection_t *c, struct cno_stream_t *s) {
     uint32_t sid = s->id;
-    cno_stream_free(c, s);
+    struct cno_stream_t **sp = &c->streams[sid % CNO_STREAM_BUCKETS];
+    while (*sp != s) sp = &(*sp)->next;
+    *sp = s->next;
+    free(s);
+    c->stream_count[cno_stream_is_local(c, sid)]--;
     return CNO_FIRE(c, on_stream_end, sid);
 }
 
@@ -737,8 +732,8 @@ void cno_connection_reset(struct cno_connection_t *c) {
     cno_hpack_clear(&c->decoder);
 
     for (size_t i = 0; i < CNO_STREAM_BUCKETS; i++)
-        while (c->streams[i])
-            cno_stream_free(c, c->streams[i]);
+        for (struct cno_stream_t *s; (s = c->streams[i]); free(s))
+            c->streams[i] = s->next;
 }
 
 static size_t cno_remove_chunked_te(struct cno_buffer_t *buf) {
@@ -1243,7 +1238,7 @@ int cno_write_message(struct cno_connection_t *c, uint32_t sid, const struct cno
     if (c->state == CNO_STATE_CLOSED)
         return CNO_ERROR(DISCONNECT, "connection closed");
 
-    if (c->client ? m->code : m->path.size)
+    if (c->client ? !!m->code : !!m->path.size)
         return CNO_ERROR(ASSERTION, c->client ? "request with a code" : "response with a path");
     if (cno_is_informational(m->code) && final)
         return CNO_ERROR(ASSERTION, "1xx codes cannot end the stream");
