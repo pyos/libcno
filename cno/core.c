@@ -1023,8 +1023,8 @@ static int cno_when_h1_chunk(struct cno_connection_t *c) {
     do {
         size_t prev = length;
         length = length * 16 + ('0' <= *p && *p <= '9' ? *p - '0' :
-                                'A' <= *p && *p <= 'F' ? *p - 'A' :
-                                'a' <= *p && *p <= 'f' ? *p - 'a' : -1);
+                                'A' <= *p && *p <= 'F' ? *p - 'A' + 10 :
+                                'a' <= *p && *p <= 'f' ? *p - 'a' + 10 : -1);
         if (length < prev)
             return CNO_ERROR(PROTOCOL, "invalid h1 chunk length");
     } while (*++p != '\r' && *p != '\n' && *p != ';');
