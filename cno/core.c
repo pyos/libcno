@@ -382,17 +382,16 @@ static int cno_frame_handle_message(struct cno_connection_t *conn,
     // >All HTTP/2 requests MUST include exactly one valid value for the :method, :scheme,
     // >and :path pseudo-header fields, unless it is a CONNECT request (Section 8.3).
     if (is_response ? !msg->code : !cno_buffer_eq(msg->method, CNO_BUFFER_STRING("CONNECT")) &&
-            (!msg->path.data || !msg->path.size || !msg->method.data || !msg->method.size || !has_scheme))
+            (!msg->path.size || !msg->method.size || !has_scheme))
         return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
 
     if (frame->type == CNO_FRAME_PUSH_PROMISE)
         return CNO_FIRE(conn, on_message_push, stream->id, msg, frame->stream);
 
-    if (!cno_is_informational(msg->code)) {
+    if (!cno_is_informational(msg->code))
         stream->r_state = CNO_STREAM_DATA;
-    } else if (stream->remaining_payload != (uint64_t) -1) {
+    else if (frame->flags & CNO_FLAG_END_STREAM || stream->remaining_payload != (uint64_t) -1)
         return cno_frame_write_rst_stream(conn, stream, CNO_RST_PROTOCOL_ERROR);
-    }
 
     if (CNO_FIRE(conn, on_message_head, stream->id, msg))
         return CNO_ERROR_UP();
