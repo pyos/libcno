@@ -81,7 +81,7 @@ struct cno_frame_t {
 
 struct cno_message_t {
     int code;
-    struct cno_buffer_t method;
+    struct cno_buffer_t method; // reason string in HTTP/1.x mode responses
     struct cno_buffer_t path;
     struct cno_header_t *headers;
     size_t headers_len;

@@ -1184,7 +1184,8 @@ static int cno_h1_write_head(struct cno_connection_t *c, struct cno_stream_t *s,
       ? CNO_WRITEV(c, m->method, CNO_BUFFER_STRING(" "), m->path, CNO_BUFFER_STRING(" HTTP/1.1\r\n"))
       // XXX technically, the reason string is meaningless so we don't need to specify the correct one.
       //     Might not be wise to leak information about the used library, though. Security through obscurity ftw.
-      : CNO_WRITEV(c, CNO_BUFFER_STRING("HTTP/1.1 "), cno_fmt_uint((char[12]){}, 12, m->code), CNO_BUFFER_STRING(" No Reason\r\n")))
+      : CNO_WRITEV(c, CNO_BUFFER_STRING("HTTP/1.1 "), cno_fmt_uint((char[12]){}, 12, m->code), CNO_BUFFER_STRING(" "),
+                      m->method.size ? m->method : CNO_BUFFER_STRING("No Reason"), CNO_BUFFER_STRING("\r\n")))
         return CNO_ERROR_UP();
 
     s->writing_chunked = !cno_is_informational(m->code) && !final;
@@ -1242,8 +1243,8 @@ int cno_write_message(struct cno_connection_t *c, uint32_t sid, const struct cno
     if (c->state == CNO_STATE_CLOSED)
         return CNO_ERROR(DISCONNECT, "connection closed");
 
-    if (c->client ? m->code : (m->method.size || m->path.size))
-        return CNO_ERROR(ASSERTION, c->client ? "request with a code" : "response with a method/size");
+    if (c->client ? m->code : m->path.size)
+        return CNO_ERROR(ASSERTION, c->client ? "request with a code" : "response with a path");
     if (cno_is_informational(m->code) && final)
         return CNO_ERROR(ASSERTION, "1xx codes cannot end the stream");
     for (const struct cno_header_t *h = m->headers, *he = h + m->headers_len; h != he; h++)
