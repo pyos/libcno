@@ -37,8 +37,10 @@ struct cno_stream_t {
     uint64_t remaining_payload;
 };
 
-static inline uint16_t read2(const uint8_t *p) { return p[0] <<  8 | p[1]; }
-static inline uint32_t read4(const uint8_t *p) { return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
+static inline uint32_t read4(const void *v) {
+    const uint8_t *p = (const uint8_t *)v;
+    return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
+}
 
 #define PACK(...) ((struct cno_buffer_t) { (char *) (uint8_t []) { __VA_ARGS__ }, sizeof((uint8_t []) { __VA_ARGS__ }) })
 #define I8(x)  (x)
@@ -442,7 +444,7 @@ static int cno_frame_handle_priority(struct cno_connection_t *c,
         if (!f->stream)
             return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "PRIORITY on stream 0");
 
-        if (f->stream == (read4((const uint8_t *) f->payload.data) & 0x7FFFFFFFUL))
+        if (f->stream == (read4(f->payload.data) & 0x7FFFFFFFUL))
             return s ? cno_frame_write_rst_stream(c, s, CNO_RST_PROTOCOL_ERROR)
                      : cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "PRIORITY depends on itself");
 
@@ -500,7 +502,7 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *c,
      || !s || s->r_state == CNO_STREAM_CLOSED)
         return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "unexpected PUSH_PROMISE");
 
-    struct cno_stream_t *child = cno_stream_new(c, read4((const uint8_t *) f->payload.data), CNO_REMOTE);
+    struct cno_stream_t *child = cno_stream_new(c, read4(f->payload.data), CNO_REMOTE);
     if (child == NULL)
         return CNO_ERROR_UP();
     f->payload = cno_buffer_shift(f->payload, 4);
@@ -584,7 +586,7 @@ static int cno_frame_handle_goaway(struct cno_connection_t *c,
     if (f->payload.size < 8)
         return cno_frame_write_error(c, CNO_RST_FRAME_SIZE_ERROR, "bad GOAWAY");
 
-    const uint32_t error = read4((const uint8_t *) f->payload.data + 4);
+    const uint32_t error = read4(f->payload.data + 4);
     if (error != CNO_RST_NO_ERROR)
         return CNO_ERROR(PROTOCOL, "disconnected with error %u", error);
     // TODO: clean shutdown: reject all streams higher than indicated in the frame
@@ -626,9 +628,9 @@ static int cno_frame_handle_settings(struct cno_connection_t *c,
     const uint32_t old_window = cfg->initial_window_size;
 
     for (const char *p = f->payload.data, *e = p + f->payload.size; p != e; p += 6) {
-        uint16_t setting = read2((const uint8_t *)p);
+        uint16_t setting = read4(p) >> 16;
         if (setting && setting < CNO_SETTINGS_UNDEFINED)
-            cfg->array[setting - 1] = read4((const uint8_t *)p + 2);
+            cfg->array[setting - 1] = read4(p + 2);
     }
 
     if (cfg->enable_push > 1)
@@ -660,7 +662,7 @@ static int cno_frame_handle_window_update(struct cno_connection_t *c,
     if (f->payload.size != 4)
         return cno_frame_write_error(c, CNO_RST_FRAME_SIZE_ERROR, "bad WINDOW_UPDATE");
 
-    uint32_t delta = read4((const uint8_t *) f->payload.data);
+    uint32_t delta = read4(f->payload.data);
     if (delta == 0 || delta > 0x7FFFFFFFL)
         return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "window increment out of bounds");
 
@@ -779,7 +781,7 @@ static int cno_when_h2_settings(struct cno_connection_t *c) {
         return CNO_OK;
     if (c->buffer.data[3] != CNO_FRAME_SETTINGS || c->buffer.data[4] != 0)
         return CNO_ERROR(PROTOCOL, "invalid HTTP 2 preface: no initial SETTINGS");
-    size_t len = read4((const uint8_t *) c->buffer.data) >> 8;
+    size_t len = read4(c->buffer.data) >> 8;
     if (len > CNO_SETTINGS_INITIAL.max_frame_size) // couldn't have ACKed our settings yet!
         return CNO_ERROR(PROTOCOL, "invalid HTTP 2 preface: initial SETTINGS too big");
     if (c->buffer.size < 9 + len)
@@ -829,8 +831,8 @@ static int cno_when_h2_frame(struct cno_connection_t *c) {
 
         size_t offset = f.payload.size + 9;
         for (size_t size; i--; f.payload.size += size, offset += size + 9)
-            memmove((uint8_t *) f.payload.data + f.payload.size, base + offset + 9, size = read4(&base[offset]) >> 8);
-        memmove((uint8_t *) f.payload.data + f.payload.size, base + offset, c->buffer.size - offset);
+            memmove((char *) f.payload.data + f.payload.size, base + offset + 9, size = read4(&base[offset]) >> 8);
+        memmove((char *) f.payload.data + f.payload.size, base + offset, c->buffer.size - offset);
         c->buffer.size -= (offset - f.payload.size - 9);
     }
 
