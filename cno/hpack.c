@@ -2,6 +2,15 @@
 #include "hpack.h"
 #include "hpack-data.h"
 
+struct cno_header_table_t {
+    struct cno_header_table_t *prev;
+    struct cno_header_table_t *next;
+    size_t k_size;
+    size_t v_size;
+    size_t refcnt;
+    char data[];
+};
+
 void cno_hpack_free_header(struct cno_header_t *h) {
     if (h->flags & CNO_HEADER_OWNS_NAME)
         free((void *) h->name.data);

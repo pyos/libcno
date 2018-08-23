@@ -4,6 +4,39 @@
 #include "core.h"
 #include "../picohttpparser/picohttpparser.h"
 
+enum CNO_CONNECTION_STATE {
+    CNO_STATE_CLOSED,
+    CNO_STATE_H2_INIT,
+    CNO_STATE_H2_PREFACE,
+    CNO_STATE_H2_SETTINGS,
+    CNO_STATE_H2_FRAME,
+    CNO_STATE_H1_HEAD,
+    CNO_STATE_H1_BODY,
+    CNO_STATE_H1_TAIL,
+    CNO_STATE_H1_CHUNK,
+    CNO_STATE_H1_CHUNK_BODY,
+    CNO_STATE_H1_CHUNK_TAIL,
+    CNO_STATE_H1_TRAILERS,
+};
+
+enum CNO_STREAM_STATE {
+    CNO_STREAM_HEADERS,
+    CNO_STREAM_DATA,
+    CNO_STREAM_CLOSED,
+};
+
+struct cno_stream_t {
+    struct cno_stream_t *next; // in hashmap bucket
+    uint32_t id;
+    uint8_t /* enum CNO_STREAM_STATE */ r_state;
+    uint8_t /* enum CNO_STREAM_STATE */ w_state;
+    uint8_t writing_chunked : 1;
+    uint8_t reading_head_response : 1;
+     int64_t window_recv;
+     int64_t window_send;
+    uint64_t remaining_payload;
+};
+
 static inline uint8_t  read1(const uint8_t *p) { return p[0]; }
 static inline uint16_t read2(const uint8_t *p) { return p[0] <<  8 | p[1]; }
 static inline uint32_t read4(const uint8_t *p) { return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }

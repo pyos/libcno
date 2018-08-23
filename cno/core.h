@@ -23,27 +23,6 @@ enum CNO_HTTP_VERSION {
     CNO_HTTP2,
 };
 
-enum CNO_CONNECTION_STATE { // TODO move to .c
-    CNO_STATE_CLOSED,
-    CNO_STATE_H2_INIT,
-    CNO_STATE_H2_PREFACE,
-    CNO_STATE_H2_SETTINGS,
-    CNO_STATE_H2_FRAME,
-    CNO_STATE_H1_HEAD,
-    CNO_STATE_H1_BODY,
-    CNO_STATE_H1_TAIL,
-    CNO_STATE_H1_CHUNK,
-    CNO_STATE_H1_CHUNK_BODY,
-    CNO_STATE_H1_CHUNK_TAIL,
-    CNO_STATE_H1_TRAILERS,
-};
-
-enum CNO_STREAM_STATE { // TODO move to .c
-    CNO_STREAM_HEADERS,
-    CNO_STREAM_DATA,
-    CNO_STREAM_CLOSED,
-};
-
 enum CNO_FRAME_TYPE {
     CNO_FRAME_DATA          = 0x0,
     CNO_FRAME_HEADERS       = 0x1,
@@ -108,17 +87,7 @@ struct cno_message_t {
     size_t headers_len;
 };
 
-struct cno_stream_t {
-    struct cno_stream_t *next; // in hashmap bucket
-    uint32_t id;
-    uint8_t /* enum CNO_STREAM_STATE */ r_state;
-    uint8_t /* enum CNO_STREAM_STATE */ w_state;
-    uint8_t writing_chunked : 1;
-    uint8_t reading_head_response : 1;
-     int64_t window_recv;
-     int64_t window_send;
-    uint64_t remaining_payload;
-};
+struct cno_stream_t;
 
 struct cno_settings_t {
     union {
@@ -155,7 +124,7 @@ struct cno_connection_t {
     uint8_t mode : 1;
 
 // private:
-    uint8_t /* enum CNO_CONNECTION_STATE */ state;
+    uint8_t  state;
     uint8_t  continued_flags;
     uint32_t continued_stream;
     uint32_t continued_promise;

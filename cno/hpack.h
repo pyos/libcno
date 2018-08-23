@@ -24,14 +24,7 @@ struct cno_header_t {
     uint8_t /* enum CNO_HEADER_FLAGS */ flags;
 };
 
-struct cno_header_table_t {
-    struct cno_header_table_t *prev;
-    struct cno_header_table_t *next;
-    size_t k_size;
-    size_t v_size;
-    size_t refcnt;
-    char data[];
-};
+struct cno_header_table_t;
 
 struct cno_hpack_t {
     struct cno_header_table_t *last;
