@@ -817,6 +817,13 @@ static int cno_when_h2_settings(struct cno_connection_t *c) {
         return CNO_OK;
     if (c->buffer.data[3] != CNO_FRAME_SETTINGS || c->buffer.data[4] != 0)
         return CNO_ERROR(PROTOCOL, "invalid HTTP 2 preface: no initial SETTINGS");
+    size_t len = read4((const uint8_t *) c->buffer.data) >> 8;
+    if (len > CNO_SETTINGS_INITIAL.max_frame_size) // couldn't have ACKed our settings yet!
+        return CNO_ERROR(PROTOCOL, "invalid HTTP 2 preface: initial SETTINGS too big");
+    if (c->buffer.size < 9 + len)
+        return CNO_OK;
+    // Now that we know the *actual* values, they should be applied as deltas to this.
+    c->settings[CNO_REMOTE] = CNO_SETTINGS_INITIAL;
     return CNO_STATE_H2_FRAME;
 }
 
