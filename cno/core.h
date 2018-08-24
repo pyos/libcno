@@ -108,7 +108,7 @@ struct cno_settings_t {
 struct cno_connection_t {
 // public:
     // Disable automatic sending of stream WINDOW_UPDATEs after receiving DATA; application
-    // must call `cno_increase_flow_window` after processing a chunk from `on_message_data`.
+    // must call `cno_open_flow` after processing a chunk from `on_message_data`.
     uint8_t manual_flow_control : 1;
     // Disable special handling of the "Upgrade: h2c" header in HTTP/1.x mode.
     // NOTE: this is set by default because:
@@ -118,9 +118,9 @@ struct cno_connection_t {
     uint8_t disallow_h2_upgrade : 1;
     // Disable special handling of the HTTP2 preface in HTTP/1.x mode.
     uint8_t disallow_h2_prior_knowledge : 1;
-    // Whether `cno_connection_init` was called with `CNO_CLIENT`.
+    // Whether `cno_init` was called with `CNO_CLIENT`.
     uint8_t client : 1;
-    // Whether `cno_connection_made` was called with `CNO_HTTP2` or an upgrade has beed performed.
+    // Whether `cno_begin` was called with `CNO_HTTP2` or an upgrade has beed performed.
     uint8_t mode : 1;
 
 // private:
@@ -176,45 +176,45 @@ struct cno_connection_t {
     // New connection-wide settings have been chosen by the peer.
     int (*on_settings)(void *);
     // HTTP 1 server only: the previous request (see `on_message_head`) has requested
-    // an upgrade to a different protocol. If `cno_write_message` is called with code 101
-    // before the next call to `cno_connection_data_received`, all further data will
-    // be forwarded as payload. Otherwise, the upgrade is ignored.
+    // an upgrade to a different protocol. If `cno_write_head` is called with code 101
+    // before the next call to `cno_consume`, all further data will be forwarded as
+    // payload. Otherwise, the upgrade is ignored.
     int (*on_upgrade)(void *);
 };
 
 // Initialize a freshly constructed connection object. (Set up the callbacks after this.)
-void cno_connection_init(struct cno_connection_t *, enum CNO_CONNECTION_KIND);
+void cno_init(struct cno_connection_t *, enum CNO_CONNECTION_KIND);
 
 // Free all resources associated with a connection. *Does not emit events*: if you store
 // additional per-stream data, discard it.
-void cno_connection_reset(struct cno_connection_t *);
+void cno_fini(struct cno_connection_t *);
 
 // Begin the message exchange using the negotiated protocol.
-int cno_connection_made(struct cno_connection_t *, enum CNO_HTTP_VERSION);
+int cno_begin(struct cno_connection_t *, enum CNO_HTTP_VERSION);
 
 // Handle some new data from the transport level.
-int cno_connection_data_received(struct cno_connection_t *, const char *, size_t);
+int cno_consume(struct cno_connection_t *, const char *, size_t);
 
 // Handle an EOF from a half-closed transport. (After calling this, wait for remaining
 // streams to end, then close the write half as well.)
-int cno_connection_lost(struct cno_connection_t *);
+int cno_eof(struct cno_connection_t *);
 
 // Gracefully shut down the connection. (After calling this, wait for remaining streams
 // to end, then close the transport.)
-int cno_connection_stop(struct cno_connection_t *);
+int cno_shutdown(struct cno_connection_t *);
 
 // Set a new configuration for HTTP 2. (The current one can be read as `c->settings[CNO_LOCAL]`.)
-int cno_connection_set_config(struct cno_connection_t *, const struct cno_settings_t *);
+int cno_configure(struct cno_connection_t *, const struct cno_settings_t *);
 
 // Obtain a new stream id to send a request with.
-uint32_t cno_connection_next_stream (struct cno_connection_t *);
+uint32_t cno_next_stream(const struct cno_connection_t *);
 
 // Client: send a new request. Server: respond to a previously received one. If `final` is 0
 // (only allowed for requests and non-1xx responses), one or more calls to `cno_write_data`
 // must follow. For a 1xx response, call this function again with a proper code later.
-// 101 responses must only be sent while `cno_connection_data_received` is blocked in
-// `on_message_head` or `on_upgrade` of an HTTP 1 connection; see `on_upgrade`.
-int cno_write_message(struct cno_connection_t *, uint32_t stream, const struct cno_message_t *, int final);
+// 101 responses must only be sent while `cno_consume` is blocked in `on_message_head`
+// or `on_upgrade` of an HTTP 1 connection; see `on_upgrade`.
+int cno_write_head(struct cno_connection_t *, uint32_t stream, const struct cno_message_t *, int final);
 
 // Server: initiate a request in anticipation of the client doing it anyway. This should
 // only be done for safe requests without payload. The function will silently do nothing
@@ -244,7 +244,51 @@ int cno_write_frame(struct cno_connection_t *, const struct cno_frame_t *);
 // NOTE: if manual flow control is disabled, the window size is kept constant by increasing
 //       it before emitting `on_message_data`. This function can still be used to make
 //       the window bigger than the default.
-int cno_increase_flow_window(struct cno_connection_t *, uint32_t stream, uint32_t delta);
+int cno_open_flow(struct cno_connection_t *, uint32_t stream, uint32_t delta);
+
+#if !CFFI_CDEF_MODE
+// Deprecated aliases {
+static inline void __attribute__((deprecated("-> cno_init"))) cno_connection_init(struct cno_connection_t *c, enum CNO_CONNECTION_KIND k) {
+    cno_init(c, k);
+}
+
+static inline void __attribute__((deprecated("-> cno_fini"))) cno_connection_reset(struct cno_connection_t *c) {
+    cno_fini(c);
+}
+
+static inline int __attribute__((deprecated("-> cno_begin"))) cno_connection_made(struct cno_connection_t *c, enum CNO_HTTP_VERSION v) {
+    return cno_begin(c, v);
+}
+
+static inline int __attribute__((deprecated("-> cno_consume"))) cno_connection_data_received(struct cno_connection_t *c, const char *d, size_t s) {
+    return cno_consume(c, d, s);
+}
+
+static inline int __attribute__((deprecated("-> cno_eof"))) cno_connection_lost(struct cno_connection_t *c) {
+    return cno_eof(c);
+}
+
+static inline int __attribute__((deprecated("-> cno_shutdown"))) cno_connection_stop(struct cno_connection_t *c) {
+    return cno_shutdown(c);
+}
+
+static inline int __attribute__((deprecated("-> cno_configure"))) cno_connection_set_config(struct cno_connection_t *c, const struct cno_settings_t *s) {
+    return cno_configure(c, s);
+}
+
+static inline uint32_t __attribute__((deprecated("-> cno_next_stream"))) cno_connection_next_stream(const struct cno_connection_t *c) {
+    return cno_next_stream(c);
+}
+
+static inline int __attribute__((deprecated("-> cno_write_head"))) cno_write_message(struct cno_connection_t *c, uint32_t s, const struct cno_message_t *m, int f) {
+    return cno_write_head(c, s, m, f);
+}
+
+static inline int __attribute__((deprecated("-> cno_open_flow"))) cno_increase_flow_window(struct cno_connection_t *c, uint32_t s, uint32_t d) {
+    return cno_open_flow(c, s, d);
+}
+// }
+#endif
 
 #ifdef __cplusplus
 }  // extern "C"

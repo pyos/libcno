@@ -48,7 +48,7 @@ class Request:
         # XXX perhaps imbuing HEAD with a special meaning is a task
         #     for a web framework instead?
         have_data = data and self.method != 'HEAD'
-        self.conn.write_message(self.stream, code, '', '', headers, not have_data)
+        self.conn.write_head(self.stream, code, '', '', headers, not have_data)
         if have_data:
             await self.conn.write_all_data(self.stream, data)
 
@@ -206,7 +206,7 @@ class Client (Connection):
         while (await self._have_free_streams.wait()):
             stream = self.next_stream
             try:
-                self.write_message(stream, 0, method, path, head, not data)
+                self.write_head(stream, 0, method, path, head, not data)
                 break
             except ConnectionError as e:
                 if e.errno != raw.CNO_ERRNO_WOULD_BLOCK:

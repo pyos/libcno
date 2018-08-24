@@ -697,7 +697,7 @@ static cno_frame_handler_t * const CNO_FRAME_HANDLERS[] = {
     &cno_frame_handle_continuation,
 };
 
-int cno_connection_set_config(struct cno_connection_t *c, const struct cno_settings_t *settings) {
+int cno_configure(struct cno_connection_t *c, const struct cno_settings_t *settings) {
     if (settings->enable_push != 0 && settings->enable_push != 1)
         return CNO_ERROR(ASSERTION, "enable_push neither 0 nor 1");
 
@@ -714,7 +714,7 @@ int cno_connection_set_config(struct cno_connection_t *c, const struct cno_setti
     return CNO_OK;
 }
 
-void cno_connection_init(struct cno_connection_t *c, enum CNO_CONNECTION_KIND kind) {
+void cno_init(struct cno_connection_t *c, enum CNO_CONNECTION_KIND kind) {
     *c = (struct cno_connection_t) {
         .client      = CNO_CLIENT == kind,
         .window_recv = CNO_SETTINGS_STANDARD.initial_window_size,
@@ -728,7 +728,7 @@ void cno_connection_init(struct cno_connection_t *c, enum CNO_CONNECTION_KIND ki
     cno_hpack_init(&c->encoder, CNO_SETTINGS_STANDARD.header_table_size);
 }
 
-void cno_connection_reset(struct cno_connection_t *c) {
+void cno_fini(struct cno_connection_t *c) {
     cno_buffer_dyn_clear(&c->buffer);
     cno_hpack_clear(&c->encoder);
     cno_hpack_clear(&c->decoder);
@@ -753,7 +753,7 @@ static size_t cno_remove_chunked_te(struct cno_buffer_t *buf) {
 // NOTE these functions have tri-state returns now: negative for errors, 0 (CNO_OK)
 //      to wait for more data, and positive (CNO_CONNECTION_STATE) to switch to another state.
 static int cno_when_closed(struct cno_connection_t *c __attribute__((unused))) {
-    return CNO_OK; // Wait until connection_made before processing data.
+    return CNO_ERROR(DISCONNECT, "connection closed");
 }
 
 static int cno_when_h2_init(struct cno_connection_t *c) {
@@ -1067,16 +1067,14 @@ static cno_state_handler_t * const CNO_STATE_MACHINE[] = {
     &cno_when_h1_trailers,
 };
 
-int cno_connection_made(struct cno_connection_t *c, enum CNO_HTTP_VERSION version) {
+int cno_begin(struct cno_connection_t *c, enum CNO_HTTP_VERSION version) {
     if (c->state != CNO_STATE_CLOSED)
         return CNO_ERROR(ASSERTION, "called connection_made twice");
     c->state = (version == CNO_HTTP2 ? CNO_STATE_H2_INIT : CNO_STATE_H1_HEAD);
-    return cno_connection_data_received(c, NULL, 0);
+    return cno_consume(c, NULL, 0);
 }
 
-int cno_connection_data_received(struct cno_connection_t *c, const char *data, size_t size) {
-    if (c->state == CNO_STATE_CLOSED)
-        return CNO_ERROR(DISCONNECT, "connection closed");
+int cno_consume(struct cno_connection_t *c, const char *data, size_t size) {
     if (cno_buffer_dyn_concat(&c->buffer, (struct cno_buffer_t) { data, size }))
         return CNO_ERROR_UP();
     for (int r; (r = CNO_STATE_MACHINE[c->state](c)) != 0; c->state = r)
@@ -1085,11 +1083,11 @@ int cno_connection_data_received(struct cno_connection_t *c, const char *data, s
     return CNO_OK;
 }
 
-int cno_connection_stop(struct cno_connection_t *c) {
+int cno_shutdown(struct cno_connection_t *c) {
     return cno_write_reset(c, 0, CNO_RST_NO_ERROR);
 }
 
-int cno_connection_lost(struct cno_connection_t *c) {
+int cno_eof(struct cno_connection_t *c) {
     if (c->mode != CNO_HTTP2) {
         struct cno_stream_t *s = cno_stream_find(c, c->last_stream[c->client]);
         return s && s->r_state != CNO_STREAM_CLOSED ? CNO_ERROR(DISCONNECT, "unclean http/1.x termination") : CNO_OK;
@@ -1104,7 +1102,7 @@ int cno_connection_lost(struct cno_connection_t *c) {
     return CNO_OK;
 }
 
-uint32_t cno_connection_next_stream(struct cno_connection_t *c) {
+uint32_t cno_next_stream(const struct cno_connection_t *c) {
     uint32_t last = c->last_stream[CNO_LOCAL];
     return c->client ? (last + 1) | 1 : last + 2;
 }
@@ -1130,7 +1128,7 @@ int cno_write_push(struct cno_connection_t *c, uint32_t sid, const struct cno_me
     if (!s || s->w_state == CNO_STREAM_CLOSED)
         return CNO_OK;  // pushed requests are safe, so whether we send one doesn't matter
 
-    uint32_t child = cno_connection_next_stream(c);
+    uint32_t child = cno_next_stream(c);
     if (cno_stream_new(c, child, CNO_LOCAL) == NULL)
         return CNO_ERROR_UP();
 
@@ -1144,7 +1142,7 @@ int cno_write_push(struct cno_connection_t *c, uint32_t sid, const struct cno_me
      || cno_hpack_encode(&c->encoder, &enc, m->headers, m->headers_len)
      || cno_frame_write(c, &(struct cno_frame_t){ CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, sid, CNO_BUFFER_VIEW(enc) }))
         // irrecoverable (compression state desync), don't bother destroying the stream.
-        // FIXME should make next `cno_connection_data_received` fail. The possible errors are NO_MEMORY
+        // FIXME should make next `cno_consume` fail. The possible errors are NO_MEMORY
         //       or something from on_writev, so rolling back is pointless as keeping the old state
         //       will consume even more memory and on_writev should only fail on disconnect.
         return cno_buffer_dyn_clear(&enc), CNO_ERROR_UP();
@@ -1236,7 +1234,7 @@ static int cno_h2_write_head(struct cno_connection_t *c, struct cno_stream_t *s,
     return cno_buffer_dyn_clear(&enc), CNO_OK;
 }
 
-int cno_write_message(struct cno_connection_t *c, uint32_t sid, const struct cno_message_t *m, int final) {
+int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_message_t *m, int final) {
     if (c->state == CNO_STATE_CLOSED)
         return CNO_ERROR(DISCONNECT, "connection closed");
 
@@ -1319,7 +1317,7 @@ int cno_write_frame(struct cno_connection_t *c, const struct cno_frame_t *f) {
     return cno_frame_write(c, f);
 }
 
-int cno_increase_flow_window(struct cno_connection_t *c, uint32_t sid, uint32_t delta) {
+int cno_open_flow(struct cno_connection_t *c, uint32_t sid, uint32_t delta) {
     if (c->mode != CNO_HTTP2 || !sid || !delta)
         return CNO_OK; // TODO don't ignore connection flow updates
     struct cno_stream_t *s = cno_stream_find(c, sid);

@@ -18,7 +18,7 @@ enum CNO_ERRNO {
     CNO_ERRNO_NOT_IMPLEMENTED = 3,
     CNO_ERRNO_PROTOCOL        = 4,  // (irrecoverable) protocol error
     CNO_ERRNO_INVALID_STREAM  = 6,  // cno_write_* with wrong arguments
-    CNO_ERRNO_WOULD_BLOCK     = 7,  // cno_write_message would go above the limit on concurrent messages - wait for a request to complete
+    CNO_ERRNO_WOULD_BLOCK     = 7,  // would go above the limit on concurrent streams - wait for a request to complete
     CNO_ERRNO_DISCONNECT      = 9,  // connection has already been closed
 };
 

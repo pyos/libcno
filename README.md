@@ -15,10 +15,10 @@ make obj/libcno.a
 
 Just read core.h. And common.h, for buffers and error handling. And hpack.h for headers.
 Basically, you create a `cno_connection_t`, then follow a simple
-chain of `cno_connection_init` -> connect some callbacks -> `cno_connection_made` ->
-`cno_connection_data_received` -> (repeat while I/O is still possible) ->
-`cno_connection_lost` -> `cno_connection_reset`, skipping to the last step if
-anything returns an error and using `cno_write_message` + `cno_write_data` or
+chain of `cno_init` -> connect some callbacks -> `cno_begin` ->
+`cno_consume` -> (repeat while I/O is still possible) ->
+`cno_eof` -> `cno_fini`, skipping to the last step if
+anything returns an error and using `cno_write_head` + `cno_write_data` or
 `cno_write_push` or `cno_write_reset` to send some stuff of your own.
 
 ### Python API
@@ -37,16 +37,16 @@ pip3 install git+https://github.com/pyos/libcno
 
 | C function                                       | `cno.raw.Connection` method                                   |
 | ------------------------------------------------ | ------------------------------------------------------------- |
-| `cno_connection_init(c, CNO_SERVER)`             | `c = cno.raw.Connection(server=True)`                         |
-| `cno_connection_reset(c)`                        | `del c`                                                       |
-| `cno_connection_made(c, CNO_HTTP2)`              | `c.connection_made(is_http2=True)`                            |
-| `cno_connection_lost(c)`                         | `c.connection_lost()`                                         |
-| `cno_connection_data_received(c, data, length)`  | `c.data_received(data)`                                       |
-| `cno_connection_next_stream(c)`                  | `c.next_stream`                                               |
-| `cno_write_reset(c, stream, code)`               | `c.write_reset(stream, code)`                                 |
+| `cno_init(c, CNO_SERVER)`                        | `c = cno.raw.Connection(server=True)`                         |
+| `cno_fini(c)`                                    | `del c`                                                       |
+| `cno_begin(c, CNO_HTTP2)`                        | `c.connection_made(is_http2=True)`                            |
+| `cno_eof(c)`                                     | `c.connection_lost()`                                         |
+| `cno_consume(c, data, length)`                   | `c.data_received(data)`                                       |
+| `cno_next_stream(c)`                             | `c.next_stream`                                               |
+| `cno_write_head(c, stream, msg, final)`          | `c.write_head(stream, code, method, path, headers, final)`    |
 | `cno_write_push(c, stream, msg)`                 | `c.write_push(stream, method, path, headers)`                 |
-| `cno_write_message(c, stream, msg, final)`       | `c.write_message(stream, code, method, path, headers, final)` |
 | `cno_write_data(c, stream, data, length, final)` | `c.write_data(stream, data, final)`                           |
+| `cno_write_reset(c, stream, code)`               | `c.write_reset(stream, code)`                                 |
 
 Event receivers must be defined as methods of `Connection` subclasses.
 

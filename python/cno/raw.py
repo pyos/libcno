@@ -74,7 +74,7 @@ class Connection:
     def __init__(self, server):
         self.__c = ffi.new('struct cno_connection_t *')
         self.__p = ffi.new_handle(self)
-        cno_connection_init(self.__c, CNO_SERVER if server else CNO_CLIENT)
+        cno_init(self.__c, CNO_SERVER if server else CNO_CLIENT)
         for name in _CALLBACKS:
             if hasattr(self, name):
                 setattr(self.__c, name, getattr(lib, name))
@@ -82,7 +82,7 @@ class Connection:
 
     def __del__(self):
         if hasattr(self, '__c'):
-            cno_connection_reset(self.__c)
+            cno_fini(self.__c)
 
     def __throw(self, ret):
         if ret < 0:
@@ -101,20 +101,20 @@ class Connection:
 
     @property
     def next_stream(self):
-        return cno_connection_next_stream(self.__c)
+        return cno_next_stream(self.__c)
 
     def connection_made(self, is_http2):
-        self.__throw(cno_connection_made(self.__c, CNO_HTTP2 if is_http2 else CNO_HTTP1))
+        self.__throw(cno_begin(self.__c, CNO_HTTP2 if is_http2 else CNO_HTTP1))
 
     def connection_lost(self, error=None):
-        self.__throw(cno_connection_lost(self.__c))
+        self.__throw(cno_eof(self.__c))
 
     def data_received(self, data):
-        self.__throw(cno_connection_data_received(self.__c, data, len(data)))
+        self.__throw(cno_consume(self.__c, data, len(data)))
 
-    def write_message(self, i, code, method, path, headers, is_final):
+    def write_head(self, i, code, method, path, headers, is_final):
         msg, refs = _msgpack(code, method, path, headers)
-        self.__throw(cno_write_message(self.__c, i, msg, is_final))
+        self.__throw(cno_write_head(self.__c, i, msg, is_final))
 
     def write_push(self, i, method, path, headers):
         msg, refs = _msgpack(0, method, path, headers)
@@ -129,3 +129,6 @@ class Connection:
     def write_ping(self, data):
         assert len(data) == 8
         self.__throw(cno_write_ping(self.__c, ffi.from_buffer(data)))
+
+    def write_message(self, *args):
+        return self.write_head(*args)
