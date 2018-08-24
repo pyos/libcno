@@ -48,7 +48,7 @@ static inline uint32_t read4(const void *v) {
 #define I24(x) (x) >> 16, (x) >> 8,  (x)
 #define I32(x) (x) >> 24, (x) >> 16, (x) >> 8, (x)
 
-#define CNO_FIRE(ob, cb, ...) (ob->cb && ob->cb(ob->cb_data, ##__VA_ARGS__))
+#define CNO_FIRE(ob, cb, ...) (ob->cb_code && ob->cb_code->cb && ob->cb_code->cb(ob->cb_data, ##__VA_ARGS__))
 
 #define CNO_WRITEV(c, ...) CNO_FIRE(c, on_writev, (struct cno_buffer_t[]){__VA_ARGS__}, \
     sizeof((struct cno_buffer_t[]){__VA_ARGS__}) / sizeof(struct cno_buffer_t))

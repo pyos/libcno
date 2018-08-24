@@ -75,14 +75,23 @@ class Connection:
         self.__c = ffi.new('struct cno_connection_t *')
         self.__p = ffi.new_handle(self)
         cno_init(self.__c, CNO_SERVER if server else CNO_CLIENT)
-        for name in _CALLBACKS:
-            if hasattr(self, name):
-                setattr(self.__c, name, getattr(lib, name))
+        self.__c.cb_code = self.__make_vtable()
         self.__c.cb_data = self.__p
 
     def __del__(self):
         if hasattr(self, '__c'):
             cno_fini(self.__c)
+
+    @classmethod
+    def __make_vtable(cls):
+        try:
+            return cls.__vtable
+        except AttributeError:
+            cls.__vtable = ffi.new('struct cno_vtable_t *')
+            for name in _CALLBACKS:
+                if hasattr(cls, name):
+                    setattr(cls.__vtable, name, getattr(lib, name))
+            return cls.__vtable
 
     def __throw(self, ret):
         if ret < 0:

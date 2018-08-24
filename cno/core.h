@@ -105,43 +105,7 @@ struct cno_settings_t {
     };
 };
 
-struct cno_connection_t {
-// public:
-    // Disable automatic sending of stream WINDOW_UPDATEs after receiving DATA; application
-    // must call `cno_open_flow` after processing a chunk from `on_message_data`.
-    uint8_t manual_flow_control : 1;
-    // Disable special handling of the "Upgrade: h2c" header in HTTP/1.x mode.
-    // NOTE: this is set by default because:
-    //   1. when using tls, you *have* to set this to be compliant;
-    //   2. most browsers/servers only support h2 over tls anyway;
-    //   3. weird things may happen if you reset stream 1 without consuming the whole payload.
-    uint8_t disallow_h2_upgrade : 1;
-    // Disable special handling of the HTTP2 preface in HTTP/1.x mode.
-    uint8_t disallow_h2_prior_knowledge : 1;
-    // Whether `cno_init` was called with `CNO_CLIENT`.
-    uint8_t client : 1;
-    // Whether `cno_begin` was called with `CNO_HTTP2` or an upgrade has beed performed.
-    uint8_t mode : 1;
-
-// private:
-    uint8_t  state;
-     int64_t window_recv;
-     int64_t window_send;
-    uint32_t last_stream[2]; // dereferencable with CNO_REMOTE/CNO_LOCAL
-    uint32_t stream_count[2];
-    uint32_t goaway_sent;
-    uint8_t  recently_reset_next;
-    uint32_t recently_reset[CNO_STREAM_RESET_HISTORY];
-    uint64_t remaining_h1_payload; // can't be monitored in cno_stream_t because the stream might get reset
-    struct cno_settings_t settings[2];
-    struct cno_buffer_dyn_t buffer;
-    struct cno_hpack_t decoder;
-    struct cno_hpack_t encoder;
-    struct cno_stream_t *streams[CNO_STREAM_BUCKETS];
-
-//public:
-    // Passed as the first argument to all callbacks.
-    void *cb_data;
+struct cno_vtable_t {
     // There is something to send to the other side. Transport level is outside
     // the scope of this library.
     int (*on_writev)(void *, const struct cno_buffer_t *, size_t count);
@@ -180,6 +144,44 @@ struct cno_connection_t {
     // before the next call to `cno_consume`, all further data will be forwarded as
     // payload. Otherwise, the upgrade is ignored.
     int (*on_upgrade)(void *);
+};
+
+struct cno_connection_t {
+// public:
+    const struct cno_vtable_t *cb_code;
+    // Passed as the first argument to all callbacks.
+    void *cb_data;
+    // Disable automatic sending of stream WINDOW_UPDATEs after receiving DATA; application
+    // must call `cno_open_flow` after processing a chunk from `on_message_data`.
+    uint8_t manual_flow_control : 1;
+    // Disable special handling of the "Upgrade: h2c" header in HTTP/1.x mode.
+    // NOTE: this is set by default because:
+    //   1. when using tls, you *have* to set this to be compliant;
+    //   2. most browsers/servers only support h2 over tls anyway;
+    //   3. weird things may happen if you reset stream 1 without consuming the whole payload.
+    uint8_t disallow_h2_upgrade : 1;
+    // Disable special handling of the HTTP2 preface in HTTP/1.x mode.
+    uint8_t disallow_h2_prior_knowledge : 1;
+    // Whether `cno_init` was called with `CNO_CLIENT`.
+    uint8_t client : 1;
+    // Whether `cno_begin` was called with `CNO_HTTP2` or an upgrade has beed performed.
+    uint8_t mode : 1;
+
+// private:
+    uint8_t  state;
+     int64_t window_recv;
+     int64_t window_send;
+    uint32_t last_stream[2]; // dereferencable with CNO_REMOTE/CNO_LOCAL
+    uint32_t stream_count[2];
+    uint32_t goaway_sent;
+    uint8_t  recently_reset_next;
+    uint32_t recently_reset[CNO_STREAM_RESET_HISTORY];
+    uint64_t remaining_h1_payload; // can't be monitored in cno_stream_t because the stream might get reset
+    struct cno_settings_t settings[2];
+    struct cno_buffer_dyn_t buffer;
+    struct cno_hpack_t decoder;
+    struct cno_hpack_t encoder;
+    struct cno_stream_t *streams[CNO_STREAM_BUCKETS];
 };
 
 // Initialize a freshly constructed connection object. (Set up the callbacks after this.)
