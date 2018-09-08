@@ -1175,6 +1175,13 @@ static struct cno_buffer_t cno_fmt_chunk_length(char *b, size_t s, size_t n) {
 }
 
 static int cno_h1_write_head(struct cno_connection_t *c, struct cno_stream_t *s, const struct cno_message_t *m, int final) {
+    if (m->code == 101) {
+        // Only handle upgrades if still in on_message_head/on_upgrade.
+        if (c->state != CNO_STATE_H1_HEAD || s->r_state == CNO_STREAM_CLOSED)
+            return CNO_ERROR(ASSERTION, "accepted a h1 upgrade, but did not block in on_upgrade");
+        c->remaining_h1_payload = (uint64_t) -2;
+    }
+
     if (c->client
       ? CNO_WRITEV(c, m->method, CNO_BUFFER_STRING(" "), m->path, CNO_BUFFER_STRING(" HTTP/1.1\r\n"))
       // XXX technically, the reason string is meaningless so we don't need to specify the correct one.
@@ -1204,16 +1211,7 @@ static int cno_h1_write_head(struct cno_connection_t *c, struct cno_stream_t *s,
         if (CNO_WRITEV(c, h.name, CNO_BUFFER_STRING(": "), h.value, CNO_BUFFER_STRING("\r\n")))
             return CNO_ERROR_UP();
     }
-    if (CNO_WRITEV(c, s->writing_chunked ? CNO_BUFFER_STRING("transfer-encoding: chunked\r\n\r\n") : CNO_BUFFER_STRING("\r\n")))
-        return CNO_ERROR_UP();
-
-    if (m->code == 101) {
-        // Only handle upgrades if still in on_message_head/on_upgrade.
-        if (c->state != CNO_STATE_H1_HEAD || s->r_state == CNO_STREAM_CLOSED)
-            return CNO_ERROR(ASSERTION, "accepted a h1 upgrade, but did not block in on_upgrade");
-        c->remaining_h1_payload = (uint64_t) -2;
-    }
-    return CNO_OK;
+    return CNO_WRITEV(c, s->writing_chunked ? CNO_BUFFER_STRING("transfer-encoding: chunked\r\n\r\n") : CNO_BUFFER_STRING("\r\n"));
 }
 
 static int cno_h2_write_head(struct cno_connection_t *c, struct cno_stream_t *s, const struct cno_message_t *m, int final) {
@@ -1280,11 +1278,15 @@ static int cno_h2_write_data(struct cno_connection_t *c, struct cno_stream_t *s,
         b->size = limit;
         final = 0;
     }
-    struct cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, s->id, *b };
-    if ((b->size || final) && cno_frame_write(c, &frame))
-        return CNO_ERROR_UP();
+    // Should be done before writing the frame to allow `on_writev` to yield.
     c->window_send -= b->size;
     s->window_send -= b->size;
+    struct cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, s->id, *b };
+    if ((b->size || final) && cno_frame_write(c, &frame)) {
+        // Treat this as a stream-wide error; stream window size no longer matters.
+        c->window_send += b->size;
+        return CNO_ERROR_UP();
+    }
     return CNO_OK;
 }
 
