@@ -300,43 +300,38 @@ static int cno_frame_handle_message(struct cno_connection_t *c,
     // than moving all the normal headers down.
     int has_scheme = 0;
     int has_authority = 0;
+    int has_protocol = 0;
     for (struct cno_header_t *h = it; h-- != m->headers;) {
         if (is_response) {
             if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":status")) && !m->code) {
                 if ((m->code = cno_parse_uint(h->value)) > 0xFFFF) // kind of an arbitrary limit, really
                     return cno_frame_write_rst_stream(c, s, CNO_RST_PROTOCOL_ERROR);
                 continue;
+            } else {
+                // >Endpoints MUST NOT generate pseudo-header fields other than those defined in this document.
+                return cno_frame_write_rst_stream(c, s, CNO_RST_PROTOCOL_ERROR);
             }
         } else {
             if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":path")) && !m->path.data) {
                 m->path = h->value;
                 continue;
-            }
-
-            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":method")) && !m->method.data) {
+            } else if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":method")) && !m->method.data) {
                 m->method = h->value;
                 continue;
-            }
-
-            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":authority")) && !has_authority) {
+            } else if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":authority")) && !has_authority) {
                 has_authority = 1;
-                struct cno_header_t tmp = *--it;
-                *it = *h;
-                *h = tmp;
-                continue;
-            }
-
-            if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":scheme")) && !has_scheme) {
+            } else if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":scheme")) && !has_scheme) {
                 has_scheme = 1;
-                struct cno_header_t tmp = *--it;
-                *it = *h;
-                *h = tmp;
-                continue;
+            } else if (c->settings[CNO_LOCAL].enable_connect_protocol
+                    && cno_buffer_eq(h->name, CNO_BUFFER_STRING(":protocol")) && !has_protocol) {
+                has_protocol = 1;
+            } else {
+                return cno_frame_write_rst_stream(c, s, CNO_RST_PROTOCOL_ERROR);
             }
         }
-
-        // >Endpoints MUST NOT generate pseudo-header fields other than those defined in this document.
-        return cno_frame_write_rst_stream(c, s, CNO_RST_PROTOCOL_ERROR);
+        struct cno_header_t tmp = *--it;
+        *it = *h;
+        *h = tmp;
     }
 
     m->headers = it;
@@ -373,8 +368,9 @@ static int cno_frame_handle_message(struct cno_connection_t *c,
 
     // >All HTTP/2 requests MUST include exactly one valid value for the :method, :scheme,
     // >and :path pseudo-header fields, unless it is a CONNECT request (Section 8.3).
-    if (is_response ? !m->code : !cno_buffer_eq(m->method, CNO_BUFFER_STRING("CONNECT")) &&
-            (!m->path.size || !m->method.size || !has_scheme))
+    int has_req_pseudo = m->path.size && m->method.size && has_scheme;
+    int is_connect = cno_buffer_eq(m->method, CNO_BUFFER_STRING("CONNECT"));
+    if (is_response ? !m->code : is_connect ? (has_protocol && !has_req_pseudo) : (has_protocol || !has_req_pseudo))
         return cno_frame_write_rst_stream(c, s, CNO_RST_PROTOCOL_ERROR);
 
     if (f->type == CNO_FRAME_PUSH_PROMISE)
@@ -644,6 +640,9 @@ static int cno_frame_handle_settings(struct cno_connection_t *c,
 
     if (cfg->initial_window_size > old_window && CNO_FIRE(c, on_flow_increase, 0))
         return CNO_ERROR_UP();
+
+    if (cfg->enable_connect_protocol > 1)
+        return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "enable_connect_protocol out of bounds");
 
     size_t limit = c->encoder.limit_upper = cfg->header_table_size;
     if (limit > c->settings[CNO_LOCAL].header_table_size)

@@ -63,13 +63,15 @@ enum CNO_FRAME_FLAGS {
 };
 
 enum CNO_CONNECTION_SETTINGS {
-    CNO_SETTINGS_HEADER_TABLE_SIZE      = 0x1,
-    CNO_SETTINGS_ENABLE_PUSH            = 0x2,
-    CNO_SETTINGS_MAX_CONCURRENT_STREAMS = 0x3,
-    CNO_SETTINGS_INITIAL_WINDOW_SIZE    = 0x4,
-    CNO_SETTINGS_MAX_FRAME_SIZE         = 0x5,
-    CNO_SETTINGS_MAX_HEADER_LIST_SIZE   = 0x6,
-    CNO_SETTINGS_UNDEFINED              = 0x7,
+    CNO_SETTINGS_HEADER_TABLE_SIZE       = 0x1,
+    CNO_SETTINGS_ENABLE_PUSH             = 0x2,
+    CNO_SETTINGS_MAX_CONCURRENT_STREAMS  = 0x3,
+    CNO_SETTINGS_INITIAL_WINDOW_SIZE     = 0x4,
+    CNO_SETTINGS_MAX_FRAME_SIZE          = 0x5,
+    CNO_SETTINGS_MAX_HEADER_LIST_SIZE    = 0x6,
+    CNO_SETTINGS_UNKNOWN_1               = 0x7,
+    CNO_SETTINGS_ENABLE_CONNECT_PROTOCOL = 0x8,
+    CNO_SETTINGS_UNDEFINED               = 0x9,
 };
 
 struct cno_frame_t {
@@ -100,8 +102,10 @@ struct cno_settings_t {
             uint32_t initial_window_size;
             uint32_t max_frame_size;
             uint32_t max_header_list_size;
+            uint32_t unknown;
+            uint32_t enable_connect_protocol;
         };
-        uint32_t array[6];
+        uint32_t array[8];
     };
 };
 
