@@ -1149,15 +1149,6 @@ int cno_write_push(struct cno_connection_t *c, uint32_t sid, const struct cno_me
     return CNO_FIRE(c, on_message_head, child, m) || CNO_FIRE(c, on_message_tail, child, NULL);
 }
 
-static int cno_discard_remaining_payload(struct cno_connection_t *c, struct cno_stream_t *s) {
-    s->w_state = CNO_STREAM_CLOSED;
-    if (s->r_state == CNO_STREAM_CLOSED)
-        return cno_stream_end_by_local(c, s);
-    if (!c->client && c->mode == CNO_HTTP2 && cno_frame_write_rst_stream(c, s, CNO_RST_NO_ERROR))
-        return CNO_ERROR_UP();
-    return CNO_OK;
-}
-
 static struct cno_buffer_t cno_fmt_uint(char *b, size_t s, unsigned n) {
     char *q = b + s;
     do *--q = '0' + (n % 10); while (n /= 10);
@@ -1253,21 +1244,26 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
     s->reading_head_response = cno_buffer_eq(m->method, CNO_BUFFER_STRING("HEAD"));
     if ((c->mode == CNO_HTTP2 ? cno_h2_write_head : cno_h1_write_head)(c, s, m, final))
         return CNO_ERROR_UP();
-    if (m->code == 101 || !cno_is_informational(m->code))
+    if (final) {
+        s->w_state = CNO_STREAM_CLOSED;
+        if (s->r_state == CNO_STREAM_CLOSED && cno_stream_end_by_local(c, s))
+            return CNO_ERROR_UP();
+    } else if (m->code == 101 || !cno_is_informational(m->code)) {
         s->w_state = CNO_STREAM_DATA;
-    return final && cno_discard_remaining_payload(c, s) ? CNO_ERROR_UP() : CNO_OK;
+    }
+    return CNO_OK;
 }
 
-static int cno_h1_write_data(struct cno_connection_t *c, struct cno_stream_t *s, struct cno_buffer_t *b, int final) {
+static int cno_h1_write_data(struct cno_connection_t *c, struct cno_stream_t *s, struct cno_buffer_t *b, int *final) {
     if (!s->writing_chunked)
         return b->size ? CNO_WRITEV(c, *b) : CNO_OK;
     if (!b->size)
-        return final ? CNO_WRITEV(c, CNO_BUFFER_STRING("0\r\n\r\n")) : CNO_OK;
-    struct cno_buffer_t tail = final ? CNO_BUFFER_STRING("\r\n0\r\n\r\n") : CNO_BUFFER_STRING("\r\n");
+        return *final ? CNO_WRITEV(c, CNO_BUFFER_STRING("0\r\n\r\n")) : CNO_OK;
+    struct cno_buffer_t tail = *final ? CNO_BUFFER_STRING("\r\n0\r\n\r\n") : CNO_BUFFER_STRING("\r\n");
     return CNO_WRITEV(c, cno_fmt_chunk_length((char[24]){}, 24, b->size), *b, tail);
 }
 
-static int cno_h2_write_data(struct cno_connection_t *c, struct cno_stream_t *s, struct cno_buffer_t *b, int final) {
+static int cno_h2_write_data(struct cno_connection_t *c, struct cno_stream_t *s, struct cno_buffer_t *b, int *final) {
     int64_t limit = s->window_send + c->settings[CNO_REMOTE].initial_window_size;
     if (limit > c->window_send)
         limit = c->window_send;
@@ -1275,13 +1271,13 @@ static int cno_h2_write_data(struct cno_connection_t *c, struct cno_stream_t *s,
         limit = 0;
     if (b->size > (uint64_t) limit) {
         b->size = limit;
-        final = 0;
+        *final = 0;
     }
     // Should be done before writing the frame to allow `on_writev` to yield.
     c->window_send -= b->size;
     s->window_send -= b->size;
-    struct cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, s->id, *b };
-    if ((b->size || final) && cno_frame_write(c, &frame)) {
+    struct cno_frame_t frame = { CNO_FRAME_DATA, *final ? CNO_FLAG_END_STREAM : 0, s->id, *b };
+    if ((b->size || *final) && cno_frame_write(c, &frame)) {
         // Treat this as a stream-wide error; stream window size no longer matters.
         c->window_send += b->size;
         return CNO_ERROR_UP();
@@ -1298,9 +1294,14 @@ int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, s
         return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
     struct cno_buffer_t b = {data, size};
-    if ((c->mode == CNO_HTTP2 ? cno_h2_write_data : cno_h1_write_data)(c, s, &b, final))
+    if ((c->mode == CNO_HTTP2 ? cno_h2_write_data : cno_h1_write_data)(c, s, &b, &final))
         return CNO_ERROR_UP();
-    return final && cno_discard_remaining_payload(c, s) ? CNO_ERROR_UP() : (int)b.size;
+    if (final) {
+        s->w_state = CNO_STREAM_CLOSED;
+        if (s->r_state == CNO_STREAM_CLOSED && cno_stream_end_by_local(c, s))
+            return CNO_ERROR_UP();
+    }
+    return (int)b.size;
 }
 
 int cno_write_ping(struct cno_connection_t *c, const char data[8]) {
