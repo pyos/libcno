@@ -78,6 +78,12 @@ static inline struct cno_buffer_t cno_buffer_shift(const struct cno_buffer_t x, 
     return (struct cno_buffer_t) {x.data + offset, x.size - offset};
 }
 
+static inline struct cno_buffer_t cno_buffer_cut(struct cno_buffer_t *x, size_t offset) {
+    struct cno_buffer_t ret = {x->data, offset};
+    *x = cno_buffer_shift(*x, offset);
+    return ret;
+}
+
 static inline void cno_buffer_dyn_clear(struct cno_buffer_dyn_t *x) {
     free(x->data - x->offset);
     *x = (struct cno_buffer_dyn_t) {};

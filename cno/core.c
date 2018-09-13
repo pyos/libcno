@@ -160,11 +160,10 @@ static int cno_stream_end_by_local(struct cno_connection_t *c, struct cno_stream
 // Send a single non-flow-controlled* frame, splitting DATA/HEADERS if they are too big.
 // (*meaning that it isn't counted; in case of DATA, this must be done by the caller.)
 static int cno_frame_write(struct cno_connection_t *c, const struct cno_frame_t *f) {
-    size_t length = f->payload.size;
-    size_t limit  = c->settings[CNO_REMOTE].max_frame_size;
+    size_t limit = c->settings[CNO_REMOTE].max_frame_size;
 
-    if (length <= limit)
-        return CNO_WRITEV(c, PACK(I24(length), I8(f->type), I8(f->flags), I32(f->stream)), f->payload);
+    if (f->payload.size <= limit)
+        return CNO_WRITEV(c, PACK(I24(f->payload.size), I8(f->type), I8(f->flags), I32(f->stream)), f->payload);
 
     if (f->type != CNO_FRAME_HEADERS && f->type != CNO_FRAME_PUSH_PROMISE && f->type != CNO_FRAME_DATA)
         // A really unexpected outcome, considering that the *lowest possible* limit is 16 KiB.
@@ -174,24 +173,31 @@ static int cno_frame_write(struct cno_connection_t *c, const struct cno_frame_t 
         // TODO split padded frames.
         return CNO_ERROR(NOT_IMPLEMENTED, "don't know how to split padded frames");
 
-    struct cno_frame_t part = *f;
-    // When splitting HEADERS/PUSH_PROMISE, the last CONTINUATION must carry the END_HEADERS flag,
-    // but the HEADERS frame itself retains END_STREAM if set. When splitting DATA,
-    // END_STREAM must be moved to the last frame in the sequence.
-    uint8_t carry = f->flags & (f->type == CNO_FRAME_DATA ? CNO_FLAG_END_STREAM : CNO_FLAG_END_HEADERS);
-    part.flags &= ~carry;
-
-    for (part.payload.size = limit; length > limit; length -= limit, part.payload.data += limit) {
-        if (cno_frame_write(c, &part))
-            return CNO_ERROR_UP();
-        if (part.type != CNO_FRAME_DATA)
-            part.type = CNO_FRAME_CONTINUATION;
-        part.flags &= ~(CNO_FLAG_PRIORITY | CNO_FLAG_END_STREAM);
+    if (f->type == CNO_FRAME_DATA) {
+        // assume no two concurrent `cno_write_data` on one stream
+        struct cno_buffer_t part = f->payload;
+        while (part.size > limit)
+            if (CNO_WRITEV(c, PACK(I24(limit), I8(f->type), I8(0), I32(f->stream)), cno_buffer_cut(&part, limit)))
+                return CNO_ERROR_UP();
+        return CNO_WRITEV(c, PACK(I24(part.size), I8(f->type), I8(f->flags), I32(f->stream)), part);
     }
 
-    part.flags |= carry;
-    part.payload.size = length;
-    return cno_frame_write(c, &part);
+    // CONTINUATIONs have to follow HEADERS/PUSH_PROMISE with no frames in between, so the write must be atomic.
+    if (f->payload.size > limit * (CNO_MAX_CONTINUATIONS + 1))
+        return CNO_ERROR(ASSERTION, "HEADERS too big to write (> CNO_MAX_CONTINUATIONS + 1 frames)");
+
+    struct cno_buffer_t split[2 * CNO_MAX_CONTINUATIONS + 2];
+    struct cno_buffer_t part = f->payload;
+    size_t i = 0;
+    split[i++] = PACK(I24(limit), I8(f->type), I8(f->flags & ~CNO_FLAG_END_HEADERS), I32(f->stream));
+    split[i++] = cno_buffer_cut(&part, limit);
+    while (part.size > limit) {
+        split[i++] = PACK(I24(limit), I8(CNO_FRAME_CONTINUATION), I8(0), I32(f->stream));
+        split[i++] = cno_buffer_cut(&part, limit);
+    }
+    split[i++] = PACK(I24(part.size), I8(CNO_FRAME_CONTINUATION), I8(f->flags & CNO_FLAG_END_HEADERS), I32(f->stream));
+    split[i++] = part;
+    return CNO_FIRE(c, on_writev, split, i);
 }
 
 static int cno_frame_write_goaway(struct cno_connection_t *c, uint32_t /* enum CNO_RST_STREAM_CODE */ code) {

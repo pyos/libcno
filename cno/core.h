@@ -111,7 +111,8 @@ struct cno_settings_t {
 
 struct cno_vtable_t {
     // There is something to send to the other side. Transport level is outside
-    // the scope of this library.
+    // the scope of this library. NOTE: calls to `on_writev` must be atomic w.r.t.
+    // each other so that frames don't mix.
     int (*on_writev)(void *, const struct cno_buffer_t *, size_t count);
     // A new stream has been created due to sending/receiving a request or sending
     // a push promise. In the latter two cases, `on_message_head` will be called
