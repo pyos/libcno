@@ -28,8 +28,9 @@ enum CNO_STREAM_STATE {
 struct cno_stream_t {
     struct cno_stream_t *next; // in hashmap bucket
     uint32_t id;
-    uint8_t /* enum CNO_STREAM_STATE */ r_state;
-    uint8_t /* enum CNO_STREAM_STATE */ w_state;
+    uint8_t refs; // max. 4 = 1 from hash map + 1 from read + 1 from write + 1 for http1 mode
+    uint8_t /* enum CNO_STREAM_STATE */ r_state : 3;
+    uint8_t /* enum CNO_STREAM_STATE */ w_state : 3;
     uint8_t writing_chunked : 1;
     uint8_t reading_head_response : 1;
      int64_t window_recv;
@@ -87,8 +88,25 @@ static const struct cno_settings_t CNO_SETTINGS_INITIAL = {{{
     .max_header_list_size   = -1, // actually (CNO_MAX_CONTINUATIONS * max_frame_size - 32 * CNO_MAX_HEADERS)
 }}};
 
-static int cno_stream_is_local(const struct cno_connection_t *c, uint32_t sid) {
+static inline int cno_stream_is_local(const struct cno_connection_t *c, uint32_t sid) {
     return sid % 2 == c->client;
+}
+
+static inline void cno_stream_decref(struct cno_stream_t **sp) {
+    if (*sp && !--(*sp)->refs)
+        free(*sp);
+}
+
+#define CNO_STREAM_REF __attribute__((cleanup(cno_stream_decref)))
+
+static int cno_stream_end(struct cno_connection_t *c, struct cno_stream_t *s) {
+    struct cno_stream_t **sp = &c->streams[s->id % CNO_STREAM_BUCKETS];
+    while (*sp && *sp != s) sp = &(*sp)->next;
+    if (!*sp) return CNO_OK; // already ended
+    *sp = s->next;
+    cno_stream_decref(&s); // caller's reference still alive
+    c->stream_count[cno_stream_is_local(c, s->id)]--;
+    return CNO_FIRE(c, on_stream_end, s->id);
 }
 
 static struct cno_stream_t * cno_stream_new(struct cno_connection_t *c, uint32_t sid, int local) {
@@ -111,6 +129,8 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *c, uint32_t
     *s = (struct cno_stream_t) {
         .id     = c->last_stream[local] = sid,
         .next   = c->streams[sid % CNO_STREAM_BUCKETS],
+        // 1 from the hash map, 1 from this function (returned to caller).
+        .refs = 2,
         .r_state = sid % 2 || !local ? CNO_STREAM_HEADERS : CNO_STREAM_CLOSED,
         .w_state = sid % 2 ||  local ? CNO_STREAM_HEADERS : CNO_STREAM_CLOSED,
     };
@@ -118,11 +138,9 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *c, uint32_t
     // Gotta love C for not having any standard library to speak of.
     c->streams[sid % CNO_STREAM_BUCKETS] = s;
     c->stream_count[local]++;
-
     if (CNO_FIRE(c, on_stream_start, sid)) {
-        c->streams[sid % CNO_STREAM_BUCKETS] = s->next;
-        c->stream_count[local]--;
-        free(s);
+        cno_stream_end(c, s);
+        cno_stream_decref(&s);
         return (void)CNO_ERROR_UP(), NULL;
     }
     return s;
@@ -131,17 +149,8 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *c, uint32_t
 static struct cno_stream_t *cno_stream_find(const struct cno_connection_t *c, uint32_t sid) {
     struct cno_stream_t *s = c->streams[sid % CNO_STREAM_BUCKETS];
     while (s && s->id != sid) s = s->next;
+    if (s) s->refs++;
     return s;
-}
-
-static int cno_stream_end(struct cno_connection_t *c, struct cno_stream_t *s) {
-    uint32_t sid = s->id;
-    struct cno_stream_t **sp = &c->streams[sid % CNO_STREAM_BUCKETS];
-    while (*sp != s) sp = &(*sp)->next;
-    *sp = s->next;
-    free(s);
-    c->stream_count[cno_stream_is_local(c, sid)]--;
-    return CNO_FIRE(c, on_stream_end, sid);
 }
 
 // Send a single non-flow-controlled* frame, splitting DATA/HEADERS if they are too big.
@@ -458,6 +467,7 @@ static int cno_frame_handle_headers(struct cno_connection_t *c,
     if (cno_frame_handle_priority(c, s, f))
         return CNO_ERROR_UP();
 
+    struct cno_stream_t * CNO_STREAM_REF sref = NULL;
     if (s == NULL) {
         if (c->client || f->stream <= c->last_stream[CNO_REMOTE]) {
             if (cno_frame_handle_invalid_stream(c, f))
@@ -468,8 +478,7 @@ static int cno_frame_handle_headers(struct cno_connection_t *c,
             if (cno_frame_write_rst_stream_by_id(c, f->stream, CNO_RST_REFUSED_STREAM, r_state))
                 return CNO_ERROR_UP();
         } else {
-            s = cno_stream_new(c, f->stream, CNO_REMOTE);
-            if (s == NULL)
+            if ((s = sref = cno_stream_new(c, f->stream, CNO_REMOTE)) == NULL)
                 return CNO_ERROR_UP();
         }
     } else if (s->r_state == CNO_STREAM_DATA) {
@@ -497,7 +506,7 @@ static int cno_frame_handle_push_promise(struct cno_connection_t *c,
      || !s || s->r_state == CNO_STREAM_CLOSED)
         return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "unexpected PUSH_PROMISE");
 
-    struct cno_stream_t *child = cno_stream_new(c, read4(f->payload.data), CNO_REMOTE);
+    struct cno_stream_t * CNO_STREAM_REF child = cno_stream_new(c, read4(f->payload.data), CNO_REMOTE);
     if (child == NULL)
         return CNO_ERROR_UP();
     f->payload = cno_buffer_shift(f->payload, 4);
@@ -837,8 +846,9 @@ static int cno_when_h2_frame(struct cno_connection_t *c) {
     cno_buffer_dyn_shift(&c->buffer, f.payload.size + 9);
     if (CNO_FIRE(c, on_frame, &f))
         return CNO_ERROR_UP();
+    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, f.stream);
     // >Implementations MUST ignore and discard any frame that has a type that is unknown.
-    if (f.type < CNO_FRAME_UNKNOWN && CNO_FRAME_HANDLERS[f.type](c, cno_stream_find(c, f.stream), &f))
+    if (f.type < CNO_FRAME_UNKNOWN && CNO_FRAME_HANDLERS[f.type](c, s, &f))
         return CNO_ERROR_UP();
     return CNO_STATE_H2_FRAME;
 }
@@ -847,7 +857,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
     if (!c->buffer.size)
         return CNO_OK;
 
-    struct cno_stream_t *s = cno_stream_find(c, c->last_stream[c->client]);
+    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[c->client]);
     if (c->client) {
         if (!s || s->r_state != CNO_STREAM_HEADERS)
             return CNO_ERROR(PROTOCOL, "server sent an HTTP/1.x response, but there was no request");
@@ -859,9 +869,9 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
                     return c->buffer.size < CNO_PREFACE.size ? CNO_OK : CNO_STATE_H2_INIT;
             if (!(s = cno_stream_new(c, (c->last_stream[CNO_REMOTE] + 1) | 1, CNO_REMOTE)))
                 return CNO_ERROR_UP();
-        }
-        if (s->r_state != CNO_STREAM_HEADERS)
+        } else if (s->r_state != CNO_STREAM_HEADERS) {
             return CNO_ERROR(WOULD_BLOCK, "already handling an HTTP/1.x message");
+        }
     }
 
     struct cno_header_t headers[CNO_MAX_HEADERS + 2]; // + :scheme and :authority
@@ -987,7 +997,7 @@ static int cno_when_h1_body(struct cno_connection_t *c) {
             b.size = c->remaining_h1_payload;
         c->remaining_h1_payload -= b.size;
         cno_buffer_dyn_shift(&c->buffer, b.size);
-        struct cno_stream_t *s = cno_stream_find(c, c->last_stream[c->client]);
+        struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[c->client]);
         if (s && CNO_FIRE(c, on_message_data, s->id, b.data, b.size))
             return CNO_ERROR_UP();
     }
@@ -995,12 +1005,10 @@ static int cno_when_h1_body(struct cno_connection_t *c) {
 }
 
 static int cno_when_h1_tail(struct cno_connection_t *c) {
-    struct cno_stream_t *s = cno_stream_find(c, c->last_stream[c->client]);
+    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[c->client]);
     if (s) {
         if (CNO_FIRE(c, on_message_tail, s->id, NULL))
             return CNO_ERROR_UP();
-        // FIXME on_message_tail may call cno_write_reset and destroy the stream, leaving
-        //       a dangling pointer. (Also check all other CNO_FIREs.)
         s->r_state = CNO_STREAM_CLOSED;
         if (s->w_state == CNO_STREAM_CLOSED && cno_stream_end(c, s))
             return CNO_ERROR_UP();
@@ -1087,7 +1095,7 @@ int cno_shutdown(struct cno_connection_t *c) {
 
 int cno_eof(struct cno_connection_t *c) {
     if (c->mode != CNO_HTTP2) {
-        struct cno_stream_t *s = cno_stream_find(c, c->last_stream[c->client]);
+        struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[c->client]);
         return s && s->r_state != CNO_STREAM_CLOSED ? CNO_ERROR(DISCONNECT, "unclean http/1.x termination") : CNO_OK;
     }
 
@@ -1110,7 +1118,7 @@ int cno_write_reset(struct cno_connection_t *c, uint32_t sid, enum CNO_RST_STREA
         return CNO_OK; // if code != NO_ERROR, this requires simply closing the transport ¯\_(ツ)_/¯
     if (!sid)
         return cno_frame_write_goaway(c, code);
-    struct cno_stream_t *s = cno_stream_find(c, sid);
+    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
     return s ? cno_frame_write_rst_stream(c, s, code) : CNO_OK; // assume idle streams have already been reset
 }
 
@@ -1122,12 +1130,12 @@ int cno_write_push(struct cno_connection_t *c, uint32_t sid, const struct cno_me
     if (c->mode != CNO_HTTP2 || !c->settings[CNO_REMOTE].enable_push || cno_stream_is_local(c, sid))
         return CNO_OK;
 
-    struct cno_stream_t *s = cno_stream_find(c, sid);
+    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
     if (!s || s->w_state == CNO_STREAM_CLOSED)
         return CNO_OK;  // pushed requests are safe, so whether we send one doesn't matter
 
-    uint32_t child = cno_next_stream(c);
-    if (cno_stream_new(c, child, CNO_LOCAL) == NULL)
+    struct cno_stream_t * CNO_STREAM_REF sc = cno_stream_new(c, cno_next_stream(c), CNO_LOCAL);
+    if (sc == NULL)
         return CNO_ERROR_UP();
 
     struct cno_buffer_dyn_t enc = {};
@@ -1135,7 +1143,7 @@ int cno_write_push(struct cno_connection_t *c, uint32_t sid, const struct cno_me
         { CNO_BUFFER_STRING(":method"), m->method, 0 },
         { CNO_BUFFER_STRING(":path"),   m->path,   0 },
     };
-    if (cno_buffer_dyn_concat(&enc, PACK(I32(child)))
+    if (cno_buffer_dyn_concat(&enc, PACK(I32(sc->id)))
      || cno_hpack_encode(&c->encoder, &enc, head, 2)
      || cno_hpack_encode(&c->encoder, &enc, m->headers, m->headers_len)
      || cno_frame_write(c, &(struct cno_frame_t){ CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, sid, CNO_BUFFER_VIEW(enc) }))
@@ -1145,7 +1153,7 @@ int cno_write_push(struct cno_connection_t *c, uint32_t sid, const struct cno_me
         //       will consume even more memory and on_writev should only fail on disconnect.
         return cno_buffer_dyn_clear(&enc), CNO_ERROR_UP();
     cno_buffer_dyn_clear(&enc);
-    return CNO_FIRE(c, on_message_head, child, m) || CNO_FIRE(c, on_message_tail, child, NULL);
+    return CNO_FIRE(c, on_message_head, sc->id, m) || CNO_FIRE(c, on_message_tail, sc->id, NULL);
 }
 
 static struct cno_buffer_t cno_fmt_uint(char *b, size_t s, unsigned n) {
@@ -1234,7 +1242,7 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
             if (isupper(*p))
                 return CNO_ERROR(ASSERTION, "header names should be lowercase");
 
-    struct cno_stream_t *s = cno_stream_find(c, sid);
+    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
     if (c->client && !s && !(s = cno_stream_new(c, sid, CNO_LOCAL)))
         return CNO_ERROR_UP();
     if (!s || s->w_state != CNO_STREAM_HEADERS)
@@ -1288,7 +1296,7 @@ int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, s
     if (c->state == CNO_STATE_CLOSED)
         return CNO_ERROR(DISCONNECT, "connection closed");
 
-    struct cno_stream_t *s = cno_stream_find(c, sid);
+    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
     if (!s || s->w_state != CNO_STREAM_DATA)
         return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
@@ -1321,7 +1329,7 @@ int cno_write_frame(struct cno_connection_t *c, const struct cno_frame_t *f) {
 int cno_open_flow(struct cno_connection_t *c, uint32_t sid, uint32_t delta) {
     if (c->mode != CNO_HTTP2 || !sid || !delta)
         return CNO_OK; // TODO don't ignore connection flow updates
-    struct cno_stream_t *s = cno_stream_find(c, sid);
+    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
     if (!s)
         return CNO_OK;
     s->window_recv += delta;
