@@ -144,19 +144,6 @@ static int cno_stream_end(struct cno_connection_t *c, struct cno_stream_t *s) {
     return CNO_FIRE(c, on_stream_end, sid);
 }
 
-static int cno_stream_end_by_local(struct cno_connection_t *c, struct cno_stream_t *s) {
-    // HEADERS, DATA, WINDOW_UPDATE, and RST_STREAM may arrive on streams we have already reset
-    // simply because the other side sent the frames before receiving ours. This is not
-    // a protocol error according to the standard. (FIXME kinda broken with trailers...)
-    if (s->r_state != CNO_STREAM_CLOSED) {
-        // Very convenient that this bit is reserved. (For what, we shall never know.)
-        uint32_t is_headers = (s->r_state == CNO_STREAM_HEADERS);
-        c->recently_reset[c->recently_reset_next++] = s->id | is_headers << 31;
-        c->recently_reset_next %= CNO_STREAM_RESET_HISTORY;
-    }
-    return cno_stream_end(c, s);
-}
-
 // Send a single non-flow-controlled* frame, splitting DATA/HEADERS if they are too big.
 // (*meaning that it isn't counted; in case of DATA, this must be done by the caller.)
 static int cno_frame_write(struct cno_connection_t *c, const struct cno_frame_t *f) {
@@ -211,16 +198,6 @@ static int cno_frame_write_goaway(struct cno_connection_t *c, uint32_t /* enum C
 #define cno_frame_write_error(c, code, ...) \
     (cno_frame_write_goaway(c, code) ? CNO_ERROR_UP() : CNO_ERROR(PROTOCOL, __VA_ARGS__))
 
-// Ignore frames on reset streams, as the spec requires. See `cno_stream_end_by_local`.
-static int cno_frame_handle_invalid_stream(struct cno_connection_t *c, struct cno_frame_t *f) {
-    if (f->stream && f->stream <= c->last_stream[cno_stream_is_local(c, f->stream)])
-        for (uint8_t i = 0; i < CNO_STREAM_RESET_HISTORY; i++)
-            if ((f->type != CNO_FRAME_HEADERS && c->recently_reset[i] == f->stream)
-             || (f->type != CNO_FRAME_DATA && c->recently_reset[i] == (f->stream | (1ul << 31))))
-                return CNO_OK;
-    return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "invalid stream");
-}
-
 // Send a delta between two configs as a SETTINGS frame.
 static int cno_frame_write_settings(struct cno_connection_t *c,
                               const struct cno_settings_t   *old,
@@ -238,7 +215,15 @@ static int cno_frame_write_settings(struct cno_connection_t *c,
     return cno_frame_write(c, &f);
 }
 
-static int cno_frame_write_rst_stream_by_id(struct cno_connection_t *c, uint32_t sid, uint32_t code) {
+static int cno_frame_write_rst_stream_by_id(struct cno_connection_t *c, uint32_t sid, uint32_t code, uint8_t r_state) {
+    // HEADERS, DATA, WINDOW_UPDATE, and RST_STREAM may arrive on streams we have already reset
+    // simply because the other side sent the frames before receiving ours. This is not
+    // a protocol error according to the standard. (FIXME kinda broken with trailers...)
+    if (r_state != CNO_STREAM_CLOSED) {
+        // Very convenient that this bit is reserved. (For what, we shall never know.)
+        c->recently_reset[c->recently_reset_next++] = sid | (r_state == CNO_STREAM_HEADERS) << 31;
+        c->recently_reset_next %= CNO_STREAM_RESET_HISTORY;
+    }
     struct cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, sid, PACK(I32(code)) };
     return cno_frame_write(c, &error);
 }
@@ -247,9 +232,16 @@ static int cno_frame_write_rst_stream(struct cno_connection_t *c,
                                       struct cno_stream_t     *s,
                                       uint32_t /* enum CNO_RST_STREAM_CODE */ code)
 {
-    // Note that if HEADERS have not yet arrived, they may still do, in which case not decoding them
-    // would break compression state. Setting CNO_RESET_STREAM_HISTORY is recommended.
-    return cno_frame_write_rst_stream_by_id(c, s->id, code) ? CNO_ERROR_UP() : cno_stream_end_by_local(c, s);
+    return cno_frame_write_rst_stream_by_id(c, s->id, code, s->r_state) ? CNO_ERROR_UP() : cno_stream_end(c, s);
+}
+
+static int cno_frame_handle_invalid_stream(struct cno_connection_t *c, struct cno_frame_t *f) {
+    if (f->stream && f->stream <= c->last_stream[cno_stream_is_local(c, f->stream)])
+        for (uint8_t i = 0; i < CNO_STREAM_RESET_HISTORY; i++)
+            if ((f->type != CNO_FRAME_HEADERS && c->recently_reset[i] == f->stream)
+             || (f->type != CNO_FRAME_DATA && c->recently_reset[i] == (f->stream | (1ul << 31))))
+                return CNO_OK;
+    return cno_frame_write_error(c, CNO_RST_PROTOCOL_ERROR, "invalid stream");
 }
 
 static int cno_frame_handle_end_stream(struct cno_connection_t *c,
@@ -472,7 +464,8 @@ static int cno_frame_handle_headers(struct cno_connection_t *c,
                 return CNO_ERROR_UP();
             // else this frame must be decompressed, but ignored.
         } else if (c->goaway_sent || c->stream_count[CNO_REMOTE] >= c->settings[CNO_LOCAL].max_concurrent_streams) {
-            if (cno_frame_write_rst_stream_by_id(c, f->stream, CNO_RST_REFUSED_STREAM))
+            int r_state = f->flags & CNO_FLAG_END_STREAM ? CNO_STREAM_CLOSED : CNO_STREAM_DATA;
+            if (cno_frame_write_rst_stream_by_id(c, f->stream, CNO_RST_REFUSED_STREAM, r_state))
                 return CNO_ERROR_UP();
         } else {
             s = cno_stream_new(c, f->stream, CNO_REMOTE);
@@ -1252,7 +1245,7 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
         return CNO_ERROR_UP();
     if (final) {
         s->w_state = CNO_STREAM_CLOSED;
-        if (s->r_state == CNO_STREAM_CLOSED && cno_stream_end_by_local(c, s))
+        if (s->r_state == CNO_STREAM_CLOSED && cno_stream_end(c, s))
             return CNO_ERROR_UP();
     } else if (m->code == 101 || !cno_is_informational(m->code)) {
         s->w_state = CNO_STREAM_DATA;
@@ -1304,7 +1297,7 @@ int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, s
         return CNO_ERROR_UP();
     if (final) {
         s->w_state = CNO_STREAM_CLOSED;
-        if (s->r_state == CNO_STREAM_CLOSED && cno_stream_end_by_local(c, s))
+        if (s->r_state == CNO_STREAM_CLOSED && cno_stream_end(c, s))
             return CNO_ERROR_UP();
     }
     return (int)b.size;
