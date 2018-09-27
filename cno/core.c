@@ -69,10 +69,9 @@ static struct cno_stream_t * cno_stream_new(struct cno_connection_t *c, uint32_t
         return (local ? CNO_ERROR(INVALID_STREAM, "nonmonotonic stream id")
                       : CNO_ERROR(PROTOCOL, "nonmonotonic stream id")), NULL;
 
-    // TODO h1 pipelining (need to select stream with least id in cno_when_h1_*)
-    if (c->stream_count[local] >= (c->mode == CNO_HTTP2 ? c->settings[!local].max_concurrent_streams : 1))
-        return (local ? CNO_ERROR(WOULD_BLOCK, "wait for on_stream_end")
-                      : CNO_ERROR(PROTOCOL, "peer exceeded stream limit")), NULL;
+    if (c->stream_count[local] >= c->settings[!local].max_concurrent_streams)
+        return (local || c->mode != CNO_HTTP2 ? CNO_ERROR(WOULD_BLOCK, "wait for on_stream_end")
+                                              : CNO_ERROR(PROTOCOL, "peer exceeded stream limit")), NULL;
 
     struct cno_stream_t *s = malloc(sizeof(struct cno_stream_t));
     if (!s)
@@ -836,21 +835,22 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
     if (!c->buffer.size)
         return CNO_OK;
 
-    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[c->client]);
-    if (c->client) {
-        if (!s || s->r_state != CNO_STREAM_HEADERS)
+    // In h1 mode, both counters are used to track client-initiated streams, since
+    // there's no other kind. Client-side stream counter is the ID of the current
+    // request, while server-side stream counter is the ID of the current response.
+    // This is used for pipelining, as the server may fall behind.
+    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[CNO_REMOTE]);
+    if (!s || s->r_state != CNO_STREAM_HEADERS) {
+        if (c->client)
             return CNO_ERROR(PROTOCOL, "server sent an HTTP/1.x response, but there was no request");
-    } else {
-        if (!s) {
-            // Only allow upgrading with prior knowledge if no h1 requests have yet been received.
-            if (!c->disallow_h2_prior_knowledge && c->last_stream[CNO_REMOTE] == 0)
-                if (!strncmp(c->buffer.data, CNO_PREFACE.data, c->buffer.size))
-                    return c->buffer.size < CNO_PREFACE.size ? CNO_OK : CNO_STATE_H2_INIT;
-            if (!(s = cno_stream_new(c, (c->last_stream[CNO_REMOTE] + 1) | 1, CNO_REMOTE)))
-                return CNO_ERROR_UP();
-        } else if (s->r_state != CNO_STREAM_HEADERS) {
-            return CNO_ERROR(WOULD_BLOCK, "already handling an HTTP/1.x message");
-        }
+        // Only allow upgrading with prior knowledge if no h1 requests have yet been received.
+        if (!c->disallow_h2_prior_knowledge && c->last_stream[CNO_REMOTE] == 0)
+            if (!strncmp(c->buffer.data, CNO_PREFACE.data, c->buffer.size))
+                return c->buffer.size < CNO_PREFACE.size ? CNO_OK : CNO_STATE_H2_INIT;
+        // Note that this is allowed to return WOULD_BLOCK if the pipelining limit
+        // has been reached. (It's not a protocol error since there are no SETTINGS.)
+        if (!(s = cno_stream_new(c, (c->last_stream[CNO_REMOTE] + 1) | 1, CNO_REMOTE)))
+            return CNO_ERROR_UP();
     }
 
     struct cno_header_t headers[CNO_MAX_HEADERS + 2]; // + :scheme and :authority
@@ -951,6 +951,10 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
     if (s->reading_head_response)
         c->remaining_h1_payload = 0;
 
+    if (!c->client && c->mode != CNO_HTTP2 && !c->last_stream[CNO_LOCAL])
+        // Allow writing responses.
+        c->last_stream[CNO_LOCAL] = s->id;
+
     // If on_message_head triggers asynchronous handling, this is expected to block until
     // either 101 has been sent or the server decides not to upgrade.
     if (CNO_FIRE(c, on_message_head, s->id, &m) || (upgrade && CNO_FIRE(c, on_upgrade)))
@@ -976,7 +980,7 @@ static int cno_when_h1_body(struct cno_connection_t *c) {
             b.size = c->remaining_h1_payload;
         c->remaining_h1_payload -= b.size;
         cno_buffer_dyn_shift(&c->buffer, b.size);
-        struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[c->client]);
+        struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[CNO_REMOTE]);
         if (s && CNO_FIRE(c, on_message_data, s->id, b.data, b.size))
             return CNO_ERROR_UP();
     }
@@ -984,7 +988,7 @@ static int cno_when_h1_body(struct cno_connection_t *c) {
 }
 
 static int cno_when_h1_tail(struct cno_connection_t *c) {
-    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[c->client]);
+    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[CNO_REMOTE]);
     if (s) {
         if (CNO_FIRE(c, on_message_tail, s->id, NULL))
             return CNO_ERROR_UP();
@@ -992,6 +996,8 @@ static int cno_when_h1_tail(struct cno_connection_t *c) {
         if (s->w_state == CNO_STREAM_CLOSED && cno_stream_end(c, s))
             return CNO_ERROR_UP();
     }
+    if (c->client && c->mode != CNO_HTTP2)
+        c->last_stream[CNO_REMOTE] += 2; // server is catching up
     return c->mode == CNO_HTTP2 ? CNO_STATE_H2_PREFACE : CNO_STATE_H1_HEAD;
 }
 
@@ -1074,7 +1080,7 @@ int cno_shutdown(struct cno_connection_t *c) {
 
 int cno_eof(struct cno_connection_t *c) {
     if (c->mode != CNO_HTTP2) {
-        struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[c->client]);
+        struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[CNO_REMOTE]);
         return s && s->r_state != CNO_STREAM_CLOSED ? CNO_ERROR(DISCONNECT, "unclean http/1.x termination") : CNO_OK;
     }
 
@@ -1151,6 +1157,9 @@ static struct cno_buffer_t cno_fmt_chunk_length(char *b, size_t s, size_t n) {
 }
 
 static int cno_h1_write_head(struct cno_connection_t *c, struct cno_stream_t *s, const struct cno_message_t *m, int final) {
+    if (!c->client && c->last_stream[CNO_LOCAL] != s->id)
+        return CNO_ERROR(WOULD_BLOCK, "not head of line");
+
     if (m->code == 101) {
         // Only handle upgrades if still in on_message_head/on_upgrade.
         if (c->state != CNO_STATE_H1_HEAD || s->r_state == CNO_STREAM_CLOSED)
@@ -1230,6 +1239,15 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
     s->reading_head_response = cno_buffer_eq(m->method, CNO_BUFFER_STRING("HEAD"));
     if ((c->mode == CNO_HTTP2 ? cno_h2_write_head : cno_h1_write_head)(c, s, m, final))
         return CNO_ERROR_UP();
+    if (c->mode != CNO_HTTP2) {
+        if (c->client) {
+            if (c->last_stream[CNO_REMOTE] == 0)
+                c->last_stream[CNO_REMOTE] = s->id;
+        } else if (final) {
+            // Allow writing response to next pipelined request.
+            c->last_stream[CNO_LOCAL] += 2;
+        }
+    }
     if (final) {
         s->w_state = CNO_STREAM_CLOSED;
         if (s->r_state == CNO_STREAM_CLOSED && cno_stream_end(c, s))
@@ -1283,6 +1301,8 @@ int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, s
     if ((c->mode == CNO_HTTP2 ? cno_h2_write_data : cno_h1_write_data)(c, s, &b, &final))
         return CNO_ERROR_UP();
     if (final) {
+        if (!c->client && c->mode != CNO_HTTP2)
+            c->last_stream[CNO_LOCAL] += 2;
         s->w_state = CNO_STREAM_CLOSED;
         if (s->r_state == CNO_STREAM_CLOSED && cno_stream_end(c, s))
             return CNO_ERROR_UP();

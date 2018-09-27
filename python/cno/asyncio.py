@@ -48,7 +48,7 @@ class Request:
         # XXX perhaps imbuing HEAD with a special meaning is a task
         #     for a web framework instead?
         have_data = data and self.method != 'HEAD'
-        self.conn.write_head(self.stream, code, '', '', headers, not have_data)
+        await self.conn.write_head_blocking(lambda: self.stream, code, '', '', headers, not have_data)
         if have_data:
             await self.conn.write_all_data(self.stream, data)
 
@@ -89,6 +89,11 @@ class Push:
         self.conn.write_reset(self.stream, code)
 
 
+def _cancel_and_ignore(task):
+    task.cancel()
+    task.add_done_callback(lambda t: t.exception())
+
+
 class Connection (raw.Connection, asyncio.Protocol):
     def __init__(self, loop, server, force_http2=False):
         super().__init__(server)
@@ -99,6 +104,7 @@ class Connection (raw.Connection, asyncio.Protocol):
         self._flow = {} # stream id -> flow control future
         self._stop = False
         self._force_h2 = force_http2
+        self._stream_end = asyncio.Event(loop=loop)
 
     def connection_made(self, transport):
         self.transport = transport
@@ -109,6 +115,10 @@ class Connection (raw.Connection, asyncio.Protocol):
         h2a = sctx and ssl.HAS_ALPN and sctx.selected_alpn_protocol() == 'h2'
         h2n = sctx and ssl.HAS_NPN  and sctx.selected_npn_protocol()  == 'h2'
         super().connection_made(self._force_h2 or h2a or h2n)
+
+    def connection_lost(self, exc):
+        self._stream_end.set() # wake all, forcing a DISCONNECT error
+        return super().connection_lost(exc)
 
     def close(self):
         self.transport.close()
@@ -134,8 +144,10 @@ class Connection (raw.Connection, asyncio.Protocol):
         flow = self._flow.pop(i, None)
         data and data.feed_eof()
         push and push.close()
-        task and task.cancel()
+        task and _cancel_and_ignore(task)
         flow and flow.cancel()
+        self._stream_end.set()
+        self._stream_end.clear()
 
     def pause_writing(self):
         self._stop = True
@@ -151,6 +163,17 @@ class Connection (raw.Connection, asyncio.Protocol):
             self._flow.clear()
         elif i in self._flow:
             self._flow.pop(i).set_result(None)
+
+    async def write_head_blocking(self, stream_fn, code, method, path, head, final):
+        while True:
+            stream = stream_fn()
+            try:
+                self.write_head(stream, code, method, path, head, final)
+                return stream
+            except ConnectionError as e:
+                if e.errno != raw.CNO_ERRNO_WOULD_BLOCK:
+                    raise
+                await self._stream_end.wait()
 
     async def write_all_data(self, i, data, final=True):
         if isinstance(data, collections.abc.AsyncIterable):
@@ -176,17 +199,6 @@ class Client (Connection):
         self.authority = authority
         #: The scheme (http/https) used to connect to the peer. Must be sent as `:scheme` if not set here.
         self.scheme = scheme
-        #: Unset whenever the stream limit is reached, set again whenever a stream is closed.
-        self._have_free_streams = asyncio.Event(loop=loop)
-        self._have_free_streams.set()
-
-    def connection_lost(self, exc):
-        self._have_free_streams.set()
-        return super().connection_lost(exc)
-
-    def on_stream_end(self, i):
-        self._have_free_streams.set()
-        return super().on_stream_end(i)
 
     def on_message_push(self, i, parent, method, path, headers):
         self._coro[i] = asyncio.Future(loop=self.loop)
@@ -203,15 +215,7 @@ class Client (Connection):
             head.append((':scheme', self.scheme))
         head.extend(headers)
 
-        while (await self._have_free_streams.wait()):
-            stream = self.next_stream
-            try:
-                self.write_head(stream, 0, method, path, head, not data)
-                break
-            except ConnectionError as e:
-                if e.errno != raw.CNO_ERRNO_WOULD_BLOCK:
-                    raise
-                self._have_free_streams.clear()
+        stream = await self.write_head_blocking(lambda: self.next_stream, 0, method, path, head, not data)
         self._coro[stream] = f = asyncio.Future(loop=self.loop)
         try:
             if data:
