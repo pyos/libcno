@@ -232,6 +232,9 @@ int cno_write_push(struct cno_connection_t *, uint32_t stream, const struct cno_
 // Returns -1 on error, else the number of sent bytes, which may be less than requested
 // due to HTTP 2 flow control. If that's the case, wait for an `on_flow_increase` on
 // the same stream (or on stream 0) before retrying.
+//
+// This function provides a strong error guarantee if `on_writev` does and `on_stream_end`
+// never fails.
 int cno_write_data(struct cno_connection_t *, uint32_t stream, const char *, size_t, int final);
 
 // Reject a stream. Has no effect in HTTP 1 mode (in which case you should simply
@@ -240,13 +243,17 @@ int cno_write_data(struct cno_connection_t *, uint32_t stream, const char *, siz
 int cno_write_reset(struct cno_connection_t *, uint32_t stream, enum CNO_RST_STREAM_CODE);
 
 // Send a ping with some data. See also `on_pong`. Only works in HTTP 2 mode.
+//
+// This function provides a strong error guarantee if `on_writev` does.
 int cno_write_ping(struct cno_connection_t *, const char[8]);
 
-// Send a raw HTTP 2 frame. Only works in HTTP 2 mode, and only for non-DATA frames.
-// TODO: reject non-extension frames (type < CNO_FRAME_UNKNOWN).
+// Send a raw HTTP 2 frame. Only works in HTTP 2 mode, and only for extension frames.
+//
+// This function provides a strong error guarantee if `on_writev` does.
 int cno_write_frame(struct cno_connection_t *, const struct cno_frame_t *);
 
 // Increase the flow window by the specified amount, allowing the peer to send more data.
+// This function provides a strong error guarantee if `on_writev` does.
 //
 // NOTE: if manual flow control is disabled, the window size is kept constant by increasing
 //       it before emitting `on_message_data`. This function can still be used to make

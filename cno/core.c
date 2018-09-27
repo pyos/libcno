@@ -1133,9 +1133,10 @@ int cno_write_push(struct cno_connection_t *c, uint32_t sid, const struct cno_me
      || cno_hpack_encode(&c->encoder, &enc, m->headers, m->headers_len)
      || cno_frame_write_head(c, &(struct cno_frame_t){ CNO_FRAME_PUSH_PROMISE, CNO_FLAG_END_HEADERS, sid, CNO_BUFFER_VIEW(enc) }))
         // irrecoverable (compression state desync), don't bother destroying the stream.
-        // FIXME should make next `cno_consume` fail. The possible errors are NO_MEMORY
-        //       or something from on_writev, so rolling back is pointless as keeping the old state
-        //       will consume even more memory and on_writev should only fail on disconnect.
+        // FIXME: the possible errors are NO_MEMORY or something from on_writev.
+        //        one case is when `on_writev` is cancelled before writing anything
+        //        due to parent stream being reset; this should not be a connection error.
+        // FIXME: should make next `cno_consume` fail.
         return cno_buffer_dyn_clear(&enc), CNO_ERROR_UP();
     cno_buffer_dyn_clear(&enc);
     return CNO_FIRE(c, on_message_head, sc->id, m) || CNO_FIRE(c, on_message_tail, sc->id, NULL);
@@ -1157,16 +1158,6 @@ static struct cno_buffer_t cno_fmt_chunk_length(char *b, size_t s, size_t n) {
 }
 
 static int cno_h1_write_head(struct cno_connection_t *c, struct cno_stream_t *s, const struct cno_message_t *m, int final) {
-    if (!c->client && c->last_stream[CNO_LOCAL] != s->id)
-        return CNO_ERROR(WOULD_BLOCK, "not head of line");
-
-    if (m->code == 101) {
-        // Only handle upgrades if still in on_message_head/on_upgrade.
-        if (c->state != CNO_STATE_H1_HEAD || s->r_state == CNO_STREAM_CLOSED)
-            return CNO_ERROR(ASSERTION, "accepted a h1 upgrade, but did not block in on_upgrade");
-        c->remaining_h1_payload = (uint64_t) -2;
-    }
-
     if (c->client
       ? CNO_WRITEV(c, m->method, CNO_BUFFER_STRING(" "), m->path, CNO_BUFFER_STRING(" HTTP/1.1\r\n"))
       // XXX technically, the reason string is meaningless so we don't need to specify the correct one.
@@ -1200,8 +1191,6 @@ static int cno_h1_write_head(struct cno_connection_t *c, struct cno_stream_t *s,
 }
 
 static int cno_h2_write_head(struct cno_connection_t *c, struct cno_stream_t *s, const struct cno_message_t *m, int final) {
-    if (m->code == 101)
-        return CNO_ERROR(ASSERTION, "cannot switch protocols over an http2 connection");
     int flags = (final ? CNO_FLAG_END_STREAM : 0) | CNO_FLAG_END_HEADERS;
     struct cno_buffer_dyn_t enc = {};
     struct cno_header_t head[] = {
@@ -1224,10 +1213,15 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
     if (c->client ? !!m->code : !!m->path.size)
         return CNO_ERROR(ASSERTION, c->client ? "request with a code" : "response with a path");
     if (cno_is_informational(m->code) && final)
+        // These codes always leave the stream in CNO_STREAM_HEADERS write-state.
         return CNO_ERROR(ASSERTION, "1xx codes cannot end the stream");
+    if (m->code == 101 && c->mode == CNO_HTTP2)
+        return CNO_ERROR(ASSERTION, "cannot switch protocols over an http2 connection");
     for (const struct cno_header_t *h = m->headers, *he = h + m->headers_len; h != he; h++)
         for (const char *p = h->name.data, *e = p + h->name.size; p != e; p++)
             if (isupper(*p))
+                // Only in h2, actually; h1 is case-insensitive. Better be conservative, though.
+                // (Also, there are some case-sensitive comparisons in `cno_h1_write_head`.)
                 return CNO_ERROR(ASSERTION, "header names should be lowercase");
 
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
@@ -1235,20 +1229,34 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
         return CNO_ERROR_UP();
     if (!s || s->w_state != CNO_STREAM_HEADERS)
         return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
-
+    // Gotta love HTTP for special cases like this. In responses to HEAD requests,
+    // payload length and transfer encoding headers are meaningless.
     s->reading_head_response = cno_buffer_eq(m->method, CNO_BUFFER_STRING("HEAD"));
-    if ((c->mode == CNO_HTTP2 ? cno_h2_write_head : cno_h1_write_head)(c, s, m, final))
-        return CNO_ERROR_UP();
-    if (c->mode != CNO_HTTP2) {
-        if (c->client) {
-            if (c->last_stream[CNO_REMOTE] == 0)
-                c->last_stream[CNO_REMOTE] = s->id;
-        } else if (final) {
-            // Allow writing response to next pipelined request.
-            c->last_stream[CNO_LOCAL] += 2;
+
+    if (c->mode == CNO_HTTP2) {
+        if (cno_h2_write_head(c, s, m, final))
+            return CNO_ERROR_UP();
+    } else {
+        if (!c->client && c->last_stream[CNO_LOCAL] != s->id)
+            return CNO_ERROR(WOULD_BLOCK, "not head of line");
+        if (m->code == 101) {
+            // Only handle upgrades if still in on_message_head/on_upgrade.
+            if (c->last_stream[CNO_REMOTE] != s->id || c->state != CNO_STATE_H1_HEAD || s->r_state == CNO_STREAM_CLOSED)
+                return CNO_ERROR(ASSERTION, "accepted a h1 upgrade, but did not block in on_upgrade");
+            // Make further calls to `cno_consume` forward everything as data to this stream.
+            c->remaining_h1_payload = (uint64_t) -2;
         }
+        if (cno_h1_write_head(c, s, m, final))
+            return CNO_ERROR_UP();
+        if (c->client && c->last_stream[CNO_REMOTE] == 0)
+            // Allow `cno_when_h1_head` to accept a response. XXX: this breaks h2c upgrade!
+            c->last_stream[CNO_REMOTE] = s->id;
     }
+
     if (final) {
+        if (!c->client && c->mode != CNO_HTTP2)
+            // Allow to respond to the next pipelined request.
+            c->last_stream[CNO_LOCAL] += 2;
         s->w_state = CNO_STREAM_CLOSED;
         if (s->r_state == CNO_STREAM_CLOSED && cno_stream_end(c, s))
             return CNO_ERROR_UP();
@@ -1258,82 +1266,87 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
     return CNO_OK;
 }
 
-static int cno_h1_write_data(struct cno_connection_t *c, struct cno_stream_t *s, struct cno_buffer_t *b, int *final) {
-    if (!s->writing_chunked)
-        return b->size ? CNO_WRITEV(c, *b) : CNO_OK;
-    if (!b->size)
-        return *final ? CNO_WRITEV(c, CNO_BUFFER_STRING("0\r\n\r\n")) : CNO_OK;
-    struct cno_buffer_t tail = *final ? CNO_BUFFER_STRING("\r\n0\r\n\r\n") : CNO_BUFFER_STRING("\r\n");
-    return CNO_WRITEV(c, cno_fmt_chunk_length((char[24]){}, 24, b->size), *b, tail);
-}
-
-static int cno_h2_write_data(struct cno_connection_t *c, struct cno_stream_t *s, struct cno_buffer_t *b, int *final) {
-    int64_t limit = s->window_send + c->settings[CNO_REMOTE].initial_window_size;
-    if (limit > c->window_send)
-        limit = c->window_send;
-    if (limit < 0)
-        limit = 0;
-    if (b->size > (uint64_t) limit) {
-        b->size = limit;
-        *final = 0;
-    }
-    // Should be done before writing the frame to allow `on_writev` to yield.
-    c->window_send -= b->size;
-    s->window_send -= b->size;
-    struct cno_frame_t frame = { CNO_FRAME_DATA, *final ? CNO_FLAG_END_STREAM : 0, s->id, *b };
-    if ((b->size || *final) && cno_frame_write_data(c, &frame)) {
-        // Treat this as a stream-wide error; stream window size no longer matters.
-        c->window_send += b->size;
-        return CNO_ERROR_UP();
-    }
-    return CNO_OK;
-}
-
 int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, size_t size, int final) {
     if (c->state == CNO_STATE_CLOSED)
         return CNO_ERROR(DISCONNECT, "connection closed");
-
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
     if (!s || s->w_state != CNO_STREAM_DATA)
         return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
 
-    struct cno_buffer_t b = {data, size};
-    if ((c->mode == CNO_HTTP2 ? cno_h2_write_data : cno_h1_write_data)(c, s, &b, &final))
+    if (c->mode == CNO_HTTP2) {
+        int64_t limit = s->window_send + c->settings[CNO_REMOTE].initial_window_size;
+        if (limit > c->window_send)
+            limit = c->window_send;
+        if (limit < 0)
+            // May happen if a SETTINGS lowers the initial stream window size too much.
+            limit = 0;
+        if (size > (uint64_t) limit)
+            size = limit, final = 0;
+        if (size || final) {
+            // Should be done before writing the frame to allow `on_writev` to yield safely.
+            c->window_send -= size;
+            s->window_send -= size;
+            struct cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, sid, {data, size} };
+            if (cno_frame_write_data(c, &frame)) {
+                c->window_send += size;
+                s->window_send += size;
+                return CNO_ERROR_UP();
+            }
+        }
+    } else if (s->writing_chunked) {
+        if (size) {
+            struct cno_buffer_t tail = final ? CNO_BUFFER_STRING("\r\n0\r\n\r\n") : CNO_BUFFER_STRING("\r\n");
+            if (CNO_WRITEV(c, cno_fmt_chunk_length((char[24]){}, 24, size), {data, size}, tail))
+                return CNO_ERROR_UP();
+        } else if (final) {
+            if (CNO_WRITEV(c, CNO_BUFFER_STRING("0\r\n\r\n")))
+                return CNO_ERROR_UP();
+        }
+    } else if (size && CNO_WRITEV(c, {data, size})) {
         return CNO_ERROR_UP();
+    }
+
     if (final) {
         if (!c->client && c->mode != CNO_HTTP2)
+            // Allow to respond to the next pipelined request. The stream being in CNO_STREAM_DATA
+            // write-state implies `cno_write_head` succeeding some time ago, so this value
+            // is currently equal to `sid`.
             c->last_stream[CNO_LOCAL] += 2;
         s->w_state = CNO_STREAM_CLOSED;
         if (s->r_state == CNO_STREAM_CLOSED && cno_stream_end(c, s))
             return CNO_ERROR_UP();
     }
-    return (int)b.size;
+    return (int)size;
 }
 
 int cno_write_ping(struct cno_connection_t *c, const char data[8]) {
     if (c->mode != CNO_HTTP2)
         return CNO_ERROR(ASSERTION, "cannot ping HTTP/1.x endpoints");
-    struct cno_frame_t ping = { CNO_FRAME_PING, 0, 0, { data, 8 } };
-    return cno_frame_write(c, &ping);
+    return cno_frame_write(c, &(struct cno_frame_t){ CNO_FRAME_PING, 0, 0, { data, 8 } });
 }
 
 int cno_write_frame(struct cno_connection_t *c, const struct cno_frame_t *f) {
     if (c->mode != CNO_HTTP2)
         return CNO_ERROR(ASSERTION, "cannot send HTTP2 frames to HTTP/1.x endpoints");
-    if (f->type < CNO_FRAME_UNKNOWN && f->type != CNO_FRAME_PRIORITY) // TODO priority API
+    if (f->type < CNO_FRAME_UNKNOWN && f->type != CNO_FRAME_PRIORITY)
+        // Interfering with this library is not a good idea. TODO: priority API.
         return CNO_ERROR(ASSERTION, "cannot use `cno_write_frame` to send standard-defined frames");
     if (f->payload.size > c->settings[CNO_REMOTE].max_frame_size)
+        // XXX if `on_writev` yields before writing anything, the limit may change.
         return CNO_ERROR(ASSERTION, "frame too big");
     return cno_frame_write(c, f);
 }
 
 int cno_open_flow(struct cno_connection_t *c, uint32_t sid, uint32_t delta) {
-    if (c->mode != CNO_HTTP2 || !sid || !delta)
-        return CNO_OK; // TODO don't ignore connection flow updates
+    if (c->mode != CNO_HTTP2 || !delta)
+        return CNO_OK;
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
+    // Disregard changes in reset streams' window size.
+    // TODO: don't ignore connection flow updates (sid = 0).
     if (!s)
         return CNO_OK;
+    if (cno_frame_write(c, &(struct cno_frame_t){ CNO_FRAME_WINDOW_UPDATE, 0, sid, PACK(I32(delta)) }))
+        return CNO_ERROR_UP();
     s->window_recv += delta;
-    struct cno_frame_t update = { CNO_FRAME_WINDOW_UPDATE, 0, sid, PACK(I32(delta)) };
-    return cno_frame_write(c, &update);
+    return CNO_OK;
 }
