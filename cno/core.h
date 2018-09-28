@@ -134,11 +134,10 @@ struct cno_vtable_t {
     // A chunk of the payload has arrived.
     int (*on_message_data)(void *, uint32_t id, const char *, size_t);
     // All chunks of the payload (and possibly trailers) have arrived.
-    // Trailers (like headers, but come after the payload) have been received.
     int (*on_message_tail)(void *, uint32_t id, const struct cno_message_t * /* nullable */ trailers);
     // An HTTP 2 frame has been received.
     int (*on_frame)(void *, const struct cno_frame_t *);
-    // An HTTP 2 frame will be sent with `on_data` soon.
+    // An HTTP 2 frame will be sent with `on_writev` soon.
     int (*on_frame_send)(void *, const struct cno_frame_t *);
     // An acknowledgment of one of the previously sent pings has arrived.
     int (*on_pong)(void *, const char[8]);
@@ -146,8 +145,9 @@ struct cno_vtable_t {
     int (*on_settings)(void *);
     // HTTP 1 server only: the previous request (see `on_message_head`) has requested
     // an upgrade to a different protocol. If `cno_write_head` is called with code 101
-    // before the next call to `cno_consume`, all further data will be forwarded as
-    // payload. Otherwise, the upgrade is ignored.
+    // before this function returns, the connection will be proxied as payload for
+    // the last created stream (read -> on_message_data, cno_write_data -> write).
+    // Otherwise, the upgrade is ignored.
     int (*on_upgrade)(void *);
 };
 
