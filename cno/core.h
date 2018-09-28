@@ -260,50 +260,6 @@ int cno_write_frame(struct cno_connection_t *, const struct cno_frame_t *);
 //       the window bigger than the default.
 int cno_open_flow(struct cno_connection_t *, uint32_t stream, uint32_t delta);
 
-#if !CFFI_CDEF_MODE
-// Deprecated aliases {
-static inline void __attribute__((deprecated("-> cno_init"))) cno_connection_init(struct cno_connection_t *c, enum CNO_CONNECTION_KIND k) {
-    cno_init(c, k);
-}
-
-static inline void __attribute__((deprecated("-> cno_fini"))) cno_connection_reset(struct cno_connection_t *c) {
-    cno_fini(c);
-}
-
-static inline int __attribute__((deprecated("-> cno_begin"))) cno_connection_made(struct cno_connection_t *c, enum CNO_HTTP_VERSION v) {
-    return cno_begin(c, v);
-}
-
-static inline int __attribute__((deprecated("-> cno_consume"))) cno_connection_data_received(struct cno_connection_t *c, const char *d, size_t s) {
-    return cno_consume(c, d, s);
-}
-
-static inline int __attribute__((deprecated("-> cno_eof"))) cno_connection_lost(struct cno_connection_t *c) {
-    return cno_eof(c);
-}
-
-static inline int __attribute__((deprecated("-> cno_shutdown"))) cno_connection_stop(struct cno_connection_t *c) {
-    return cno_shutdown(c);
-}
-
-static inline int __attribute__((deprecated("-> cno_configure"))) cno_connection_set_config(struct cno_connection_t *c, const struct cno_settings_t *s) {
-    return cno_configure(c, s);
-}
-
-static inline uint32_t __attribute__((deprecated("-> cno_next_stream"))) cno_connection_next_stream(const struct cno_connection_t *c) {
-    return cno_next_stream(c);
-}
-
-static inline int __attribute__((deprecated("-> cno_write_head"))) cno_write_message(struct cno_connection_t *c, uint32_t s, const struct cno_message_t *m, int f) {
-    return cno_write_head(c, s, m, f);
-}
-
-static inline int __attribute__((deprecated("-> cno_open_flow"))) cno_increase_flow_window(struct cno_connection_t *c, uint32_t s, uint32_t d) {
-    return cno_open_flow(c, s, d);
-}
-// }
-#endif
-
 #ifdef __cplusplus
 }  // extern "C"
 #endif
