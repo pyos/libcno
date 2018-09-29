@@ -33,7 +33,7 @@ struct cno_stream_t {
     uint8_t /* enum CNO_STREAM_STATE */ r_state : 3;
     uint8_t /* enum CNO_STREAM_STATE */ w_state : 3;
     uint8_t writing_chunked : 1;
-    uint8_t reading_head_response : 1;
+    uint8_t head_response : 1;
      int64_t window_recv;
      int64_t window_send;
     uint64_t remaining_payload;
@@ -194,7 +194,7 @@ static int cno_h2_on_end_stream(struct cno_connection_t *c,
                                 struct cno_stream_t     *s,
                                 struct cno_message_t    *trailers)
 {
-    if (!s->reading_head_response && s->remaining_payload && s->remaining_payload != (uint64_t) -1)
+    if (s->remaining_payload && s->remaining_payload != (uint64_t) -1)
         return cno_h2_rst(c, s, CNO_RST_PROTOCOL_ERROR);
     if (CNO_FIRE(c, on_message_tail, s->id, trailers))
         return CNO_ERROR_UP();
@@ -310,6 +310,14 @@ static int cno_h2_on_message(struct cno_connection_t *c,
     int is_connect = cno_buffer_eq(m->method, CNO_BUFFER_STRING("CONNECT"));
     if (is_response ? !m->code : is_connect ? (has_protocol && !has_req_pseudo) : (has_protocol || !has_req_pseudo))
         return cno_h2_rst(c, s, CNO_RST_PROTOCOL_ERROR);
+
+    if (!is_response)
+        // Pushing HEAD is kind of weird, but whatever.
+        s->head_response = cno_buffer_eq(m->method, CNO_BUFFER_STRING("HEAD"));
+    else if (m->code == 204 || m->code == 304 || s->head_response)
+        // 204 No Content never has payload; for 304 Not Modified and HEAD responses,
+        // the content-length describes the entity that would've been sent, but there is no body.
+        s->remaining_payload = 0;
 
     if (f->type == CNO_FRAME_PUSH_PROMISE)
         return CNO_FIRE(c, on_message_push, s->id, m, f->stream);
@@ -947,8 +955,11 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
     else if (cno_is_informational(m.code) && c->remaining_h1_payload)
         return CNO_ERROR(PROTOCOL, "informational response with a payload");
 
-    // XXX can a HEAD request with `upgrade` trigger an upgrade? This prevents it:
-    if (s->reading_head_response)
+    if (!c->client)
+        s->head_response = cno_buffer_eq(m.method, CNO_BUFFER_STRING("HEAD"));
+    else if (m.code == 204 || m.code == 304 || s->head_response)
+        // See equivalent code in `cno_h2_on_message`.
+        // XXX can a HEAD request with `upgrade` trigger an upgrade? This prevents it.
         c->remaining_h1_payload = 0;
 
     if (!c->client && c->mode != CNO_HTTP2 && !c->last_stream[CNO_LOCAL])
@@ -1229,9 +1240,9 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
         return CNO_ERROR_UP();
     if (!s || s->w_state != CNO_STREAM_HEADERS)
         return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
-    // Gotta love HTTP for special cases like this. In responses to HEAD requests,
-    // payload length and transfer encoding headers are meaningless.
-    s->reading_head_response = cno_buffer_eq(m->method, CNO_BUFFER_STRING("HEAD"));
+    if (c->client)
+        // See comment in `cno_h2_on_message`.
+        s->head_response = cno_buffer_eq(m->method, CNO_BUFFER_STRING("HEAD"));
 
     if (c->mode == CNO_HTTP2) {
         if (cno_h2_write_head(c, s, m, final))
@@ -1282,6 +1293,11 @@ int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, s
             limit = 0;
         if (size > (uint64_t) limit)
             size = limit, final = 0;
+        size_t rtsize = size;
+        if (!c->client && s->head_response)
+            // Pretend to send the chunk, but discard it. Preferably, the application should
+            // detect HEAD and avoid generating data at all, but eh.
+            size = 0;
         if (size || final) {
             // Should be done before writing the frame to allow `on_writev` to yield safely.
             c->window_send -= size;
@@ -1293,6 +1309,9 @@ int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, s
                 return CNO_ERROR_UP();
             }
         }
+        size = rtsize;
+    } else if (!c->client && s->head_response) {
+        // Don't write (even the trailing zero-length chunk), only update the state.
     } else if (s->writing_chunked) {
         if (size) {
             struct cno_buffer_t tail = final ? CNO_BUFFER_STRING("\r\n0\r\n\r\n") : CNO_BUFFER_STRING("\r\n");
