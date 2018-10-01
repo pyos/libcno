@@ -968,7 +968,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
 
     // If on_message_head triggers asynchronous handling, this is expected to block until
     // either 101 has been sent or the server decides not to upgrade.
-    if (CNO_FIRE(c, on_message_head, s->id, &m) || (upgrade && CNO_FIRE(c, on_upgrade)))
+    if (CNO_FIRE(c, on_message_head, s->id, &m) || (upgrade && CNO_FIRE(c, on_upgrade, s->id)))
         return CNO_ERROR_UP();
 
     cno_buffer_dyn_shift(&c->buffer, (size_t) ok);

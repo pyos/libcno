@@ -54,7 +54,7 @@ except NameError:
         'on_frame_send':    lambda self, frame: self.on_frame_send(frame),
         'on_pong':          lambda self, data: self.on_pong(ffi.unpack(data, 8)),
         'on_settings':      lambda self: self.on_settings(),
-        'on_upgrade':       lambda self: self.on_upgrade(),
+        'on_upgrade':       lambda self, id: self.on_upgrade(id),
     }
 
     def _make_callbacks():

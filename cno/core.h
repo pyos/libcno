@@ -148,7 +148,7 @@ struct cno_vtable_t {
     // before this function returns, the connection will be proxied as payload for
     // the last created stream (read -> on_message_data, cno_write_data -> write).
     // Otherwise, the upgrade is ignored.
-    int (*on_upgrade)(void *);
+    int (*on_upgrade)(void *, uint32_t id);
 };
 
 struct cno_connection_t {
