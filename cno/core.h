@@ -206,8 +206,8 @@ int cno_begin(struct cno_connection_t *, enum CNO_HTTP_VERSION);
 // to have another go at parsing the buffered data if you've nothing to add.
 int cno_consume(struct cno_connection_t *, const char *, size_t);
 
-// Handle an EOF from a half-closed transport. (After calling this, wait for remaining
-// streams to end, then close the write half as well.)
+// Handle an EOF from a half-closed transport. Half-closed connections are not supported
+// because they behave really inconveniently (e.g. you can't detect RST unless you write).
 int cno_eof(struct cno_connection_t *);
 
 // Gracefully shut down the connection. (After calling this, wait for remaining streams

@@ -1090,18 +1090,17 @@ int cno_shutdown(struct cno_connection_t *c) {
 }
 
 int cno_eof(struct cno_connection_t *c) {
-    if (c->mode != CNO_HTTP2) {
-        struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[CNO_REMOTE]);
-        return s && s->r_state != CNO_STREAM_CLOSED ? CNO_ERROR(DISCONNECT, "unclean http/1.x termination") : CNO_OK;
-    }
-
-    // h2 won't work over half-closed connections due to pings and flow control.
     c->state = CNO_STATE_CLOSED;
-    for (size_t i = 0; i < CNO_STREAM_BUCKETS; i++)
-        while (c->streams[i])
-            if (cno_stream_end(c, c->streams[i]))
+    int unclean = 0;
+    for (size_t i = 0; i < CNO_STREAM_BUCKETS; i++) {
+        while (c->streams[i]) {
+            struct cno_stream_t * CNO_STREAM_REF s = c->streams[i];
+            if (cno_stream_end(c, s))
                 return CNO_ERROR_UP();
-    return CNO_OK;
+            unclean = 1; // either didn't finish reading, or didn't finish writing
+        }
+    }
+    return unclean ? CNO_ERROR(DISCONNECT, "unclean http termination") : CNO_OK;
 }
 
 uint32_t cno_next_stream(const struct cno_connection_t *c) {
