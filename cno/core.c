@@ -104,7 +104,8 @@ static struct cno_stream_t *cno_stream_find(const struct cno_connection_t *c, ui
 }
 
 static int cno_frame_write(struct cno_connection_t *c, const struct cno_frame_t *f) {
-    return CNO_WRITEV(c, PACK(I24(f->payload.size), I8(f->type), I8(f->flags), I32(f->stream)), f->payload);
+    return CNO_WRITEV(c, PACK(I24(f->payload.size), I8(f->type), I8(f->flags), I32(f->stream)), f->payload)
+        || CNO_FIRE(c, on_frame_send, f);
 }
 
 static int cno_frame_write_data(struct cno_connection_t *c, const struct cno_frame_t *f) {
@@ -114,7 +115,8 @@ static int cno_frame_write_data(struct cno_connection_t *c, const struct cno_fra
     for (size_t limit; part.size > (limit = c->settings[CNO_REMOTE].max_frame_size);)
         if (CNO_WRITEV(c, PACK(I24(limit), I8(f->type), I8(0), I32(f->stream)), cno_buffer_cut(&part, limit)))
             return CNO_ERROR_UP();
-    return CNO_WRITEV(c, PACK(I24(part.size), I8(f->type), I8(f->flags), I32(f->stream)), part);
+    return CNO_WRITEV(c, PACK(I24(part.size), I8(f->type), I8(f->flags), I32(f->stream)), part)
+        || CNO_FIRE(c, on_frame_send, f);
 }
 
 static int cno_frame_write_head(struct cno_connection_t *c, const struct cno_frame_t *f) {
@@ -135,7 +137,7 @@ static int cno_frame_write_head(struct cno_connection_t *c, const struct cno_fra
     }
     split[i++] = PACK(I24(part.size), I8(CNO_FRAME_CONTINUATION), I8(f->flags & CNO_FLAG_END_HEADERS), I32(f->stream));
     split[i++] = part;
-    return CNO_FIRE(c, on_writev, split, i);
+    return CNO_FIRE(c, on_writev, split, i) || CNO_FIRE(c, on_frame_send, f);
 }
 
 static int cno_h2_write_settings(struct cno_connection_t *c,
