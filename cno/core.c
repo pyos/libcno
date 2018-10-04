@@ -166,15 +166,22 @@ static int cno_h2_goaway(struct cno_connection_t *c, uint32_t /* enum CNO_RST_ST
 // Shut down a connection and *then* throw a PROTOCOL error.
 #define cno_h2_fatal(c, code, ...) (cno_h2_goaway(c, code) ? CNO_ERROR_UP() : CNO_ERROR(PROTOCOL, __VA_ARGS__))
 
-static int cno_h2_rst_by_id(struct cno_connection_t *c, uint32_t sid, uint32_t code, uint8_t r_state) {
+static void cno_h2_just_ended(struct cno_connection_t *c, uint32_t sid, uint8_t r_state) {
     // HEADERS, DATA, WINDOW_UPDATE, and RST_STREAM may arrive on streams we have already reset
     // simply because the other side sent the frames before receiving ours. This is not
-    // a protocol error according to the standard. (FIXME kinda broken with trailers...)
-    if (r_state != CNO_STREAM_CLOSED) {
-        // Very convenient that this bit is reserved. (For what, we shall never know.)
-        c->recently_reset[c->recently_reset_next++] = sid | (r_state == CNO_STREAM_HEADERS) << 31;
-        c->recently_reset_next %= CNO_STREAM_RESET_HISTORY;
-    }
+    // a protocol error according to the standard. FIXME kinda broken with trailers.
+    // (Note that this does not work with 31-bit stream ids, but eh, who needs them anyway?)
+    c->recently_reset[c->recently_reset_next++] = sid << 2 | r_state;
+    c->recently_reset_next %= CNO_STREAM_RESET_HISTORY;
+}
+
+static int cno_stream_end_by_write(struct cno_connection_t *c, struct cno_stream_t *s) {
+    cno_h2_just_ended(c, s->id, s->r_state);
+    return cno_stream_end(c, s);
+}
+
+static int cno_h2_rst_by_id(struct cno_connection_t *c, uint32_t sid, uint32_t code, uint8_t r_state) {
+    cno_h2_just_ended(c, sid, r_state);
     struct cno_frame_t error = { CNO_FRAME_RST_STREAM, 0, sid, PACK(I32(code)) };
     return cno_frame_write(c, &error);
 }
@@ -184,11 +191,19 @@ static int cno_h2_rst(struct cno_connection_t *c, struct cno_stream_t *s, uint32
 }
 
 static int cno_h2_on_invalid_stream(struct cno_connection_t *c, struct cno_frame_t *f) {
-    if (f->stream && f->stream <= c->last_stream[cno_stream_is_local(c, f->stream)])
-        for (uint8_t i = 0; i < CNO_STREAM_RESET_HISTORY; i++)
-            if ((f->type != CNO_FRAME_HEADERS && c->recently_reset[i] == f->stream)
-             || (f->type != CNO_FRAME_DATA && c->recently_reset[i] == (f->stream | (1ul << 31))))
-                return CNO_OK;
+    if (f->stream && f->stream <= c->last_stream[cno_stream_is_local(c, f->stream)]) {
+        for (uint8_t i = 0; i < CNO_STREAM_RESET_HISTORY; i++) {
+            if (f->type == CNO_FRAME_HEADERS ? c->recently_reset[i] != f->stream << 2
+              : f->type == CNO_FRAME_DATA    ? c->recently_reset[i] != (f->stream << 2 | CNO_STREAM_DATA)
+              : c->recently_reset[i] >> 2 != f->stream)
+                continue;
+            if (f->type == CNO_FRAME_RST_STREAM)
+                c->recently_reset[i] = 0; // don't expect any more frames on that stream
+            else if (f->type == CNO_FRAME_HEADERS || f->type == CNO_FRAME_DATA)
+                c->recently_reset[i]++; // also ignore the next frame type
+            return CNO_OK;
+        }
+    }
     return cno_h2_fatal(c, CNO_RST_PROTOCOL_ERROR, "invalid stream");
 }
 
@@ -476,8 +491,11 @@ static int cno_h2_on_data(struct cno_connection_t *c,
     if (flow && cno_frame_write(c, &(struct cno_frame_t) { CNO_FRAME_WINDOW_UPDATE, 0, 0, PACK(I32(flow)) }))
         return CNO_ERROR_UP();
 
-    if (!s)
-        return cno_h2_on_invalid_stream(c, f);
+    if (!s) {
+        if (cno_h2_on_invalid_stream(c, f))
+            return CNO_ERROR_UP();
+        return CNO_OK;
+    }
 
     if (s->r_state != CNO_STREAM_DATA)
         return cno_h2_rst(c, s, CNO_RST_STREAM_CLOSED);
@@ -542,8 +560,11 @@ static int cno_h2_on_rst(struct cno_connection_t *c,
                          struct cno_stream_t     *s,
                          struct cno_frame_t      *f)
 {
-    if (!s)
-        return cno_h2_on_invalid_stream(c, f);
+    if (!s) {
+        if (cno_h2_on_invalid_stream(c, f))
+            return CNO_ERROR_UP();
+        return CNO_OK;
+    }
 
     if (f->payload.size != 4)
         return cno_h2_fatal(c, CNO_RST_FRAME_SIZE_ERROR, "bad RST_STREAM");
@@ -620,8 +641,10 @@ static int cno_h2_on_window_update(struct cno_connection_t *c,
     } else if (s) {
         if ((s->window_send += delta) + c->settings[CNO_REMOTE].initial_window_size > 0x7FFFFFFFL)
             return cno_h2_rst(c, s, CNO_RST_FLOW_CONTROL_ERROR);
+    } else if (cno_h2_on_invalid_stream(c, f)) {
+        return CNO_ERROR_UP();
     } else {
-        return cno_h2_on_invalid_stream(c, f);
+        return CNO_OK;
     }
 
     return CNO_FIRE(c, on_flow_increase, f->stream);
@@ -1270,7 +1293,7 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
             // Allow to respond to the next pipelined request.
             c->last_stream[CNO_LOCAL] += 2;
         s->w_state = CNO_STREAM_CLOSED;
-        if (s->r_state == CNO_STREAM_CLOSED && cno_stream_end(c, s))
+        if (s->r_state == CNO_STREAM_CLOSED && cno_stream_end_by_write(c, s))
             return CNO_ERROR_UP();
     } else if (m->code == 101 || !cno_is_informational(m->code)) {
         s->w_state = CNO_STREAM_DATA;
@@ -1333,7 +1356,7 @@ int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, s
             // is currently equal to `sid`.
             c->last_stream[CNO_LOCAL] += 2;
         s->w_state = CNO_STREAM_CLOSED;
-        if (s->r_state == CNO_STREAM_CLOSED && cno_stream_end(c, s))
+        if (s->r_state == CNO_STREAM_CLOSED && cno_stream_end_by_write(c, s))
             return CNO_ERROR_UP();
     }
     return (int)size;
