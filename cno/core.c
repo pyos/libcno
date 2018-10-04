@@ -170,7 +170,7 @@ static void cno_h2_just_ended(struct cno_connection_t *c, uint32_t sid, uint8_t 
     // HEADERS, DATA, WINDOW_UPDATE, and RST_STREAM may arrive on streams we have already reset
     // simply because the other side sent the frames before receiving ours. This is not
     // a protocol error according to the standard. FIXME kinda broken with trailers.
-    // (Note that this does not work with 31-bit stream ids, but eh, who needs them anyway?)
+    // (This does not work with 31-bit stream ids, but eh, who needs them anyway?)
     c->recently_reset[c->recently_reset_next++] = sid << 2 | r_state;
     c->recently_reset_next %= CNO_STREAM_RESET_HISTORY;
 }
@@ -880,7 +880,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
         if (!c->disallow_h2_prior_knowledge && c->last_stream[CNO_REMOTE] == 0)
             if (!strncmp(c->buffer.data, CNO_PREFACE.data, c->buffer.size))
                 return c->buffer.size < CNO_PREFACE.size ? CNO_OK : CNO_STATE_H2_INIT;
-        // Note that this is allowed to return WOULD_BLOCK if the pipelining limit
+        // This is allowed to return WOULD_BLOCK if the pipelining limit
         // has been reached. (It's not a protocol error since there are no SETTINGS.)
         if (!(s = cno_stream_new(c, (c->last_stream[CNO_REMOTE] + 1) | 1, CNO_REMOTE)))
             return CNO_ERROR_UP();
