@@ -1120,6 +1120,7 @@ int cno_eof(struct cno_connection_t *c) {
     for (size_t i = 0; i < CNO_STREAM_BUCKETS; i++) {
         while (c->streams[i]) {
             struct cno_stream_t * CNO_STREAM_REF s = c->streams[i];
+            s->refs++;
             if (cno_stream_end(c, s))
                 return CNO_ERROR_UP();
             unclean = 1; // either didn't finish reading, or didn't finish writing
