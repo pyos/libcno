@@ -169,8 +169,8 @@ static int cno_h2_goaway(struct cno_connection_t *c, uint32_t /* enum CNO_RST_ST
 static void cno_h2_just_ended(struct cno_connection_t *c, uint32_t sid, uint8_t r_state) {
     // HEADERS, DATA, WINDOW_UPDATE, and RST_STREAM may arrive on streams we have already reset
     // simply because the other side sent the frames before receiving ours. This is not
-    // a protocol error according to the standard. FIXME kinda broken with trailers.
-    // (This does not work with 31-bit stream ids, but eh, who needs them anyway?)
+    // a protocol error according to the standard. (This does not work with 31-bit stream
+    // ids, but eh, who needs them anyway?)
     c->recently_reset[c->recently_reset_next++] = sid << 2 | r_state;
     c->recently_reset_next %= CNO_STREAM_RESET_HISTORY;
 }
@@ -193,14 +193,15 @@ static int cno_h2_rst(struct cno_connection_t *c, struct cno_stream_t *s, uint32
 static int cno_h2_on_invalid_stream(struct cno_connection_t *c, struct cno_frame_t *f) {
     if (f->stream && f->stream <= c->last_stream[cno_stream_is_local(c, f->stream)]) {
         for (uint8_t i = 0; i < CNO_STREAM_RESET_HISTORY; i++) {
-            if (f->type == CNO_FRAME_HEADERS ? c->recently_reset[i] != f->stream << 2
-              : f->type == CNO_FRAME_DATA    ? c->recently_reset[i] != (f->stream << 2 | CNO_STREAM_DATA)
-              : c->recently_reset[i] >> 2 != f->stream)
+            if (c->recently_reset[i] >> 2 != f->stream)
                 continue;
+            if ((f->type == CNO_FRAME_HEADERS && c->recently_reset[i] == (f->stream << 2 | CNO_STREAM_CLOSED))
+             || (f->type == CNO_FRAME_DATA && c->recently_reset[i] != (f->stream << 2 | CNO_STREAM_DATA)))
+                break;
             if (f->type == CNO_FRAME_RST_STREAM)
                 c->recently_reset[i] = 0; // don't expect any more frames on that stream
-            else if (f->type == CNO_FRAME_HEADERS || f->type == CNO_FRAME_DATA)
-                c->recently_reset[i]++; // also ignore the next frame type
+            else if (f->type == CNO_FRAME_HEADERS || (f->type == CNO_FRAME_DATA && f->flags & CNO_FLAG_END_STREAM))
+                c->recently_reset[i]++; // headers -> data, data -> closed
             return CNO_OK;
         }
     }
