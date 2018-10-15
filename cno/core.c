@@ -887,7 +887,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
             return CNO_ERROR_UP();
     }
 
-    struct cno_header_t headers[CNO_MAX_HEADERS + 2]; // + :scheme and :authority
+    struct cno_header_t headers[CNO_MAX_HEADERS + 3]; // + :scheme and :authority and maybe connection
     struct cno_message_t m = { 0, {}, {}, headers, CNO_MAX_HEADERS };
     struct phr_header headers_phr[CNO_MAX_HEADERS];
 
@@ -914,6 +914,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
         return CNO_ERROR(PROTOCOL, "HTTP/1.%d not supported", minor);
 
     int upgrade = 0;
+    int hasConnectionHeader = 0;
     c->remaining_h1_payload = 0;
     struct cno_header_t *it = headers;
     if (!c->client) {
@@ -969,9 +970,14 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
             c->remaining_h1_payload = (uint64_t) -1;
             if (!cno_remove_chunked_te(&it->value))
                 continue;
+        } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("connection"))) {
+            hasConnectionHeader = 1;
         }
 
         it++;
+    }
+    if (minor == 0 && !hasConnectionHeader) {
+        *it++ = (struct cno_header_t) { CNO_BUFFER_STRING("connection"), CNO_BUFFER_STRING("close"), 0 };
     }
     m.headers_len = it - m.headers;
 
