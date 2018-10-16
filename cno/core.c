@@ -62,11 +62,11 @@ static int cno_stream_end(struct cno_connection_t *c, struct cno_stream_t *s) {
 
 static struct cno_stream_t * cno_stream_new(struct cno_connection_t *c, uint32_t sid, int local) {
     if (cno_stream_is_local(c, sid) != local)
-        return (local ? CNO_ERROR(INVALID_STREAM, "incorrect stream id parity")
+        return (local ? CNO_ERROR(ASSERTION, "incorrect stream id parity")
                       : CNO_ERROR(PROTOCOL, "incorrect stream id parity")), NULL;
 
     if (sid <= c->last_stream[local])
-        return (local ? CNO_ERROR(INVALID_STREAM, "nonmonotonic stream id")
+        return (local ? CNO_ERROR(ASSERTION, "nonmonotonic stream id")
                       : CNO_ERROR(PROTOCOL, "nonmonotonic stream id")), NULL;
 
     if (c->stream_count[local] >= c->settings[!local].max_concurrent_streams)
@@ -1270,8 +1270,10 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
     if (c->client && !s && !(s = cno_stream_new(c, sid, CNO_LOCAL)))
         return CNO_ERROR_UP();
-    if (!s || s->w_state != CNO_STREAM_HEADERS)
-        return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
+    if (!s)
+        return CNO_ERROR(INVALID_STREAM, "this stream is closed");
+    if (s->w_state != CNO_STREAM_HEADERS)
+        return CNO_ERROR(ASSERTION, "already sent headers on this stream");
     if (c->client)
         // See comment in `cno_h2_on_message`.
         s->head_response = cno_buffer_eq(m->method, CNO_BUFFER_STRING("HEAD"));
@@ -1313,8 +1315,12 @@ int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, s
     if (c->state == CNO_STATE_CLOSED)
         return CNO_ERROR(DISCONNECT, "connection closed");
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
-    if (!s || s->w_state != CNO_STREAM_DATA)
-        return CNO_ERROR(INVALID_STREAM, "this stream is not writable");
+    if (!s)
+        return CNO_ERROR(INVALID_STREAM, "this stream is closed");
+    if (s->w_state == CNO_STREAM_HEADERS)
+        return CNO_ERROR(ASSERTION, "did not send headers on this stream");
+    if (s->w_state == CNO_STREAM_CLOSED)
+        return CNO_ERROR(ASSERTION, "already finished writing on this stream");
 
     if (c->mode == CNO_HTTP2) {
         int64_t limit = s->window_send + c->settings[CNO_REMOTE].initial_window_size;
