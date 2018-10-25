@@ -709,6 +709,8 @@ void cno_init(struct cno_connection_t *c, enum CNO_CONNECTION_KIND kind) {
                          /* local  = */ CNO_SETTINGS_INITIAL, },
         .disallow_h2_upgrade = 1,
     };
+    if (c->client && (!c->cb_code || !c->cb_code->on_message_push))
+        c->settings[CNO_LOCAL].enable_push = 0;
 
     cno_hpack_init(&c->decoder, CNO_SETTINGS_INITIAL .header_table_size);
     cno_hpack_init(&c->encoder, CNO_SETTINGS_STANDARD.header_table_size);
