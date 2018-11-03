@@ -883,6 +883,8 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
         if (!c->disallow_h2_prior_knowledge && c->last_stream[CNO_REMOTE] == 0)
             if (!strncmp(c->buffer.data, CNO_PREFACE.data, c->buffer.size))
                 return c->buffer.size < CNO_PREFACE.size ? CNO_OK : CNO_STATE_H2_INIT;
+        if (s)
+            cno_stream_decref(&s);
         // This is allowed to return WOULD_BLOCK if the pipelining limit
         // has been reached. (It's not a protocol error since there are no SETTINGS.)
         if (!(s = cno_stream_new(c, (c->last_stream[CNO_REMOTE] + 1) | 1, CNO_REMOTE)))
