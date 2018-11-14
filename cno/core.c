@@ -575,14 +575,14 @@ static int cno_h2_on_rst(struct cno_connection_t *c,
                          struct cno_stream_t     *s,
                          struct cno_frame_t      *f)
 {
+    if (f->payload.size != 4)
+        return cno_h2_fatal(c, CNO_RST_FRAME_SIZE_ERROR, "bad RST_STREAM");
+
     if (!s) {
         if (cno_h2_on_invalid_stream(c, f))
             return CNO_ERROR_UP();
         return CNO_OK;
     }
-
-    if (f->payload.size != 4)
-        return cno_h2_fatal(c, CNO_RST_FRAME_SIZE_ERROR, "bad RST_STREAM");
 
     // TODO parse the error code and do something with it.
     return cno_stream_end(c, s);
