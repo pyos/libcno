@@ -902,11 +902,10 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
         if (s)
             cno_stream_decref(&s);
         // Do not accept new requests if shutting down.
-        if (c->goaway_sent) {
-            if (c->stream_count[CNO_REMOTE])
-                return CNO_ERROR(WOULD_BLOCK, "shutting down; wait until existing streams are done");
-            return CNO_ERROR(DISCONNECT, "already shut down");
-        }
+        if (c->goaway_sent)
+            return c->stream_count[CNO_REMOTE]
+                ? CNO_ERROR(WOULD_BLOCK, "shutting down; wait until existing streams are done")
+                : CNO_ERROR(DISCONNECT, "already shut down");
         // This is allowed to return WOULD_BLOCK if the pipelining limit
         // has been reached. (It's not a protocol error since there are no SETTINGS.)
         if (!(s = cno_stream_new(c, (c->last_stream[CNO_REMOTE] + 1) | 1, CNO_REMOTE)))
