@@ -556,11 +556,13 @@ static int cno_h2_on_goaway(struct cno_connection_t *c,
         return CNO_ERROR(PROTOCOL, "disconnected with error %u", error);
     c->goaway_recv = last_id;
 
+    int have_others = 0;
     for (size_t i = 0; i < CNO_STREAM_BUCKETS; i++) {
         struct cno_stream_t **sp = &c->streams[i];
         while (*sp) {
-            if ((*sp)->id <= c->goaway_recv) {
+            if ((*sp)->id % 2 != c->goaway_recv % 2 || (*sp)->id <= c->goaway_recv) {
                 sp = &(*sp)->next;
+                have_others = 1;
                 continue;
             }
             struct cno_stream_t * CNO_STREAM_REF s = *sp;
@@ -568,7 +570,7 @@ static int cno_h2_on_goaway(struct cno_connection_t *c,
             cno_stream_end_by_write(c, s);
         }
     }
-    return CNO_OK;
+    return have_others ? CNO_OK : CNO_ERROR(DISCONNECT, "connection closed");
 }
 
 static int cno_h2_on_rst(struct cno_connection_t *c,
@@ -1176,7 +1178,7 @@ int cno_write_push(struct cno_connection_t *c, uint32_t sid, const struct cno_me
         return CNO_ERROR(DISCONNECT, "connection closed");
     if (c->client)
         return CNO_ERROR(ASSERTION, "clients can't push");
-    if (c->mode != CNO_HTTP2 || !c->settings[CNO_REMOTE].enable_push || cno_stream_is_local(c, sid))
+    if (c->mode != CNO_HTTP2 || !c->settings[CNO_REMOTE].enable_push || cno_stream_is_local(c, sid) || c->goaway_recv)
         return CNO_OK;
 
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
@@ -1271,7 +1273,7 @@ static int cno_h2_write_head(struct cno_connection_t *c, struct cno_stream_t *s,
 }
 
 int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_message_t *m, int final) {
-    if (c->state == CNO_STATE_CLOSED || (c->goaway_recv && sid > c->goaway_recv))
+    if (c->state == CNO_STATE_CLOSED || (c->client && c->goaway_recv && sid > c->goaway_recv))
         return CNO_ERROR(DISCONNECT, "connection closed");
 
     if (c->client ? !!m->code : !!m->path.size)
