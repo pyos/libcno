@@ -901,6 +901,12 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
                 return c->buffer.size < CNO_PREFACE.size ? CNO_OK : CNO_STATE_H2_INIT;
         if (s)
             cno_stream_decref(&s);
+        // Do not accept new requests if shutting down.
+        if (c->goaway_sent) {
+            if (c->stream_count[CNO_REMOTE])
+                return CNO_ERROR(WOULD_BLOCK, "shutting down; wait until existing streams are done");
+            return CNO_ERROR(DISCONNECT, "already shut down");
+        }
         // This is allowed to return WOULD_BLOCK if the pipelining limit
         // has been reached. (It's not a protocol error since there are no SETTINGS.)
         if (!(s = cno_stream_new(c, (c->last_stream[CNO_REMOTE] + 1) | 1, CNO_REMOTE)))
@@ -1305,8 +1311,18 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
         if (cno_h2_write_head(c, s, m, final))
             return CNO_ERROR_UP();
     } else {
-        if (!c->client && c->last_stream[CNO_LOCAL] != s->id)
-            return CNO_ERROR(WOULD_BLOCK, "not head of line");
+        if (!c->client) {
+            if (c->last_stream[CNO_LOCAL] != s->id)
+                return CNO_ERROR(WOULD_BLOCK, "not head of line");
+        } else if (c->last_stream[CNO_REMOTE] != 0 && c->last_stream[CNO_REMOTE] != s->id) {
+            // Response has not been received yet, but maybe we've uploaded the request already?
+            // Check `last[CNO_LOCAL] - 2`, which should exist and be the previous request's stream.
+            struct cno_stream_t * CNO_STREAM_REF prev = cno_stream_find(c, c->last_stream[CNO_LOCAL] - 2);
+            if (prev && prev->w_state != CNO_STREAM_CLOSED)
+                // FIXME this makes the user wait until another stream ends, while it is enough
+                //       to wait until `cno_write_*` is called with final = 1.
+                return CNO_ERROR(WOULD_BLOCK, "not head of line");
+        }
         if (m->code == 101) {
             // Only handle upgrades if still in on_message_head/on_upgrade.
             if (c->last_stream[CNO_REMOTE] != s->id || c->state != CNO_STATE_H1_HEAD || s->r_state == CNO_STREAM_CLOSED)
