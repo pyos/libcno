@@ -1146,8 +1146,11 @@ uint32_t cno_next_stream(const struct cno_connection_t *c) {
 }
 
 int cno_write_reset(struct cno_connection_t *c, uint32_t sid, enum CNO_RST_STREAM_CODE code) {
-    if (c->mode != CNO_HTTP2)
-        return CNO_OK; // if code != NO_ERROR, this requires simply closing the transport ¯\_(ツ)_/¯
+    if (c->mode != CNO_HTTP2) {
+        if (!c->goaway_sent)
+            c->goaway_sent = c->last_stream[CNO_REMOTE];
+        return CNO_OK; // this requires simply closing the transport ¯\_(ツ)_/¯
+    }
     if (!sid)
         return cno_h2_goaway(c, code);
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
