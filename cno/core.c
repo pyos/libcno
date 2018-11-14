@@ -546,15 +546,29 @@ static int cno_h2_on_goaway(struct cno_connection_t *c,
 {
     if (f->stream)
         return cno_h2_fatal(c, CNO_RST_PROTOCOL_ERROR, "GOAWAY on a stream");
-
     if (f->payload.size < 8)
         return cno_h2_fatal(c, CNO_RST_FRAME_SIZE_ERROR, "bad GOAWAY");
-
+    const uint32_t last_id = read4(f->payload.data);
     const uint32_t error = read4(f->payload.data + 4);
+    if (c->goaway_recv && last_id > c->goaway_recv)
+        return CNO_ERROR(PROTOCOL, "GOAWAY with higher stream id");
     if (error != CNO_RST_NO_ERROR)
         return CNO_ERROR(PROTOCOL, "disconnected with error %u", error);
-    // TODO: clean shutdown: reject all streams higher than indicated in the frame
-    return CNO_ERROR(DISCONNECT, "disconnected");
+    c->goaway_recv = last_id;
+
+    for (size_t i = 0; i < CNO_STREAM_BUCKETS; i++) {
+        struct cno_stream_t **sp = &c->streams[i];
+        while (*sp) {
+            if ((*sp)->id <= c->goaway_recv) {
+                sp = &(*sp)->next;
+                continue;
+            }
+            struct cno_stream_t * CNO_STREAM_REF s = *sp;
+            // Should still accept RST_STREAM (most likely with error REFUSED_STREAM) on it.
+            cno_stream_end_by_write(c, s);
+        }
+    }
+    return CNO_OK;
 }
 
 static int cno_h2_on_rst(struct cno_connection_t *c,
@@ -1257,7 +1271,7 @@ static int cno_h2_write_head(struct cno_connection_t *c, struct cno_stream_t *s,
 }
 
 int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_message_t *m, int final) {
-    if (c->state == CNO_STATE_CLOSED)
+    if (c->state == CNO_STATE_CLOSED || (c->goaway_recv && sid > c->goaway_recv))
         return CNO_ERROR(DISCONNECT, "connection closed");
 
     if (c->client ? !!m->code : !!m->path.size)
