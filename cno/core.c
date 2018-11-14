@@ -90,7 +90,11 @@ static int cno_stream_end(struct cno_connection_t *c, struct cno_stream_t *s) {
     *sp = s->next;
     cno_stream_decref(&s);
     c->stream_count[cno_stream_is_local(c, sid)]--;
-    return CNO_FIRE(c, on_stream_end, sid);
+    if (CNO_FIRE(c, on_stream_end, sid))
+        return CNO_ERROR_UP();
+    return c->goaway[CNO_REMOTE] == (uint32_t)-1 && c->goaway[CNO_LOCAL] == (uint32_t)-1 ? CNO_OK
+         // Seems to be a recurring pattern...
+         : c->stream_count[CNO_LOCAL] + c->stream_count[CNO_REMOTE] ? CNO_OK : CNO_FIRE(c, on_close);
 }
 
 // Insert a new stream into the map, return a valid reference. May return WOULD_BLOCK
@@ -601,7 +605,7 @@ static int cno_h2_on_goaway(struct cno_connection_t *c,
             }
         }
     }
-    return c->stream_count[CNO_LOCAL] + c->stream_count[CNO_REMOTE] ? CNO_OK : CNO_ERROR(DISCONNECT, "connection closed");
+    return c->stream_count[CNO_LOCAL] + c->stream_count[CNO_REMOTE] ? CNO_OK : CNO_FIRE(c, on_close);
 }
 
 static int cno_h2_on_rst(struct cno_connection_t *c,
@@ -1161,14 +1165,12 @@ int cno_eof(struct cno_connection_t *c) {
     int unclean = 0;
     for (size_t i = 0; i < CNO_STREAM_BUCKETS; i++) {
         while (c->streams[i]) {
-            struct cno_stream_t * CNO_STREAM_REF s = c->streams[i];
-            s->refs++;
-            if (cno_stream_end(c, s))
+            if (cno_stream_end(c, c->streams[i]))
                 return CNO_ERROR_UP();
             unclean = 1; // either didn't finish reading, or didn't finish writing
         }
     }
-    return unclean ? CNO_ERROR(DISCONNECT, "unclean http termination") : CNO_OK;
+    return unclean ? CNO_ERROR(DISCONNECT, "unclean http termination") : CNO_FIRE(c, on_close);
 }
 
 uint32_t cno_next_stream(const struct cno_connection_t *c) {
@@ -1177,13 +1179,13 @@ uint32_t cno_next_stream(const struct cno_connection_t *c) {
 }
 
 int cno_write_reset(struct cno_connection_t *c, uint32_t sid, enum CNO_RST_STREAM_CODE code) {
-    if (c->mode != CNO_HTTP2) {
+    if (!sid || c->mode != CNO_HTTP2) {
         if (c->goaway[CNO_LOCAL] > c->last_stream[CNO_REMOTE])
             c->goaway[CNO_LOCAL] = c->last_stream[CNO_REMOTE];
-        return CNO_OK; // this requires simply closing the transport ¯\_(ツ)_/¯
+        if (c->mode == CNO_HTTP2 && cno_h2_goaway(c, code))
+            return CNO_ERROR_UP();
+        return c->stream_count[CNO_LOCAL] + c->stream_count[CNO_REMOTE] ? CNO_OK : CNO_FIRE(c, on_close);
     }
-    if (!sid)
-        return cno_h2_goaway(c, code);
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
     return s ? cno_h2_rst(c, s, code) : CNO_OK; // assume idle streams have already been reset
 }
