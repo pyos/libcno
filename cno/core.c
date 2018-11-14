@@ -200,9 +200,9 @@ static int cno_h2_write_settings(struct cno_connection_t *c,
 
 // Call `on_writev` with a GOAWAY frame containing the specified code.
 static int cno_h2_goaway(struct cno_connection_t *c, uint32_t /* enum CNO_RST_STREAM_CODE */ code) {
-    if (!c->goaway_sent)
-        c->goaway_sent = c->last_stream[CNO_REMOTE];
-    struct cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, PACK(I32(c->goaway_sent), I32(code)) };
+    if (c->goaway[CNO_LOCAL] > c->last_stream[CNO_REMOTE])
+        c->goaway[CNO_LOCAL] = c->last_stream[CNO_REMOTE];
+    struct cno_frame_t error = { CNO_FRAME_GOAWAY, 0, 0, PACK(I32(c->goaway[CNO_LOCAL]), I32(code)) };
     return cno_frame_write(c, &error);
 }
 
@@ -470,7 +470,8 @@ static int cno_h2_on_headers(struct cno_connection_t *c,
             if (cno_h2_on_invalid_stream(c, f))
                 return CNO_ERROR_UP();
             // Frame must be decompressed to sync HPACK state, but otherwise ignored.
-        } else if (c->goaway_sent || c->stream_count[CNO_REMOTE] >= c->settings[CNO_LOCAL].max_concurrent_streams) {
+        } else if (f->stream > c->goaway[CNO_LOCAL]
+                || c->stream_count[CNO_REMOTE] >= c->settings[CNO_LOCAL].max_concurrent_streams) {
             c->last_stream[CNO_REMOTE] = f->stream;
             int r_state = f->flags & CNO_FLAG_END_STREAM ? CNO_STREAM_CLOSED : CNO_STREAM_DATA;
             if (cno_h2_rst_by_id(c, f->stream, CNO_RST_REFUSED_STREAM, r_state))
@@ -579,32 +580,28 @@ static int cno_h2_on_goaway(struct cno_connection_t *c,
         return cno_h2_fatal(c, CNO_RST_FRAME_SIZE_ERROR, "bad GOAWAY");
     const uint32_t lstid = read4(f->payload.data);
     const uint32_t error = read4(f->payload.data + 4);
-    if (c->goaway_recv && lstid > c->goaway_recv)
+    if (lstid > c->goaway[CNO_REMOTE])
         return cno_h2_fatal(c, CNO_RST_PROTOCOL_ERROR, "GOAWAY with higher stream id");
     if (!cno_stream_is_local(c, lstid))
         return cno_h2_fatal(c, CNO_RST_PROTOCOL_ERROR, "GOAWAY specifies peer's stream id");
     if (error != CNO_RST_NO_ERROR)
         return cno_h2_fatal(c, CNO_RST_NO_ERROR, "disconnected with error %u", error);
-    c->goaway_recv = lstid;
-
-    int have_others = 0;
+    c->goaway[CNO_REMOTE] = lstid;
     for (size_t i = 0; i < CNO_STREAM_BUCKETS; i++) {
         // XXX assuming calling `on_stream_end` cannot result in a concurrent destruction
         //     of another stream.
-        struct cno_stream_t **sp = &c->streams[i];
-        while (*sp) {
-            if ((*sp)->id % 2 != lstid % 2 || (*sp)->id <= lstid) {
+        for (struct cno_stream_t **sp = &c->streams[i]; *sp; ) {
+            if (!cno_stream_is_local(c, (*sp)->id) || (*sp)->id <= lstid) {
                 sp = &(*sp)->next;
-                have_others = 1;
-                continue;
+            } else {
+                (*sp)->r_state = CNO_STREAM_CLOSED;
+                // Should still accept RST_STREAM (most likely with error REFUSED_STREAM) on it.
+                if (cno_stream_end_by_write(c, *sp))
+                    return CNO_ERROR_UP();
             }
-            (*sp)->r_state = CNO_STREAM_CLOSED;
-            // Should still accept RST_STREAM (most likely with error REFUSED_STREAM) on it.
-            if (cno_stream_end_by_write(c, *sp))
-                return CNO_ERROR_UP();
         }
     }
-    return have_others ? CNO_OK : CNO_ERROR(DISCONNECT, "connection closed");
+    return c->stream_count[CNO_LOCAL] + c->stream_count[CNO_REMOTE] ? CNO_OK : CNO_ERROR(DISCONNECT, "connection closed");
 }
 
 static int cno_h2_on_rst(struct cno_connection_t *c,
@@ -731,6 +728,7 @@ static const struct cno_settings_t CNO_SETTINGS_INITIAL = {{{
 void cno_init(struct cno_connection_t *c, enum CNO_CONNECTION_KIND kind) {
     *c = (struct cno_connection_t) {
         .client      = CNO_CLIENT == kind,
+        .goaway      = {(uint32_t)-1, (uint32_t)-1},
         .window_recv = CNO_SETTINGS_STANDARD.initial_window_size,
         .window_send = CNO_SETTINGS_STANDARD.initial_window_size,
         .settings    = { /* remote = */ CNO_SETTINGS_CONSERVATIVE,
@@ -914,7 +912,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
         if (s)
             cno_stream_decref(&s);
         // Do not accept new requests if shutting down.
-        if (c->goaway_sent)
+        if (c->last_stream[CNO_REMOTE] >= c->goaway[CNO_LOCAL])
             return c->stream_count[CNO_REMOTE]
                 ? CNO_ERROR(WOULD_BLOCK, "shutting down; wait until existing streams are done")
                 : CNO_ERROR(DISCONNECT, "already shut down");
@@ -1180,8 +1178,8 @@ uint32_t cno_next_stream(const struct cno_connection_t *c) {
 
 int cno_write_reset(struct cno_connection_t *c, uint32_t sid, enum CNO_RST_STREAM_CODE code) {
     if (c->mode != CNO_HTTP2) {
-        if (!c->goaway_sent)
-            c->goaway_sent = c->last_stream[CNO_REMOTE];
+        if (c->goaway[CNO_LOCAL] > c->last_stream[CNO_REMOTE])
+            c->goaway[CNO_LOCAL] = c->last_stream[CNO_REMOTE];
         return CNO_OK; // this requires simply closing the transport ¯\_(ツ)_/¯
     }
     if (!sid)
@@ -1195,7 +1193,8 @@ int cno_write_push(struct cno_connection_t *c, uint32_t sid, const struct cno_me
         return CNO_ERROR(DISCONNECT, "connection closed");
     if (c->client)
         return CNO_ERROR(ASSERTION, "clients can't push");
-    if (c->mode != CNO_HTTP2 || !c->settings[CNO_REMOTE].enable_push || cno_stream_is_local(c, sid) || c->goaway_recv)
+    if (c->mode != CNO_HTTP2 || !c->settings[CNO_REMOTE].enable_push || cno_stream_is_local(c, sid)
+     || c->last_stream[CNO_LOCAL] >= c->goaway[CNO_REMOTE])
         return CNO_OK;
 
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
@@ -1290,7 +1289,7 @@ static int cno_h2_write_head(struct cno_connection_t *c, struct cno_stream_t *s,
 }
 
 int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_message_t *m, int final) {
-    if (c->state == CNO_STATE_CLOSED || (c->client && c->goaway_recv && sid > c->goaway_recv))
+    if (c->state == CNO_STATE_CLOSED || sid > c->goaway[!cno_stream_is_local(c, sid)])
         return CNO_ERROR(DISCONNECT, "connection closed");
 
     if (c->client ? !!m->code : !!m->path.size)
