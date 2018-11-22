@@ -1241,14 +1241,68 @@ static struct cno_buffer_t cno_fmt_chunk_length(char *b, size_t s, size_t n) {
     return (struct cno_buffer_t){ q, b + s - q };
 }
 
+
 static int cno_h1_write_head(struct cno_connection_t *c, struct cno_stream_t *s, const struct cno_message_t *m, int final) {
-    if (c->client
-      ? CNO_WRITEV(c, m->method, CNO_BUFFER_STRING(" "), m->path, CNO_BUFFER_STRING(" HTTP/1.1\r\n"))
-      // XXX technically, the reason string is meaningless so we don't need to specify the correct one.
-      //     Might not be wise to leak information about the used library, though. Security through obscurity ftw.
-      : CNO_WRITEV(c, CNO_BUFFER_STRING("HTTP/1.1 "), cno_fmt_uint((char[12]){}, 12, m->code), CNO_BUFFER_STRING(" "),
-                      m->method.size ? m->method : CNO_BUFFER_STRING("No Reason"), CNO_BUFFER_STRING("\r\n")))
-        return CNO_ERROR_UP();
+    struct cno_buffer_t iov[33];
+    size_t iovcnt = 0;
+    char codebuf[12];
+    if (c->client) {
+        iov[iovcnt++] = m->method;
+        iov[iovcnt++] = CNO_BUFFER_STRING(" ");
+        iov[iovcnt++] = m->path;
+        iov[iovcnt++] = CNO_BUFFER_STRING(" HTTP/1.1\r\n");
+    } else if (!m->method.size) switch (m->code) {
+        #define CODE_DEF(n, msg) \
+            case n: iov[iovcnt++] = CNO_BUFFER_STRING("HTTP/1.1 " #n " " msg "\r\n"); break
+        CODE_DEF(100, "Continue");
+        CODE_DEF(101, "Switching Protocols");
+        CODE_DEF(200, "OK");
+        CODE_DEF(201, "Created");
+        CODE_DEF(202, "Accepted");
+        CODE_DEF(203, "Non-Authoritative Information");
+        CODE_DEF(204, "No Content");
+        CODE_DEF(205, "Reset Content");
+        CODE_DEF(206, "Partial Content");
+        CODE_DEF(300, "Multiple Choices");
+        CODE_DEF(301, "Moved Permanently");
+        CODE_DEF(302, "Found");
+        CODE_DEF(303, "See Other");
+        CODE_DEF(304, "Not Modified");
+        CODE_DEF(305, "Use Proxy");
+        CODE_DEF(307, "Temporary Redirect");
+        CODE_DEF(400, "Bad Request");
+        CODE_DEF(401, "Unauthorized");
+        CODE_DEF(402, "Payment Required");
+        CODE_DEF(403, "Forbidden");
+        CODE_DEF(404, "Not Found");
+        CODE_DEF(405, "Method Not Allowed");
+        CODE_DEF(406, "Not Acceptable");
+        CODE_DEF(407, "Proxy Authentication Required");
+        CODE_DEF(408, "Request Time-out");
+        CODE_DEF(409, "Conflict");
+        CODE_DEF(410, "Gone");
+        CODE_DEF(411, "Length Required");
+        CODE_DEF(412, "Precondition Failed");
+        CODE_DEF(413, "Request Entity Too Large");
+        CODE_DEF(414, "Request-URI Too Large");
+        CODE_DEF(415, "Unsupported Media Type");
+        CODE_DEF(416, "Requested range not satisfiable");
+        CODE_DEF(417, "Expectation Failed");
+        CODE_DEF(500, "Internal Server Error");
+        CODE_DEF(501, "Not Implemented");
+        CODE_DEF(502, "Bad Gateway");
+        CODE_DEF(503, "Service Unavailable");
+        CODE_DEF(504, "Gateway Time-out");
+        CODE_DEF(505, "HTTP Version not supported");
+        #undef CODE_DEF
+        default: goto unknown_code;
+    } else unknown_code: {
+        iov[iovcnt++] = CNO_BUFFER_STRING("HTTP/1.1 ");
+        iov[iovcnt++] = cno_fmt_uint(codebuf, 12, m->code);
+        iov[iovcnt++] = CNO_BUFFER_STRING(" ");
+        iov[iovcnt++] = m->method.size ? m->method : CNO_BUFFER_STRING("No Reason");
+        iov[iovcnt++] = CNO_BUFFER_STRING("\r\n");
+    }
 
     s->writing_chunked = !cno_is_informational(m->code) && !final;
     for (const struct cno_header_t *it = m->headers, *end = it + m->headers_len; it != end; ++it) {
@@ -1267,11 +1321,19 @@ static int cno_h1_write_head(struct cno_connection_t *c, struct cno_stream_t *s,
             if (!cno_remove_chunked_te(&h.value))
                 continue;
         }
-        // XXX maybe send as one call? Or at least pack ~32 buffers (~8 headers) or something.
-        if (CNO_WRITEV(c, h.name, CNO_BUFFER_STRING(": "), h.value, CNO_BUFFER_STRING("\r\n")))
-            return CNO_ERROR_UP();
+        // Reserve one for the trailing CRLF below.
+        if (iovcnt > 28) {
+            if (CNO_FIRE(c, on_writev, iov, iovcnt))
+                return CNO_ERROR_UP();
+            iovcnt = 0;
+        }
+        iov[iovcnt++] = h.name;
+        iov[iovcnt++] = CNO_BUFFER_STRING(": ");
+        iov[iovcnt++] = h.value;
+        iov[iovcnt++] = CNO_BUFFER_STRING("\r\n");
     }
-    return CNO_WRITEV(c, s->writing_chunked ? CNO_BUFFER_STRING("transfer-encoding: chunked\r\n\r\n") : CNO_BUFFER_STRING("\r\n"));
+    iov[iovcnt++] = s->writing_chunked ? CNO_BUFFER_STRING("transfer-encoding: chunked\r\n\r\n") : CNO_BUFFER_STRING("\r\n");
+    return CNO_FIRE(c, on_writev, iov, iovcnt);
 }
 
 static int cno_h2_write_head(struct cno_connection_t *c, struct cno_stream_t *s, const struct cno_message_t *m, int final) {
