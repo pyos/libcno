@@ -938,34 +938,33 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
         : phr_parse_request(c->buffer.data, c->buffer.size,
             &m.method.data, &m.method.size, &m.path.data, &m.path.size, &minor,
             headers_phr, &m.headers_len, 1);
-
     if (ok == -2) {
-        if (c->buffer.size > (CNO_MAX_CONTINUATIONS + 1) * c->settings[CNO_LOCAL].max_frame_size)
+        if (c->buffer.size >= (CNO_MAX_CONTINUATIONS + 1) * c->settings[CNO_LOCAL].max_frame_size)
             return CNO_ERROR(PROTOCOL, "HTTP/1.x message too big");
         return CNO_OK;
     }
-
     if (ok == -1)
         return CNO_ERROR(PROTOCOL, "bad HTTP/1.x message");
-
     if (minor != 0 && minor != 1)
         // HTTP/1.0 is probably not really supported either tbh.
         return CNO_ERROR(PROTOCOL, "HTTP/1.%d not supported", minor);
 
     int upgrade = 0;
-    int hasConnectionHeader = 0;
+    int upgradeToH2 = 0;
     c->remaining_h1_payload = 0;
     struct cno_header_t *it = headers;
     if (!c->client) {
         *it++ = (struct cno_header_t) { CNO_BUFFER_STRING(":scheme"), CNO_BUFFER_STRING("unknown"), 0 };
         *it++ = (struct cno_header_t) { CNO_BUFFER_STRING(":authority"), CNO_BUFFER_STRING("unknown"), 0 };
     }
+    if (minor == 0)
+        // HTTP/1.0 clients *can* specify `connection: keep-alive`, but screw that.
+        *it++ = (struct cno_header_t) { CNO_BUFFER_STRING("connection"), CNO_BUFFER_STRING("close"), 0 };
     for (size_t i = 0; i < m.headers_len; i++) {
         *it = (struct cno_header_t) {
             .name  = { headers_phr[i].name,  headers_phr[i].name_len  },
             .value = { headers_phr[i].value, headers_phr[i].value_len },
         };
-
         for (uint8_t *p = (uint8_t *) it->name.data, *e = p + it->name.size; p != e; p++)
             if (!(*p = CNO_HEADER_TRANSFORM[*p]))
                 return CNO_ERROR(PROTOCOL, "invalid character in h1 header");
@@ -976,24 +975,16 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
         } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("http2-settings"))) {
             // TODO decode & emit on_frame
             continue;
-        } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("upgrade"))) {
-            if (c->mode != CNO_HTTP1) {
-                continue; // If upgrading to h2c, don't notify the application of any upgrades.
-            } else if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("h2c"))) {
-                // TODO: client-side h2 upgrade
-                if (c->disallow_h2_upgrade || c->client || s->id != 1 || upgrade)
-                    continue;
-
-                // Technically, server should refuse if HTTP2-Settings are not present. We'll let this slide.
-                if (CNO_WRITEV(c, CNO_BUFFER_STRING("HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: h2c\r\n\r\n"))
-                 || cno_when_h2_init(c) < 0)
-                    return CNO_ERROR_UP();
+        } else if (!c->client && cno_buffer_eq(it->name, CNO_BUFFER_STRING("upgrade"))) {
+            if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("h2c"))) {
+                // TODO client-side h2 upgrade
+                if (!c->disallow_h2_upgrade && s->id == 1 && !upgrade)
+                    upgradeToH2 = 1;
                 continue;
-            } else if (!c->client) {
-                // FIXME technically, http supports upgrade requests with payload (see h2c above).
-                //       the api does not allow associating 2 streams of data with a message, though.
-                upgrade = 1;
+            } else if (upgradeToH2) {
+                continue; // If upgrading to h2c, don't notify the application of any upgrades.
             }
+            upgrade = 1;
         } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length"))) {
             if (c->remaining_h1_payload == (uint64_t) -1)
                 continue; // Ignore content-length with chunked transfer-encoding.
@@ -1009,32 +1000,33 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
             c->remaining_h1_payload = (uint64_t) -1;
             if (!cno_remove_chunked_te(&it->value))
                 continue;
-        } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("connection"))) {
-            hasConnectionHeader = 1;
         }
-
         it++;
-    }
-    if (minor == 0 && !hasConnectionHeader) {
-        *it++ = (struct cno_header_t) { CNO_BUFFER_STRING("connection"), CNO_BUFFER_STRING("close"), 0 };
     }
     m.headers_len = it - m.headers;
 
-    if (m.code == 101)
-        // Just forward everything else (well, 18 exabytes at most...) to stream 1 as data.
-        c->upgraded = 1;
-    if (cno_is_informational(m.code) && c->remaining_h1_payload)
-        return CNO_ERROR(PROTOCOL, "informational response with a payload");
-
-    if (!c->client)
+    if (c->client) {
+        if (c->remaining_h1_payload && cno_is_informational(m.code))
+            return CNO_ERROR(PROTOCOL, "informational response with a payload");
+        if (m.code == 101)
+            c->upgraded = 1;
+        if (m.code == 204 || m.code == 304 || s->head_response)
+            // See equivalent code in `cno_h2_on_message`.
+            c->remaining_h1_payload = 0;
+    } else {
+        // Upgrading in response to a request with payload requires reading h1 while writing h2,
+        // which interacts poorly with cancellation (i.e. not at all; client should continue uploading).
+        if (upgradeToH2 && !c->remaining_h1_payload) {
+            // Technically, server should refuse if HTTP2-Settings are not present. We'll let this slide.
+            if (CNO_WRITEV(c, CNO_BUFFER_STRING("HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: h2c\r\n\r\n"))
+             || cno_when_h2_init(c) < 0)
+                return CNO_ERROR_UP();
+        } else if (!c->last_stream[CNO_LOCAL]) {
+            // Allow writing responses.
+            c->last_stream[CNO_LOCAL] = s->id;
+        }
         s->head_response = cno_buffer_eq(m.method, CNO_BUFFER_STRING("HEAD"));
-    else if (m.code == 204 || m.code == 304 || s->head_response)
-        // See equivalent code in `cno_h2_on_message`.
-        c->remaining_h1_payload = 0;
-
-    if (!c->client && c->mode != CNO_HTTP2 && !c->last_stream[CNO_LOCAL])
-        // Allow writing responses.
-        c->last_stream[CNO_LOCAL] = s->id;
+    }
 
     // If on_message_head triggers asynchronous handling, this is expected to block until
     // either 101 has been sent or the server decides not to upgrade.
@@ -1042,7 +1034,6 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
         return CNO_ERROR_UP();
 
     cno_buffer_dyn_shift(&c->buffer, (size_t) ok);
-
     if (cno_is_informational(m.code) && m.code != 101)
         return CNO_STATE_H1_HEAD;
 
