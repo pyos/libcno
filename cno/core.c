@@ -1162,6 +1162,8 @@ int cno_shutdown(struct cno_connection_t *c) {
 }
 
 int cno_eof(struct cno_connection_t *c) {
+    if (c->upgraded && cno_when_h1_tail(c) < 0)
+        return CNO_ERROR_UP();
     c->state = CNO_STATE_CLOSED;
     int unclean = 0;
     for (size_t i = 0; i < CNO_STREAM_BUCKETS; i++) {
@@ -1171,7 +1173,7 @@ int cno_eof(struct cno_connection_t *c) {
             unclean = 1; // either didn't finish reading, or didn't finish writing
         }
     }
-    return unclean ? CNO_ERROR(DISCONNECT, "unclean http termination") : CNO_FIRE(c, on_close);
+    return unclean && !c->upgraded ? CNO_ERROR(PROTOCOL, "unclean http termination") : CNO_FIRE(c, on_close);
 }
 
 uint32_t cno_next_stream(const struct cno_connection_t *c) {
