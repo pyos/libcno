@@ -779,6 +779,7 @@ enum CNO_CONNECTION_STATE {
     CNO_STATE_H2_SETTINGS,
     CNO_STATE_H2_FRAME,
     CNO_STATE_H1_HEAD,
+    CNO_STATE_H1_UPGRADED,
     CNO_STATE_H1_BODY,
     CNO_STATE_H1_TAIL,
     CNO_STATE_H1_CHUNK,
@@ -1008,8 +1009,6 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
     if (c->client) {
         if (c->remaining_h1_payload && cno_is_informational(m.code))
             return CNO_ERROR(PROTOCOL, "informational response with a payload");
-        if (m.code == 101)
-            c->upgraded = 1;
         if (m.code == 204 || m.code == 304 || s->head_response)
             // See equivalent code in `cno_h2_on_message`.
             c->remaining_h1_payload = 0;
@@ -1038,38 +1037,43 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
         return CNO_STATE_H1_HEAD;
 
     s->r_state = CNO_STREAM_DATA;
-    return c->remaining_h1_payload == (uint64_t) -1 ? CNO_STATE_H1_CHUNK
-         : c->remaining_h1_payload || c->upgraded ? CNO_STATE_H1_BODY
+    return c->state == CNO_STATE_H1_UPGRADED || m.code == 101 ? CNO_STATE_H1_UPGRADED
+         : c->remaining_h1_payload == (uint64_t) -1 ? CNO_STATE_H1_CHUNK
+         : c->remaining_h1_payload ? CNO_STATE_H1_BODY
          : CNO_STATE_H1_TAIL;
 }
 
+static int cno_when_h1_upgraded(struct cno_connection_t *c) {
+    if (c->buffer.size && CNO_FIRE(c, on_message_data, c->last_stream[CNO_REMOTE], c->buffer.data, c->buffer.size))
+        return CNO_ERROR_UP();
+    cno_buffer_dyn_shift(&c->buffer, c->buffer.size);
+    return CNO_OK;
+}
+
 static int cno_when_h1_body(struct cno_connection_t *c) {
-    while (c->remaining_h1_payload || c->upgraded) {
+    while (c->remaining_h1_payload) {
         if (!c->buffer.size)
             return CNO_OK;
         struct cno_buffer_t b = CNO_BUFFER_VIEW(c->buffer);
-        if (c->remaining_h1_payload) {
-            if (b.size > c->remaining_h1_payload)
-                b.size = c->remaining_h1_payload;
-            c->remaining_h1_payload -= b.size;
-        }
-        cno_buffer_dyn_shift(&c->buffer, b.size);
-        struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[CNO_REMOTE]);
-        if (s && CNO_FIRE(c, on_message_data, s->id, b.data, b.size))
+        if (b.size > c->remaining_h1_payload)
+            b.size = c->remaining_h1_payload;
+        // Stream is guaranteed to exist here because the only way to switch its read-state
+        // to closed from the write side is a h2 RST_STREAM, but a payload-carrying request
+        // could not have upgraded to h2c.
+        if (CNO_FIRE(c, on_message_data, c->last_stream[CNO_REMOTE], b.data, b.size))
             return CNO_ERROR_UP();
+        cno_buffer_dyn_shift(&c->buffer, b.size);
+        c->remaining_h1_payload -= b.size;
     }
     return c->state == CNO_STATE_H1_BODY ? CNO_STATE_H1_TAIL : CNO_STATE_H1_CHUNK_TAIL;
 }
 
 static int cno_when_h1_tail(struct cno_connection_t *c) {
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[CNO_REMOTE]);
-    if (s) {
-        if (CNO_FIRE(c, on_message_tail, s->id, NULL))
-            return CNO_ERROR_UP();
-        s->r_state = CNO_STREAM_CLOSED;
-        if (s->w_state == CNO_STREAM_CLOSED && cno_stream_end(c, s))
-            return CNO_ERROR_UP();
-    }
+    // We could have upgraded to h2c then reset the stream while in on_message_head,
+    // destroying it before entering this function.
+    if (s && (CNO_FIRE(c, on_message_tail, s->id, NULL) || cno_stream_end_by_read(c, s)))
+        return CNO_ERROR_UP();
     if (c->client && c->mode != CNO_HTTP2)
         c->last_stream[CNO_REMOTE] += 2; // server is catching up
     return c->mode == CNO_HTTP2 ? CNO_STATE_H2_PREFACE : CNO_STATE_H1_HEAD;
@@ -1124,6 +1128,7 @@ static cno_state_handler_t * const CNO_STATE_MACHINE[] = {
     &cno_when_h2_settings,
     &cno_when_h2_frame,
     &cno_when_h1_head,
+    &cno_when_h1_upgraded,
     &cno_when_h1_body,
     &cno_when_h1_tail,
     &cno_when_h1_chunk,
@@ -1153,7 +1158,8 @@ int cno_shutdown(struct cno_connection_t *c) {
 }
 
 int cno_eof(struct cno_connection_t *c) {
-    if (c->upgraded && cno_when_h1_tail(c) < 0)
+    int upgraded = (c->state == CNO_STATE_H1_UPGRADED);
+    if (upgraded && cno_when_h1_tail(c) < 0)
         return CNO_ERROR_UP();
     c->state = CNO_STATE_CLOSED;
     int unclean = 0;
@@ -1164,7 +1170,7 @@ int cno_eof(struct cno_connection_t *c) {
             unclean = 1; // either didn't finish reading, or didn't finish writing
         }
     }
-    return unclean && !c->upgraded ? CNO_ERROR(PROTOCOL, "unclean http termination") : CNO_FIRE(c, on_close);
+    return unclean && !upgraded ? CNO_ERROR(PROTOCOL, "unclean http termination") : CNO_FIRE(c, on_close);
 }
 
 uint32_t cno_next_stream(const struct cno_connection_t *c) {
@@ -1396,7 +1402,7 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
             if (c->last_stream[CNO_REMOTE] != s->id || c->state != CNO_STATE_H1_HEAD || s->r_state == CNO_STREAM_CLOSED)
                 return CNO_ERROR(ASSERTION, "accepted a h1 upgrade, but did not block in on_upgrade");
             // Make further calls to `cno_consume` forward everything as data to this stream.
-            c->upgraded = 1;
+            c->state = CNO_STATE_H1_UPGRADED;
         }
         if (cno_h1_write_head(c, s, m, final))
             return CNO_ERROR_UP();
@@ -1406,7 +1412,7 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
     }
 
     if (final) {
-        if (c->upgraded)
+        if (c->state == CNO_STATE_H1_UPGRADED)
             return CNO_FIRE(c, on_close);
         if (!c->client && c->mode != CNO_HTTP2)
             // Allow to respond to the next pipelined request.
@@ -1472,7 +1478,7 @@ int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, s
     }
 
     if (final) {
-        if (c->upgraded)
+        if (c->state == CNO_STATE_H1_UPGRADED)
             return CNO_FIRE(c, on_close);
         if (!c->client && c->mode != CNO_HTTP2)
             // Allow to respond to the next pipelined request. The stream being in CNO_STREAM_DATA

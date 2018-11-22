@@ -173,8 +173,6 @@ struct cno_connection_t {
     uint8_t /* read-only */ client : 1;
     // Whether `cno_begin` was called with `CNO_HTTP2` or an upgrade has beed performed.
     uint8_t /* read-only */ mode : 1;
-    // Whether this is an HTTP 1 connection upgraded to an unknown protocol.
-    uint8_t /* read-only */ upgraded : 1;
 
 // private:
     uint8_t  state;
