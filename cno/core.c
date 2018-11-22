@@ -1022,15 +1022,14 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
 
     if (m.code == 101)
         // Just forward everything else (well, 18 exabytes at most...) to stream 1 as data.
-        c->remaining_h1_payload = (uint64_t) -2;
-    else if (cno_is_informational(m.code) && c->remaining_h1_payload)
+        c->upgraded = 1;
+    if (cno_is_informational(m.code) && c->remaining_h1_payload)
         return CNO_ERROR(PROTOCOL, "informational response with a payload");
 
     if (!c->client)
         s->head_response = cno_buffer_eq(m.method, CNO_BUFFER_STRING("HEAD"));
     else if (m.code == 204 || m.code == 304 || s->head_response)
         // See equivalent code in `cno_h2_on_message`.
-        // XXX can a HEAD request with `upgrade` trigger an upgrade? This prevents it.
         c->remaining_h1_payload = 0;
 
     if (!c->client && c->mode != CNO_HTTP2 && !c->last_stream[CNO_LOCAL])
@@ -1049,18 +1048,20 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
 
     s->r_state = CNO_STREAM_DATA;
     return c->remaining_h1_payload == (uint64_t) -1 ? CNO_STATE_H1_CHUNK
-         : c->remaining_h1_payload ? CNO_STATE_H1_BODY
+         : c->remaining_h1_payload || c->upgraded ? CNO_STATE_H1_BODY
          : CNO_STATE_H1_TAIL;
 }
 
 static int cno_when_h1_body(struct cno_connection_t *c) {
-    while (c->remaining_h1_payload) {
+    while (c->remaining_h1_payload || c->upgraded) {
         if (!c->buffer.size)
             return CNO_OK;
         struct cno_buffer_t b = CNO_BUFFER_VIEW(c->buffer);
-        if (b.size > c->remaining_h1_payload)
-            b.size = c->remaining_h1_payload;
-        c->remaining_h1_payload -= b.size;
+        if (c->remaining_h1_payload) {
+            if (b.size > c->remaining_h1_payload)
+                b.size = c->remaining_h1_payload;
+            c->remaining_h1_payload -= b.size;
+        }
         cno_buffer_dyn_shift(&c->buffer, b.size);
         struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[CNO_REMOTE]);
         if (s && CNO_FIRE(c, on_message_data, s->id, b.data, b.size))
@@ -1402,7 +1403,7 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
             if (c->last_stream[CNO_REMOTE] != s->id || c->state != CNO_STATE_H1_HEAD || s->r_state == CNO_STREAM_CLOSED)
                 return CNO_ERROR(ASSERTION, "accepted a h1 upgrade, but did not block in on_upgrade");
             // Make further calls to `cno_consume` forward everything as data to this stream.
-            c->remaining_h1_payload = (uint64_t) -2;
+            c->upgraded = 1;
         }
         if (cno_h1_write_head(c, s, m, final))
             return CNO_ERROR_UP();
@@ -1412,6 +1413,8 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
     }
 
     if (final) {
+        if (c->upgraded)
+            return CNO_FIRE(c, on_close);
         if (!c->client && c->mode != CNO_HTTP2)
             // Allow to respond to the next pipelined request.
             c->last_stream[CNO_LOCAL] += 2;
@@ -1476,6 +1479,8 @@ int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, s
     }
 
     if (final) {
+        if (c->upgraded)
+            return CNO_FIRE(c, on_close);
         if (!c->client && c->mode != CNO_HTTP2)
             // Allow to respond to the next pipelined request. The stream being in CNO_STREAM_DATA
             // write-state implies `cno_write_head` succeeding some time ago, so this value
