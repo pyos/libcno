@@ -48,8 +48,7 @@ struct cno_stream_t {
     uint8_t reading_chunked : 1;
     uint8_t writing_chunked : 1;
     uint8_t head_response : 1;
-     int64_t window_recv;
-     int64_t window_send;
+    int64_t window[2];
     uint64_t remaining_payload;
 };
 
@@ -555,7 +554,7 @@ static int cno_h2_on_data(struct cno_connection_t *c,
 
     // Frames on invalid streams still count against the connection-wide flow control window.
     // TODO allow manual connection flow control?
-    if (flow && flow > c->window_recv)
+    if (flow && flow > c->window[CNO_LOCAL])
         return cno_h2_fatal(c, CNO_RST_FLOW_CONTROL_ERROR, "connection-wide overflow");
     if (flow && cno_frame_write(c, &(struct cno_frame_t) { CNO_FRAME_WINDOW_UPDATE, 0, 0, PACK(I32(flow)) }))
         return CNO_ERROR_UP();
@@ -564,7 +563,7 @@ static int cno_h2_on_data(struct cno_connection_t *c,
         return cno_h2_on_invalid_stream(c, f) ? CNO_ERROR_UP() : CNO_OK;
     if (s->r_state != CNO_STREAM_DATA)
         return cno_h2_rst(c, s, CNO_RST_STREAM_CLOSED);
-    if (flow && flow > s->window_recv + c->settings[CNO_LOCAL].initial_window_size)
+    if (flow && flow > s->window[CNO_LOCAL] + c->settings[CNO_LOCAL].initial_window_size)
         return cno_h2_rst(c, s, CNO_RST_FLOW_CONTROL_ERROR);
 
     if (s->remaining_payload != (uint64_t) -1)
@@ -576,7 +575,7 @@ static int cno_h2_on_data(struct cno_connection_t *c,
         return cno_h2_on_end_stream(c, s, NULL);
 
     if (c->manual_flow_control) {
-        s->window_recv -= f->payload.size;
+        s->window[CNO_LOCAL] -= f->payload.size;
         // If there was padding, increase the window by its length right now anyway.
         flow -= f->payload.size;
     }
@@ -697,9 +696,9 @@ static int cno_h2_on_window_update(struct cno_connection_t *c,
         return cno_h2_fatal(c, CNO_RST_PROTOCOL_ERROR, "window increment out of bounds");
     if (f->stream && !s)
         return cno_h2_on_invalid_stream(c, f) ? CNO_ERROR_UP() : CNO_OK;
-    if (!s && (c->window_send += delta) > 0x7FFFFFFFL)
+    if (!s && (c->window[CNO_REMOTE] += delta) > 0x7FFFFFFFL)
         return cno_h2_fatal(c, CNO_RST_FLOW_CONTROL_ERROR, "window increment too big");
-    if (s && (s->window_send += delta) + c->settings[CNO_REMOTE].initial_window_size > 0x7FFFFFFFL)
+    if (s && (s->window[CNO_REMOTE] += delta) + c->settings[CNO_REMOTE].initial_window_size > 0x7FFFFFFFL)
         return cno_h2_rst(c, s, CNO_RST_FLOW_CONTROL_ERROR);
     return CNO_FIRE(c, on_flow_increase, f->stream);
 }
@@ -757,8 +756,8 @@ void cno_init(struct cno_connection_t *c, enum CNO_CONNECTION_KIND kind) {
     *c = (struct cno_connection_t) {
         .client      = CNO_CLIENT == kind,
         .goaway      = {(uint32_t)-1, (uint32_t)-1},
-        .window_recv = CNO_SETTINGS_STANDARD.initial_window_size,
-        .window_send = CNO_SETTINGS_STANDARD.initial_window_size,
+        .window      = {CNO_SETTINGS_STANDARD.initial_window_size,
+                        CNO_SETTINGS_STANDARD.initial_window_size},
         .settings    = { /* remote = */ CNO_SETTINGS_CONSERVATIVE,
                          /* local  = */ CNO_SETTINGS_INITIAL, },
         .disallow_h2_upgrade = 1,
@@ -1456,9 +1455,9 @@ int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, s
         return CNO_ERROR(ASSERTION, "already finished writing on this stream");
 
     if (c->mode == CNO_HTTP2) {
-        int64_t limit = s->window_send + c->settings[CNO_REMOTE].initial_window_size;
-        if (limit > c->window_send)
-            limit = c->window_send;
+        int64_t limit = s->window[CNO_REMOTE] + c->settings[CNO_REMOTE].initial_window_size;
+        if (limit > c->window[CNO_REMOTE])
+            limit = c->window[CNO_REMOTE];
         if (limit < 0)
             // May happen if a SETTINGS lowers the initial stream window size too much.
             limit = 0;
@@ -1471,12 +1470,12 @@ int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, s
             size = 0;
         if (size || final) {
             // Should be done before writing the frame to allow `on_writev` to yield safely.
-            c->window_send -= size;
-            s->window_send -= size;
+            c->window[CNO_REMOTE] -= size;
+            s->window[CNO_REMOTE] -= size;
             struct cno_frame_t frame = { CNO_FRAME_DATA, final ? CNO_FLAG_END_STREAM : 0, sid, {data, size} };
             if (cno_frame_write_data(c, &frame)) {
-                c->window_send += size;
-                s->window_send += size;
+                c->window[CNO_REMOTE] += size;
+                s->window[CNO_REMOTE] += size;
                 return CNO_ERROR_UP();
             }
         }
@@ -1529,6 +1528,6 @@ int cno_open_flow(struct cno_connection_t *c, uint32_t sid, uint32_t delta) {
         return CNO_OK;
     if (cno_frame_write(c, &(struct cno_frame_t){ CNO_FRAME_WINDOW_UPDATE, 0, sid, PACK(I32(delta)) }))
         return CNO_ERROR_UP();
-    s->window_recv += delta;
+    s->window[CNO_REMOTE] += delta;
     return CNO_OK;
 }
