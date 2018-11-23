@@ -20,6 +20,22 @@ static inline uint32_t read4(const void *v) {
 #define CNO_WRITEV(c, ...) CNO_FIRE(c, on_writev, (struct cno_buffer_t[]){__VA_ARGS__}, \
     sizeof((struct cno_buffer_t[]){__VA_ARGS__}) / sizeof(struct cno_buffer_t))
 
+enum CNO_CONNECTION_STATE {
+    CNO_STATE_CLOSED,
+    CNO_STATE_H2_INIT,
+    CNO_STATE_H2_PREFACE,
+    CNO_STATE_H2_SETTINGS,
+    CNO_STATE_H2_FRAME,
+    CNO_STATE_H1_HEAD,
+    CNO_STATE_H1_UPGRADED,
+    CNO_STATE_H1_BODY,
+    CNO_STATE_H1_TAIL,
+    CNO_STATE_H1_CHUNK,
+    CNO_STATE_H1_CHUNK_BODY,
+    CNO_STATE_H1_CHUNK_TAIL,
+    CNO_STATE_H1_TRAILERS,
+};
+
 enum CNO_STREAM_STATE {
     CNO_STREAM_HEADERS,
     CNO_STREAM_DATA,
@@ -226,6 +242,13 @@ static void cno_h2_just_ended(struct cno_connection_t *c, uint32_t sid, uint8_t 
 // accept RST_STREAMs afterwards.
 static int cno_stream_end_by_write(struct cno_connection_t *c, struct cno_stream_t *s) {
     s->w_state = CNO_STREAM_CLOSED;
+    if (c->state == CNO_STATE_H1_UPGRADED)
+        // The stream *is* the connection.
+        return CNO_FIRE(c, on_close);
+    if (!c->client && c->mode != CNO_HTTP2)
+        // Allow to respond to the next pipelined request. See the comment in
+        // `cno_when_h1_head` on the use of `last_stream` in h1 mode.
+        c->last_stream[CNO_LOCAL] += 2; // current value must have been `s->id`
     if (s->r_state != CNO_STREAM_CLOSED)
         return CNO_OK;
     cno_h2_just_ended(c, s->id, s->r_state);
@@ -237,6 +260,9 @@ static int cno_stream_end_by_write(struct cno_connection_t *c, struct cno_stream
 // not recorded, and further frames on this stream are protocol errors.
 static int cno_stream_end_by_read(struct cno_connection_t *c, struct cno_stream_t *s) {
     s->r_state = CNO_STREAM_CLOSED;
+    if (c->client && c->mode != CNO_HTTP2)
+        // Expect a response to the next pipelined request.
+        c->last_stream[CNO_REMOTE] += 2;
     if (s->w_state != CNO_STREAM_CLOSED)
         return CNO_OK;
     return cno_stream_end(c, s);
@@ -772,22 +798,6 @@ int cno_configure(struct cno_connection_t *c, const struct cno_settings_t *setti
     return CNO_OK;
 }
 
-enum CNO_CONNECTION_STATE {
-    CNO_STATE_CLOSED,
-    CNO_STATE_H2_INIT,
-    CNO_STATE_H2_PREFACE,
-    CNO_STATE_H2_SETTINGS,
-    CNO_STATE_H2_FRAME,
-    CNO_STATE_H1_HEAD,
-    CNO_STATE_H1_UPGRADED,
-    CNO_STATE_H1_BODY,
-    CNO_STATE_H1_TAIL,
-    CNO_STATE_H1_CHUNK,
-    CNO_STATE_H1_CHUNK_BODY,
-    CNO_STATE_H1_CHUNK_TAIL,
-    CNO_STATE_H1_TRAILERS,
-};
-
 // NOTE these functions have tri-state returns now: negative for errors, 0 (CNO_OK)
 //      to wait for more data, and positive (CNO_CONNECTION_STATE) to switch to another state.
 static int cno_when_closed(struct cno_connection_t *c __attribute__((unused))) {
@@ -1074,8 +1084,6 @@ static int cno_when_h1_tail(struct cno_connection_t *c) {
     // destroying it before entering this function.
     if (s && (CNO_FIRE(c, on_message_tail, s->id, NULL) || cno_stream_end_by_read(c, s)))
         return CNO_ERROR_UP();
-    if (c->client && c->mode != CNO_HTTP2)
-        c->last_stream[CNO_REMOTE] += 2; // server is catching up
     return c->mode == CNO_HTTP2 ? CNO_STATE_H2_PREFACE : CNO_STATE_H1_HEAD;
 }
 
@@ -1410,11 +1418,6 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
     }
 
     if (final) {
-        if (c->state == CNO_STATE_H1_UPGRADED)
-            return CNO_FIRE(c, on_close);
-        if (!c->client && c->mode != CNO_HTTP2)
-            // Allow to respond to the next pipelined request.
-            c->last_stream[CNO_LOCAL] += 2;
         if (cno_stream_end_by_write(c, s))
             return CNO_ERROR_UP();
     } else if (m->code == 101 || !cno_is_informational(m->code)) {
@@ -1475,17 +1478,8 @@ int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, s
         return CNO_ERROR_UP();
     }
 
-    if (final) {
-        if (c->state == CNO_STATE_H1_UPGRADED)
-            return CNO_FIRE(c, on_close);
-        if (!c->client && c->mode != CNO_HTTP2)
-            // Allow to respond to the next pipelined request. The stream being in CNO_STREAM_DATA
-            // write-state implies `cno_write_head` succeeding some time ago, so this value
-            // is currently equal to `sid`.
-            c->last_stream[CNO_LOCAL] += 2;
-        if (cno_stream_end_by_write(c, s))
-            return CNO_ERROR_UP();
-    }
+    if (final && cno_stream_end_by_write(c, s))
+        return CNO_ERROR_UP();
     return (int)size;
 }
 
