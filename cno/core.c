@@ -30,9 +30,6 @@ enum CNO_CONNECTION_STATE {
     CNO_STATE_H1_UPGRADED,
     CNO_STATE_H1_BODY,
     CNO_STATE_H1_TAIL,
-    CNO_STATE_H1_CHUNK,
-    CNO_STATE_H1_CHUNK_BODY,
-    CNO_STATE_H1_CHUNK_TAIL,
     CNO_STATE_H1_TRAILERS,
 };
 
@@ -48,6 +45,7 @@ struct cno_stream_t {
     uint8_t refs; // max. 4 = 1 from hash map + 1 from read + 1 from write + 1 for http1 mode
     uint8_t /* enum CNO_STREAM_STATE */ r_state : 3;
     uint8_t /* enum CNO_STREAM_STATE */ w_state : 3;
+    uint8_t reading_chunked : 1;
     uint8_t writing_chunked : 1;
     uint8_t head_response : 1;
      int64_t window_recv;
@@ -961,7 +959,6 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
 
     int upgrade = 0;
     int upgradeToH2 = 0;
-    c->remaining_h1_payload = 0;
     struct cno_header_t *it = headers;
     if (!c->client) {
         *it++ = (struct cno_header_t) { CNO_BUFFER_STRING(":scheme"), CNO_BUFFER_STRING("unknown"), 0 };
@@ -996,18 +993,19 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
             }
             upgrade = 1;
         } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("content-length"))) {
-            if (c->remaining_h1_payload == (uint64_t) -1)
-                continue; // Ignore content-length with chunked transfer-encoding.
-            if (c->remaining_h1_payload)
+            if (s->reading_chunked)
+                continue;
+            if (s->remaining_payload)
                 return CNO_ERROR(PROTOCOL, "multiple content-lengths");
-            if ((c->remaining_h1_payload = cno_parse_uint(it->value)) == (uint64_t) -1)
+            if ((s->remaining_payload = cno_parse_uint(it->value)) == (uint64_t) -1)
                 return CNO_ERROR(PROTOCOL, "invalid content-length");
         } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("transfer-encoding"))) {
             if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("identity")))
                 continue; // (This value is probably not actually allowed.)
             // Any non-identity transfer-encoding requires chunked (which should also be listed).
             // (This part is a bit non-compatible with h2. Proxies should probably decode TEs.)
-            c->remaining_h1_payload = (uint64_t) -1;
+            s->remaining_payload = (uint64_t) -1;
+            s->reading_chunked = 1;
             if (!cno_remove_chunked_te(&it->value))
                 continue;
         }
@@ -1016,15 +1014,15 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
     m.headers_len = it - m.headers;
 
     if (c->client) {
-        if (c->remaining_h1_payload && cno_is_informational(m.code))
+        if (s->remaining_payload && cno_is_informational(m.code))
             return CNO_ERROR(PROTOCOL, "informational response with a payload");
         if (m.code == 204 || m.code == 304 || s->head_response)
             // See equivalent code in `cno_h2_on_message`.
-            c->remaining_h1_payload = 0;
+            s->remaining_payload = 0;
     } else {
         // Upgrading in response to a request with payload requires reading h1 while writing h2,
         // which interacts poorly with cancellation (i.e. not at all; client should continue uploading).
-        if (upgradeToH2 && !c->remaining_h1_payload) {
+        if (upgradeToH2 && !s->remaining_payload) {
             // Technically, server should refuse if HTTP2-Settings are not present. We'll let this slide.
             if (CNO_WRITEV(c, CNO_BUFFER_STRING("HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: h2c\r\n\r\n"))
              || cno_when_h2_init(c) < 0)
@@ -1047,9 +1045,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
 
     s->r_state = CNO_STREAM_DATA;
     return c->state == CNO_STATE_H1_UPGRADED || m.code == 101 ? CNO_STATE_H1_UPGRADED
-         : c->remaining_h1_payload == (uint64_t) -1 ? CNO_STATE_H1_CHUNK
-         : c->remaining_h1_payload ? CNO_STATE_H1_BODY
-         : CNO_STATE_H1_TAIL;
+         : s->remaining_payload ? CNO_STATE_H1_BODY : CNO_STATE_H1_TAIL;
 }
 
 static int cno_when_h1_upgraded(struct cno_connection_t *c) {
@@ -1060,21 +1056,59 @@ static int cno_when_h1_upgraded(struct cno_connection_t *c) {
 }
 
 static int cno_when_h1_body(struct cno_connection_t *c) {
-    while (c->remaining_h1_payload) {
-        if (!c->buffer.size)
-            return CNO_OK;
-        struct cno_buffer_t b = CNO_BUFFER_VIEW(c->buffer);
-        if (b.size > c->remaining_h1_payload)
-            b.size = c->remaining_h1_payload;
-        // Stream is guaranteed to exist here because the only way to switch its read-state
+    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[CNO_REMOTE]);
+    if (!s)
+        // Stream should exist here because the only way to switch its read-state
         // to closed from the write side is a h2 RST_STREAM, but a payload-carrying request
         // could not have upgraded to h2c.
-        if (CNO_FIRE(c, on_message_data, c->last_stream[CNO_REMOTE], b.data, b.size))
-            return CNO_ERROR_UP();
-        cno_buffer_dyn_shift(&c->buffer, b.size);
-        c->remaining_h1_payload -= b.size;
+        return CNO_ERROR(ASSERTION, "waiting for h1 payload but no streams exist");
+    while (1) {
+        if (s->reading_chunked && s->remaining_payload == (uint64_t) -1) {
+            const char *p = c->buffer.data;
+            const char *e = memchr(p, '\n', c->buffer.size);
+            if (e == NULL)
+                return c->buffer.size >= c->settings[CNO_LOCAL].max_frame_size
+                    ? CNO_ERROR(PROTOCOL, "too many h1 chunk extensions") : CNO_OK;
+            size_t length = 0;
+            do {
+                int digit = '0' <= *p && *p <= '9' ? *p - '0'
+                          : 'A' <= *p && *p <= 'F' ? *p - 'A' + 10
+                          : 'a' <= *p && *p <= 'f' ? *p - 'a' + 10 : -1;
+                if (digit == -1 || length * 16 < length)
+                    return CNO_ERROR(PROTOCOL, "invalid h1 chunk length");
+                length = length * 16 + digit;
+            } while (*++p != '\r' && *p != '\n' && *p != ';');
+            if (p[0] == '\r' && p[1] != '\n')
+                return CNO_ERROR(PROTOCOL, "invalid h1 chunk length separator");
+            cno_buffer_dyn_shift(&c->buffer, e - c->buffer.data + 1);
+            s->remaining_payload = length;
+            if (!length)
+                return CNO_STATE_H1_TRAILERS;
+        }
+
+        while (s->remaining_payload) {
+            if (!c->buffer.size)
+                return CNO_OK;
+            struct cno_buffer_t b = CNO_BUFFER_VIEW(c->buffer);
+            if (b.size > s->remaining_payload)
+                b.size = s->remaining_payload;
+            if (CNO_FIRE(c, on_message_data, s->id, b.data, b.size))
+                return CNO_ERROR_UP();
+            cno_buffer_dyn_shift(&c->buffer, b.size);
+            s->remaining_payload -= b.size;
+        }
+
+        if (!s->reading_chunked)
+            return CNO_STATE_H1_TAIL;
+
+        size_t expect_crlf = c->buffer.size > 0 && c->buffer.data[0] == '\r';
+        if (c->buffer.size < 1 + expect_crlf)
+            return CNO_OK;
+        if (c->buffer.data[expect_crlf] != '\n')
+            return CNO_ERROR(PROTOCOL, "invalid h1 chunk terminator");
+        s->remaining_payload = (uint64_t) -1;
+        cno_buffer_dyn_shift(&c->buffer, 1 + expect_crlf);
     }
-    return c->state == CNO_STATE_H1_BODY ? CNO_STATE_H1_TAIL : CNO_STATE_H1_CHUNK_TAIL;
 }
 
 static int cno_when_h1_tail(struct cno_connection_t *c) {
@@ -1084,37 +1118,6 @@ static int cno_when_h1_tail(struct cno_connection_t *c) {
     if (s && (CNO_FIRE(c, on_message_tail, s->id, NULL) || cno_stream_end_by_read(c, s)))
         return CNO_ERROR_UP();
     return c->mode == CNO_HTTP2 ? CNO_STATE_H2_PREFACE : CNO_STATE_H1_HEAD;
-}
-
-static int cno_when_h1_chunk(struct cno_connection_t *c) {
-    const char *p = c->buffer.data;
-    const char *e = memchr(p, '\n', c->buffer.size);
-    if (e == NULL)
-        return c->buffer.size >= c->settings[CNO_LOCAL].max_frame_size
-             ? CNO_ERROR(PROTOCOL, "too many h1 chunk extensions") : CNO_OK;
-    size_t length = 0;
-    do {
-        int digit = '0' <= *p && *p <= '9' ? *p - '0'
-                  : 'A' <= *p && *p <= 'F' ? *p - 'A' + 10
-                  : 'a' <= *p && *p <= 'f' ? *p - 'a' + 10 : -1;
-        if (digit == -1 || length * 16 < length)
-            return CNO_ERROR(PROTOCOL, "invalid h1 chunk length");
-        length = length * 16 + digit;
-    } while (*++p != '\r' && *p != '\n' && *p != ';');
-    if (p[0] == '\r' && p[1] != '\n')
-        return CNO_ERROR(PROTOCOL, "invalid h1 chunk length separator");
-    cno_buffer_dyn_shift(&c->buffer, e - c->buffer.data + 1);
-    c->remaining_h1_payload = length;
-    return length ? CNO_STATE_H1_CHUNK_BODY : CNO_STATE_H1_TRAILERS;
-}
-
-static int cno_when_h1_chunk_tail(struct cno_connection_t *c) {
-    size_t expect_crlf = c->buffer.size > 0 && c->buffer.data[0] == '\r';
-    if (c->buffer.size < 1 + expect_crlf)
-        return CNO_OK;
-    if (c->buffer.data[expect_crlf] != '\n')
-        return CNO_ERROR(PROTOCOL, "invalid h1 chunk terminator");
-    return cno_buffer_dyn_shift(&c->buffer, 1 + expect_crlf), CNO_STATE_H1_CHUNK;
 }
 
 static int cno_when_h1_trailers(struct cno_connection_t *c) {
@@ -1155,9 +1158,6 @@ static cno_state_handler_t * const CNO_STATE_MACHINE[] = {
     &cno_when_h1_upgraded,
     &cno_when_h1_body,
     &cno_when_h1_tail,
-    &cno_when_h1_chunk,
-    &cno_when_h1_body,
-    &cno_when_h1_chunk_tail,
     &cno_when_h1_trailers,
 };
 

@@ -183,7 +183,6 @@ struct cno_connection_t {
     uint32_t goaway[2]; // sent by {them, us}
      int64_t window_recv;
      int64_t window_send;
-    uint64_t remaining_h1_payload; // can't be monitored in cno_stream_t because the stream might get reset
     struct cno_settings_t settings[2];
     struct cno_buffer_dyn_t buffer;
     struct cno_hpack_t decoder;
