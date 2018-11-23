@@ -949,13 +949,12 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
         : phr_parse_request(c->buffer.data, c->buffer.size,
             &m.method.data, &m.method.size, &m.path.data, &m.path.size, &minor,
             headers_phr, &m.headers_len, 1);
-    if (ok == -2) {
-        if (c->buffer.size >= (CNO_MAX_CONTINUATIONS + 1) * c->settings[CNO_LOCAL].max_frame_size)
-            return CNO_ERROR(PROTOCOL, "HTTP/1.x message too big");
-        return CNO_OK;
-    }
     if (ok == -1)
-        return CNO_ERROR(PROTOCOL, "bad HTTP/1.x message");
+        return CNO_ERROR(PROTOCOL, "HTTP/1.x message invalid");
+    if (ok == -2 && c->buffer.size >= (CNO_MAX_CONTINUATIONS + 1) * c->settings[CNO_LOCAL].max_frame_size)
+        return CNO_ERROR(PROTOCOL, "HTTP/1.x message too big");
+    if (ok == -2)
+        return CNO_OK;
     if (minor != 0 && minor != 1)
         // HTTP/1.0 is probably not really supported either tbh.
         return CNO_ERROR(PROTOCOL, "HTTP/1.%d not supported", minor);
@@ -1119,9 +1118,28 @@ static int cno_when_h1_chunk_tail(struct cno_connection_t *c) {
 }
 
 static int cno_when_h1_trailers(struct cno_connection_t *c) {
-    // TODO actually support trailers (they come before the tail).
-    int ret = cno_when_h1_chunk_tail(c);
-    return ret < 0 ? CNO_ERROR_UP() : ret > 0 ? CNO_STATE_H1_TAIL : CNO_OK;
+    struct cno_header_t headers[CNO_MAX_HEADERS];
+    struct cno_message_t m = { 0, {}, {}, headers, CNO_MAX_HEADERS };
+    struct phr_header headers_phr[CNO_MAX_HEADERS];
+    int ok = phr_parse_headers(c->buffer.data, c->buffer.size, headers_phr, &m.headers_len, 0);
+    if (ok == -1)
+        return CNO_ERROR(PROTOCOL, "HTTP/1.x trailers invalid");
+    if (ok == -2 && c->buffer.size >= (CNO_MAX_CONTINUATIONS + 1) * c->settings[CNO_LOCAL].max_frame_size)
+        return CNO_ERROR(PROTOCOL, "HTTP/1.x message too big");
+    if (ok == -2)
+        return CNO_OK;
+    for (size_t i = 0; i < m.headers_len; i++) {
+        headers[i] = (struct cno_header_t) {
+            .name  = { headers_phr[i].name,  headers_phr[i].name_len  },
+            .value = { headers_phr[i].value, headers_phr[i].value_len },
+        };
+    }
+    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[CNO_REMOTE]);
+    // See comment on stream existence in `cno_when_h1_body`.
+    if (CNO_FIRE(c, on_message_tail, s->id, &m) || cno_stream_end_by_read(c, s))
+        return CNO_ERROR_UP();
+    cno_buffer_dyn_shift(&c->buffer, (size_t) ok);
+    return CNO_STATE_H1_HEAD;
 }
 
 typedef int cno_state_handler_t(struct cno_connection_t *);
