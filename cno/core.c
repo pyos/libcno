@@ -762,7 +762,7 @@ void cno_init(struct cno_connection_t *c, enum CNO_CONNECTION_KIND kind) {
         .disallow_h2_upgrade = 1,
     };
     c->settings[CNO_LOCAL].enable_push &= c->client && c->cb_code && c->cb_code->on_message_push;
-    cno_hpack_init(&c->decoder, CNO_SETTINGS_INITIAL .header_table_size);
+    cno_hpack_init(&c->decoder, CNO_SETTINGS_INITIAL.header_table_size);
     cno_hpack_init(&c->encoder, CNO_SETTINGS_STANDARD.header_table_size);
 }
 
@@ -778,14 +778,11 @@ void cno_fini(struct cno_connection_t *c) {
 int cno_configure(struct cno_connection_t *c, const struct cno_settings_t *settings) {
     if (settings->enable_push != 0 && settings->enable_push != 1)
         return CNO_ERROR(ASSERTION, "enable_push neither 0 nor 1");
-
     if (settings->max_frame_size < 16384 || settings->max_frame_size > 16777215)
         return CNO_ERROR(ASSERTION, "maximum frame size out of bounds (2^14..2^24-1)");
-
     // If not yet in HTTP2 mode, `cno_when_h2_init` will send the SETTINGS frame.
     if (c->mode == CNO_HTTP2 && cno_h2_write_settings(c, &c->settings[CNO_LOCAL], settings))
         return CNO_ERROR_UP();
-
     c->decoder.limit_upper = settings->header_table_size;
     memcpy(&c->settings[CNO_LOCAL], settings, sizeof(*settings));
     return CNO_OK;
@@ -835,58 +832,47 @@ static int cno_when_h2_settings(struct cno_connection_t *c) {
 }
 
 static int cno_when_h2_frame(struct cno_connection_t *c) {
-    const uint8_t *base = (const uint8_t *) c->buffer.data;
-    if (c->buffer.size < 9)
-        return CNO_OK;
+    while (c->buffer.size >= 9) {
+        uint8_t *base = (uint8_t *) c->buffer.data;
+        size_t offset = (read4(c->buffer.data) >> 8) + 9;
+        if (c->settings[CNO_LOCAL].max_frame_size < offset - 9)
+            return cno_h2_fatal(c, CNO_RST_FRAME_SIZE_ERROR, "frame too big");
 
-    struct cno_buffer_t payload = { c->buffer.data + 9, read4(base) >> 8 };
-    if (payload.size > c->settings[CNO_LOCAL].max_frame_size)
-        return cno_h2_fatal(c, CNO_RST_FRAME_SIZE_ERROR, "frame too big");
-    if (c->buffer.size < payload.size + 9)
-        return CNO_OK;
-
-    struct cno_frame_t f = { base[3], base[4], read4(&base[5]) & 0x7FFFFFFFUL, payload };
-    if ((f.type == CNO_FRAME_HEADERS || f.type == CNO_FRAME_PUSH_PROMISE) && !(f.flags & CNO_FLAG_END_HEADERS)) {
-        size_t i = 0;
-        for (size_t offset = f.payload.size + 9;;) {
-            if (++i > CNO_MAX_CONTINUATIONS)
-                return cno_h2_fatal(c, CNO_RST_ENHANCE_YOUR_CALM, "too many CONTINUATIONs");
-            if (c->buffer.size < offset + 9)
-                return CNO_OK;
-
-            size_t size = read4(&base[offset]) >> 8;
-            if (size > c->settings[CNO_LOCAL].max_frame_size)
-                return cno_h2_fatal(c, CNO_RST_FRAME_SIZE_ERROR, "frame too big");
-            if (base[offset + 3] != CNO_FRAME_CONTINUATION)
-                return cno_h2_fatal(c, CNO_RST_PROTOCOL_ERROR, "expected CONTINUATION");
-            if (base[offset + 4] & ~CNO_FLAG_END_HEADERS)
-                return cno_h2_fatal(c, CNO_RST_PROTOCOL_ERROR, "invalid CONTINUATION flags");
-            if ((read4(&base[offset + 5]) & 0x7FFFFFFFUL) != f.stream)
-                return cno_h2_fatal(c, CNO_RST_PROTOCOL_ERROR, "invalid CONTINUATION stream");
-
-            if (c->buffer.size < offset + 9 + size)
-                return CNO_OK;
-            if (base[offset + 4])
-                break;
-            offset += size + 9;
+        struct cno_frame_t f = {base[3], base[4], read4(&base[5]) & 0x7FFFFFFFUL, {c->buffer.data + 9, offset - 9}};
+        if (f.type == CNO_FRAME_HEADERS || f.type == CNO_FRAME_PUSH_PROMISE) {
+            for (size_t size, i = 0; !(f.flags & CNO_FLAG_END_HEADERS); offset += size + 9) {
+                if (++i > CNO_MAX_CONTINUATIONS)
+                    return cno_h2_fatal(c, CNO_RST_ENHANCE_YOUR_CALM, "too many CONTINUATIONs");
+                if (c->buffer.size < offset + 9)
+                    return CNO_OK;
+                size = read4(&base[offset]) >> 8;
+                if (size > c->settings[CNO_LOCAL].max_frame_size)
+                    return cno_h2_fatal(c, CNO_RST_FRAME_SIZE_ERROR, "frame too big");
+                if (base[offset + 3] != CNO_FRAME_CONTINUATION)
+                    return cno_h2_fatal(c, CNO_RST_PROTOCOL_ERROR, "expected CONTINUATION");
+                if (base[offset + 4] & ~CNO_FLAG_END_HEADERS)
+                    return cno_h2_fatal(c, CNO_RST_PROTOCOL_ERROR, "invalid CONTINUATION flags");
+                if ((read4(&base[offset + 5]) & 0x7FFFFFFFUL) != f.stream)
+                    return cno_h2_fatal(c, CNO_RST_PROTOCOL_ERROR, "invalid CONTINUATION stream");
+                f.flags |= base[offset + 4];
+            }
         }
-        f.flags |= CNO_FLAG_END_HEADERS;
+        if (c->buffer.size < offset)
+            return CNO_OK;
+        // XXX might be better to concatenate right after validating, but that could trip up
+        //     the length check if more data is needed afterwards.
+        for (size_t size, p = f.payload.size + 9; p < offset; p += size + 9, f.payload.size += size)
+            memmove(&base[f.payload.size + 9], &base[p + 9], size = read4(&base[p]) >> 8);
 
-        size_t offset = f.payload.size + 9;
-        for (size_t size; i--; f.payload.size += size, offset += size + 9)
-            memmove((char *) f.payload.data + f.payload.size, base + offset + 9, size = read4(&base[offset]) >> 8);
-        memmove((char *) f.payload.data + f.payload.size, base + offset, c->buffer.size - offset);
-        c->buffer.size -= (offset - f.payload.size - 9);
+        if (CNO_FIRE(c, on_frame, &f))
+            return CNO_ERROR_UP();
+        struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, f.stream);
+        // >Implementations MUST ignore and discard any frame that has a type that is unknown.
+        if (f.type < CNO_FRAME_UNKNOWN && CNO_FRAME_HANDLERS[f.type](c, s, &f))
+            return CNO_ERROR_UP();
+        cno_buffer_dyn_shift(&c->buffer, offset);
     }
-
-    cno_buffer_dyn_shift(&c->buffer, f.payload.size + 9);
-    if (CNO_FIRE(c, on_frame, &f))
-        return CNO_ERROR_UP();
-    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, f.stream);
-    // >Implementations MUST ignore and discard any frame that has a type that is unknown.
-    if (f.type < CNO_FRAME_UNKNOWN && CNO_FRAME_HANDLERS[f.type](c, s, &f))
-        return CNO_ERROR_UP();
-    return CNO_STATE_H2_FRAME;
+    return CNO_OK;
 }
 
 static size_t cno_remove_chunked_te(struct cno_buffer_t *buf) {
