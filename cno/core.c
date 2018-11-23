@@ -664,7 +664,7 @@ static int cno_h2_on_settings(struct cno_connection_t *c,
             cfg->array[setting - 1] = read4(p + 2);
     }
 
-    if (cfg->enable_push > 1)
+    if (cfg->enable_push != 0 && (c->client || cfg->enable_push != 1))
         return cno_h2_fatal(c, CNO_RST_PROTOCOL_ERROR, "enable_push out of bounds");
     if (cfg->initial_window_size > 0x7FFFFFFFL)
         return cno_h2_fatal(c, CNO_RST_FLOW_CONTROL_ERROR, "initial_window_size too big");
@@ -754,17 +754,14 @@ static const struct cno_settings_t CNO_SETTINGS_INITIAL = {{{
 
 void cno_init(struct cno_connection_t *c, enum CNO_CONNECTION_KIND kind) {
     *c = (struct cno_connection_t) {
-        .client      = CNO_CLIENT == kind,
-        .goaway      = {(uint32_t)-1, (uint32_t)-1},
-        .window      = {CNO_SETTINGS_STANDARD.initial_window_size,
-                        CNO_SETTINGS_STANDARD.initial_window_size},
-        .settings    = { /* remote = */ CNO_SETTINGS_CONSERVATIVE,
-                         /* local  = */ CNO_SETTINGS_INITIAL, },
+        .client   = CNO_CLIENT == kind,
+        .goaway   = {(uint32_t)-1, (uint32_t)-1},
+        .window   = {CNO_SETTINGS_STANDARD.initial_window_size,
+                     CNO_SETTINGS_STANDARD.initial_window_size},
+        .settings = {CNO_SETTINGS_CONSERVATIVE, CNO_SETTINGS_INITIAL},
         .disallow_h2_upgrade = 1,
     };
-    if (c->client && (!c->cb_code || !c->cb_code->on_message_push))
-        c->settings[CNO_LOCAL].enable_push = 0;
-
+    c->settings[CNO_LOCAL].enable_push &= c->client && c->cb_code && c->cb_code->on_message_push;
     cno_hpack_init(&c->decoder, CNO_SETTINGS_INITIAL .header_table_size);
     cno_hpack_init(&c->encoder, CNO_SETTINGS_STANDARD.header_table_size);
 }
@@ -773,7 +770,6 @@ void cno_fini(struct cno_connection_t *c) {
     cno_buffer_dyn_clear(&c->buffer);
     cno_hpack_clear(&c->encoder);
     cno_hpack_clear(&c->decoder);
-
     for (size_t i = 0; i < CNO_STREAM_BUCKETS; i++)
         for (struct cno_stream_t *s; (s = c->streams[i]); free(s))
             c->streams[i] = s->next;
