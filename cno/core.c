@@ -1080,36 +1080,34 @@ static int cno_when_h1_tail(struct cno_connection_t *c) {
 }
 
 static int cno_when_h1_chunk(struct cno_connection_t *c) {
-    const char *eol = memchr(c->buffer.data, '\n', c->buffer.size);
-    if (eol == NULL)
+    const char *p = c->buffer.data;
+    const char *e = memchr(p, '\n', c->buffer.size);
+    if (e == NULL)
         return c->buffer.size >= c->settings[CNO_LOCAL].max_frame_size
              ? CNO_ERROR(PROTOCOL, "too many h1 chunk extensions") : CNO_OK;
-    const char *p = c->buffer.data;
     size_t length = 0;
     do {
-        size_t prev = length;
-        length = length * 16 + ('0' <= *p && *p <= '9' ? *p - '0' :
-                                'A' <= *p && *p <= 'F' ? *p - 'A' + 10 :
-                                'a' <= *p && *p <= 'f' ? *p - 'a' + 10 : -1);
-        if (length < prev)
+        int digit = '0' <= *p && *p <= '9' ? *p - '0'
+                  : 'A' <= *p && *p <= 'F' ? *p - 'A' + 10
+                  : 'a' <= *p && *p <= 'f' ? *p - 'a' + 10 : -1;
+        if (digit == -1 || length * 16 < length)
             return CNO_ERROR(PROTOCOL, "invalid h1 chunk length");
+        length = length * 16 + digit;
     } while (*++p != '\r' && *p != '\n' && *p != ';');
-    if (*p == '\r' && eol != p + 1)
+    if (p[0] == '\r' && p[1] != '\n')
         return CNO_ERROR(PROTOCOL, "invalid h1 chunk length separator");
-    p = eol + 1;
-    cno_buffer_dyn_shift(&c->buffer, p - c->buffer.data);
+    cno_buffer_dyn_shift(&c->buffer, e - c->buffer.data + 1);
     c->remaining_h1_payload = length;
     return length ? CNO_STATE_H1_CHUNK_BODY : CNO_STATE_H1_TRAILERS;
 }
 
 static int cno_when_h1_chunk_tail(struct cno_connection_t *c) {
-    if (c->buffer.size < 1 || (c->buffer.data[0] == '\r' && c->buffer.size < 2))
+    size_t expect_crlf = c->buffer.size > 0 && c->buffer.data[0] == '\r';
+    if (c->buffer.size < 1 + expect_crlf)
         return CNO_OK;
-    if (c->buffer.data[0] == '\n')
-        return cno_buffer_dyn_shift(&c->buffer, 1), CNO_STATE_H1_CHUNK;
-    if (c->buffer.data[0] == '\r' && c->buffer.data[1] == '\n')
-        return cno_buffer_dyn_shift(&c->buffer, 2), CNO_STATE_H1_CHUNK;
-    return CNO_ERROR(PROTOCOL, "invalid h1 chunk terminator");
+    if (c->buffer.data[expect_crlf] != '\n')
+        return CNO_ERROR(PROTOCOL, "invalid h1 chunk terminator");
+    return cno_buffer_dyn_shift(&c->buffer, 1 + expect_crlf), CNO_STATE_H1_CHUNK;
 }
 
 static int cno_when_h1_trailers(struct cno_connection_t *c) {
