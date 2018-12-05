@@ -949,6 +949,8 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
         // HTTP/1.0 clients *can* specify `connection: keep-alive`, but screw that.
         *it++ = (struct cno_header_t) { CNO_BUFFER_STRING("connection"), CNO_BUFFER_STRING("close"), 0 };
     for (size_t i = 0; i < m.headers_len; i++) {
+        if (!headers_phr[i].name)
+            return CNO_ERROR(PROTOCOL, "HTTP/1.x line folding rejected");
         *it = (struct cno_header_t) {
             .name  = { headers_phr[i].name,  headers_phr[i].name_len  },
             .value = { headers_phr[i].value, headers_phr[i].value_len },
@@ -1113,6 +1115,8 @@ static int cno_when_h1_trailers(struct cno_connection_t *c) {
     if (ok == -2)
         return CNO_OK;
     for (size_t i = 0; i < m.headers_len; i++) {
+        if (!headers_phr[i].name)
+            return CNO_ERROR(PROTOCOL, "HTTP/1.x line folding rejected");
         headers[i] = (struct cno_header_t) {
             .name  = { headers_phr[i].name,  headers_phr[i].name_len  },
             .value = { headers_phr[i].value, headers_phr[i].value_len },
