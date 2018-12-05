@@ -1,14 +1,5 @@
 import os
-import textwrap
 import itertools
-
-
-#    1 2 . 4 . . . 8 <-- impossible
-#    ^     ^
-# slow     +14 KB worth of constants but faster
-HUFFMAN_INPUT_BITS = 4
-HUFFMAN_ACCEPT = 0x01
-HUFFMAN_APPEND = 0x02
 
 
 HUFFMAN = [  # char code -> (right-aligned huffman code, bit length)
@@ -114,21 +105,13 @@ STATIC_TABLE = [
 ]
 
 
-def huffman_dfa(table, bits_per_step):
-    '''
-        Initial state:    `(0, 0, HUFFMAN_ACCEPT)`
-        Transition rule:  `state = states[state.next | N_more_bits_of_input]`
-        Accepting states: `state.flags & HUFFMAN_ACCEPT`
-        Decoded a byte:   `state.flags & HUFFMAN_APPEND`
-    '''
+def huffman_dfa(table):
     def branch(xs):
         if not xs:
             return None
-
         for char, _, msb in xs:
             if not msb:
                 return char
-
         return (branch([(char, code, msb >> 1) for char, code, msb in xs if not code & msb]),
                 branch([(char, code, msb >> 1) for char, code, msb in xs if     code & msb]))
 
@@ -139,53 +122,41 @@ def huffman_dfa(table, bits_per_step):
         assert isinstance(tree, tuple), 'padding would emit a character or throw an error'
         accept.append(tree)
         tree = tree[1]
+    assert None not in accept, 'invalid state is accepting'
 
     states = [root]
     for state in states:
-        for bits in itertools.product((0, 1), repeat=bits_per_step):
-            char, next = None, state
-
+        for bits in itertools.product((0, 1), repeat=8):
+            char1, char2, next = None, None, state
             for bit in bits:
                 if next is None:
                     break
-
                 next = next[bit]
                 if isinstance(next, int):
-                    assert char is None, 'a single step would yield multiple characters'
-                    char, next = next, root
-
+                    assert char1 is None, 'a single step would yield > 2 characters'
+                    char1, char2, next = char2, next, root
             if next not in states:
                 states.append(next)
-
-            yield (states.index(next) << bits_per_step, char or 0,
-                HUFFMAN_ACCEPT * (next in accept) |
-                HUFFMAN_APPEND * (char is not None))
+            yield (states.index(next), int(next in accept), int(char1 is not None), int(char2 is not None), char1 or 0, char2 or 0)
 
 
 with open(os.path.join(os.path.dirname(__file__), 'hpack-data.h'), 'w') as fd:
-    fd.write(
-        '#pragma once\n' + textwrap.dedent('''
-        // make cno/hpack-data.h
-        struct cno_huffman_table_t {{ uint32_t code; uint8_t bits; }};
-        struct cno_huffman_state_t {{ uint16_t next; uint8_t byte; uint8_t flags; }};
-
-        enum {{
-            CNO_HPACK_STATIC_TABLE_SIZE = {},
-            CNO_HUFFMAN_ACCEPT = {},
-            CNO_HUFFMAN_APPEND = {},
-            CNO_HUFFMAN_INPUT_BITS = {},
-            CNO_HUFFMAN_MIN_BITS_PER_CHAR = {},
-        }};
-
-        static const struct cno_header_t CNO_HPACK_STATIC_TABLE[] = {{ {} }};
-        static const struct cno_huffman_table_t CNO_HUFFMAN_TABLE[] = {{ {} }};
-        static const struct cno_huffman_state_t CNO_HUFFMAN_STATE[] = {{ {} }};
-        static const struct cno_huffman_state_t CNO_HUFFMAN_STATE_INIT = {{ 0, 0, CNO_HUFFMAN_ACCEPT }};
-        ''').format(
-            len(STATIC_TABLE), HUFFMAN_ACCEPT, HUFFMAN_APPEND, HUFFMAN_INPUT_BITS,
-            min(bits for code, bits in HUFFMAN),
-            ','.join('{{"%s",%s},{"%s",%s},0}' % (k, len(k), v, len(v)) for k, v in STATIC_TABLE),
-            ','.join('{%s,%s}'    % h for h in HUFFMAN),
-            ','.join('{%s,%s,%s}' % h for h in huffman_dfa(HUFFMAN, HUFFMAN_INPUT_BITS)),
-        )
+    print(
+        '#pragma once',
+        '// make cno/hpack-data.h',
+        'enum {',
+        '    CNO_HPACK_STATIC_TABLE_SIZE = %s,' % len(STATIC_TABLE),
+        '    CNO_HUFFMAN_MIN_BITS_PER_CHAR = %s,' % min(bits for code, bits in HUFFMAN),
+        '};',
+        'struct cno_huffman_table_t { uint32_t code : 32, bits : 8; };',
+        'struct cno_huffman_state_t { uint32_t next : 13, accept : 1, emit1 : 1, emit2 : 1, byte1 : 8, byte2 : 8; };',
+        'static const struct cno_header_t CNO_HPACK_STATIC_TABLE[] = {%s};'
+            % ','.join('{{"%s",%s},{"%s",%s},0}' % (k, len(k), v, len(v)) for k, v in STATIC_TABLE),
+        'static const struct cno_huffman_table_t CNO_HUFFMAN_TABLE[] = {%s};'
+            % ','.join('{%s,%s}' % h for h in HUFFMAN),
+        'static const struct cno_huffman_state_t CNO_HUFFMAN_STATE[] = {%s};'
+            % ','.join('{%s,%s,%s,%s,%s,%s}' % h for h in huffman_dfa(HUFFMAN)),
+        'static const struct cno_huffman_state_t CNO_HUFFMAN_STATE_INIT = {.accept = 1};',
+        sep='\n',
+        file=fd
     )

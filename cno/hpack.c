@@ -169,15 +169,13 @@ static int cno_hpack_decode_string(struct cno_buffer_t *source, struct cno_buffe
 
         struct cno_huffman_state_t state = CNO_HUFFMAN_STATE_INIT;
         for (const uint8_t *p = (const uint8_t *) source->data, *e = length + p; p != e; p++) {
-            uint8_t chr = *p;
-            for (int i = 0; i < 8; i += CNO_HUFFMAN_INPUT_BITS, chr <<= CNO_HUFFMAN_INPUT_BITS) {
-                state = CNO_HUFFMAN_STATE[state.next | (chr >> (8 - CNO_HUFFMAN_INPUT_BITS))];
-                if (state.flags & CNO_HUFFMAN_APPEND)
-                    *ptr++ = state.byte;
-            }
+            state = CNO_HUFFMAN_STATE[state.next << 8 | *p];
+            if (state.emit1)
+                *ptr++ = state.byte1;
+            if (state.emit2)
+                *ptr++ = state.byte2;
         }
-
-        if (!(state.flags & CNO_HUFFMAN_ACCEPT)) {
+        if (!state.accept) {
             free(buf);
             return CNO_ERROR(PROTOCOL, "invalid or truncated Huffman code");
         }
