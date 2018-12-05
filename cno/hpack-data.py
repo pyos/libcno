@@ -148,12 +148,13 @@ with open(os.path.join(os.path.dirname(__file__), 'hpack-data.h'), 'w') as fd:
         '    CNO_HPACK_STATIC_TABLE_SIZE = %s,' % len(STATIC_TABLE),
         '    CNO_HUFFMAN_MIN_BITS_PER_CHAR = %s,' % min(bits for code, bits in HUFFMAN),
         '};',
-        'struct cno_huffman_table_t { uint32_t code : 32, bits : 8; };',
         'struct cno_huffman_state_t { uint32_t next : 13, accept : 1, emit1 : 1, emit2 : 1, byte1 : 8, byte2 : 8; };',
         'static const struct cno_header_t CNO_HPACK_STATIC_TABLE[] = {%s};'
             % ','.join('{{"%s",%s},{"%s",%s},0}' % (k, len(k), v, len(v)) for k, v in STATIC_TABLE),
-        'static const struct cno_huffman_table_t CNO_HUFFMAN_TABLE[] = {%s};'
-            % ','.join('{%s,%s}' % h for h in HUFFMAN),
+        'static const uint32_t CNO_HUFFMAN_ENC[] = {%s};'
+            % ','.join('%sUL' % code for code, bits in HUFFMAN),
+        'static const uint8_t CNO_HUFFMAN_LEN[] = {%s};'
+            % ','.join(str(bits) for code, bits in HUFFMAN),
         'static const struct cno_huffman_state_t CNO_HUFFMAN_STATE[] = {%s};'
             % ','.join('{%s,%s,%s,%s,%s,%s}' % h for h in huffman_dfa(HUFFMAN)),
         'static const struct cno_huffman_state_t CNO_HUFFMAN_STATE_INIT = {.accept = 1};',

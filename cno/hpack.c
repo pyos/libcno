@@ -282,7 +282,7 @@ static int cno_hpack_encode_uint(struct cno_buffer_dyn_t *buf, uint8_t prefix, u
 static int cno_hpack_encode_string(struct cno_buffer_dyn_t *buf, const struct cno_buffer_t s) {
     size_t total = 0;
     for (const uint8_t *p = (const uint8_t *) s.data, *e = p + s.size; p != e; p++)
-        total += CNO_HUFFMAN_TABLE[*p].bits;
+        total += CNO_HUFFMAN_LEN[*p];
     total = (total + 7) / 8;
 
     if (total >= s.size)
@@ -295,14 +295,23 @@ static int cno_hpack_encode_string(struct cno_buffer_dyn_t *buf, const struct cn
     uint64_t code = 0;
     int bits = 0;
     for (const uint8_t *p = (const uint8_t *) s.data, *e = p + s.size; p != e; p++) {
-        const struct cno_huffman_table_t it = CNO_HUFFMAN_TABLE[*p];
-        code  = it.code | code << it.bits;
-        bits += it.bits;
-        while (bits >= 8)
-            *out++ = code >> (bits -= 8);
+        code  = CNO_HUFFMAN_ENC[*p] | code << CNO_HUFFMAN_LEN[*p];
+        bits += CNO_HUFFMAN_LEN[*p];
+        if (bits >= 32) {
+            uint32_t part = code >> (bits -= 32);
+            // FIXME? this is not compiled into a single move because of misalignment
+            *out++ = part >> 24;
+            *out++ = part >> 16;
+            *out++ = part >> 8;
+            *out++ = part;
+        }
     }
-    if (bits)
-        *out++ = (0xff | code << 8) >> bits;
+    // At most 31 bits left to flush
+    if (bits >= 8) *out++ = code >> (bits -= 8);
+    if (bits >= 8) *out++ = code >> (bits -= 8);
+    if (bits >= 8) *out++ = code >> (bits -= 8);
+    // The remaining byte must be padded with ones
+    if (bits) *out++ = 0xff >> bits | code << (8 - bits);
 
     buf->size += total;
     return CNO_OK;
