@@ -252,14 +252,17 @@ int cno_hpack_decode(struct cno_hpack_t *state, struct cno_buffer_t buf, struct 
         return CNO_ERROR(PROTOCOL, "current decoder state size limit is higher than the upper bound");
 
     size_t read = 0, limit = *n;
-    for (; buf.size; rs++, read++) {
-        if (read == limit || cno_hpack_decode_one(state, &buf, rs)) {
-            if (read != limit)
-                cno_hpack_free_header(rs);
-            while (read--)
-                cno_hpack_free_header(--rs);
-            return read == limit ? CNO_ERROR(PROTOCOL, "header list too long") : CNO_ERROR_UP();
-        }
+    while (buf.size && read < limit) {
+        if (!cno_hpack_decode_one(state, &buf, &rs[read++]))
+            continue;
+        while (read)
+            cno_hpack_free_header(&rs[--read]);
+        return CNO_ERROR_UP();
+    }
+    if (buf.size) {
+        while (read)
+            cno_hpack_free_header(&rs[--read]);
+        return CNO_ERROR(PROTOCOL, "header list too long");
     }
     *n = read;
     return CNO_OK;
