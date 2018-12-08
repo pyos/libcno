@@ -1171,15 +1171,18 @@ int cno_eof(struct cno_connection_t *c) {
     if (upgraded && cno_when_h1_tail(c) < 0)
         return CNO_ERROR_UP();
     c->state = CNO_STATE_CLOSED;
-    int unclean = 0;
+    int wantR = 0, wantW = 0;
     for (size_t i = 0; i < CNO_STREAM_BUCKETS; i++) {
         while (c->streams[i]) {
+            wantR += (c->streams[i]->r_state != CNO_STREAM_CLOSED);
+            wantW += (c->streams[i]->w_state != CNO_STREAM_CLOSED);
             if (cno_stream_end(c, c->streams[i]))
                 return CNO_ERROR_UP();
-            unclean = 1; // either didn't finish reading, or didn't finish writing
         }
     }
-    return unclean && !upgraded ? CNO_ERROR(PROTOCOL, "unclean http termination") : CNO_FIRE(c, on_close);
+    return (wantR || wantW) && !upgraded
+        ? CNO_ERROR(PROTOCOL, "%d read-open + %d write-open streams on EOF", wantR, wantW)
+        : CNO_FIRE(c, on_close);
 }
 
 uint32_t cno_next_stream(const struct cno_connection_t *c) {
