@@ -828,6 +828,7 @@ static int cno_when_h2_settings(struct cno_connection_t *c) {
         return CNO_OK;
     // Now that we know the *actual* values, they should be applied as deltas to this.
     c->settings[CNO_REMOTE] = CNO_SETTINGS_INITIAL;
+    c->settings[CNO_REMOTE].enable_push &= !c->client;
     return CNO_STATE_H2_FRAME;
 }
 
