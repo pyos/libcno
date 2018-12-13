@@ -212,7 +212,13 @@ static int cno_h2_write_settings(struct cno_connection_t *c,
         memcpy(ptr++, buf.data, buf.size);
     }
     struct cno_frame_t f = { CNO_FRAME_SETTINGS, 0, 0, { (char *) payload, (ptr - payload) * 6 } };
-    return cno_frame_write(c, &f);
+    struct cno_frame_t w = { CNO_FRAME_WINDOW_UPDATE, 0, 0,
+        PACK(I32(new->initial_window_size - old->initial_window_size)) };
+    if (cno_frame_write(c, &f))
+        return CNO_ERROR_UP();
+    if (new->initial_window_size > old->initial_window_size && cno_frame_write(c, &w))
+        return CNO_ERROR_UP();
+    return CNO_OK;
 }
 
 // Call `on_writev` with a GOAWAY frame containing the specified code.
