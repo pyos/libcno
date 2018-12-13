@@ -218,6 +218,7 @@ static int cno_h2_write_settings(struct cno_connection_t *c,
         return CNO_ERROR_UP();
     if (new->initial_window_size > old->initial_window_size && cno_frame_write(c, &w))
         return CNO_ERROR_UP();
+    c->window[CNO_LOCAL] += (new->initial_window_size - old->initial_window_size);
     return CNO_OK;
 }
 
@@ -1519,11 +1520,13 @@ int cno_open_flow(struct cno_connection_t *c, uint32_t sid, uint32_t delta) {
         return CNO_OK;
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
     // Disregard changes in reset streams' window size.
-    // TODO: don't ignore connection flow updates (sid = 0).
-    if (!s)
+    if (sid && !s)
         return CNO_OK;
     if (cno_frame_write(c, &(struct cno_frame_t){ CNO_FRAME_WINDOW_UPDATE, 0, sid, PACK(I32(delta)) }))
         return CNO_ERROR_UP();
-    s->window[CNO_REMOTE] += delta;
+    if (sid)
+        s->window[CNO_LOCAL] += delta;
+    else
+        c->window[CNO_LOCAL] += delta;
     return CNO_OK;
 }
