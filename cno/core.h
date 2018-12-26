@@ -89,6 +89,11 @@ struct cno_message_t {
     size_t headers_len;
 };
 
+struct cno_tail_t {
+    struct cno_header_t *headers;
+    size_t headers_len;
+};
+
 struct cno_stream_t;
 
 struct cno_settings_t {
@@ -136,7 +141,7 @@ struct cno_vtable_t {
     // A chunk of the payload has arrived.
     int (*on_message_data)(void *, uint32_t id, const char *, size_t);
     // All chunks of the payload (and possibly trailers) have arrived.
-    int (*on_message_tail)(void *, uint32_t id, const struct cno_message_t * /* nullable */ trailers);
+    int (*on_message_tail)(void *, uint32_t id, const struct cno_tail_t * /* NULL if none */);
     // An HTTP 2 frame has been received.
     int (*on_frame)(void *, const struct cno_frame_t *);
     // An HTTP 2 frame will be sent with `on_writev` soon.
@@ -239,6 +244,12 @@ int cno_write_push(struct cno_connection_t *, uint32_t stream, const struct cno_
 // due to HTTP 2 flow control. If that's the case, wait for an `on_flow_increase` on
 // the same stream (or on stream 0) before retrying.
 int cno_write_data(struct cno_connection_t *, uint32_t stream, const char *, size_t, int final);
+
+// Write the trailers and close the stream. In h1 mode, only works if `content-length`
+// was not specified due to protocol limitations; otherwise, the trailers are silently
+// dropped. (The standard says they're optional!) For `NULL` or an empty list of trailers,
+// equivalent to `cno_write_data(conn, stream, NULL, 0, 1)`.
+int cno_write_tail(struct cno_connection_t *, uint32_t stream, const struct cno_tail_t *);
 
 // Reject a stream. Has no effect in HTTP 1 mode (in which case you should simply
 // close the transport) or if the stream has already finished because a response

@@ -13,9 +13,14 @@ def _str(b):
     return str(ffi.buffer(b.data, b.size), 'utf-8')
 
 
+def _tail(t):
+    '''struct cno_tail_t -> [(str, str)]'''
+    return [(_str(h.name), _str(h.value)) for h in t.headers[0:t.headers_len]]
+
+
 def _msg(m):
     '''struct cno_message_t -> (str, str, [(str, str)])'''
-    return _str(m.method), _str(m.path), [(_str(h.name), _str(h.value)) for h in m.headers[0:m.headers_len]]
+    return _str(m.method), _str(m.path), _tail(m)
 
 
 def _buf(b, s):
@@ -48,7 +53,7 @@ except NameError:
         'on_stream_end':    lambda self, id: self.on_stream_end(id),
         'on_flow_increase': lambda self, id: self.on_flow_increase(id),
         'on_message_head':  lambda self, id, m: self.on_message_head(id, m.code, *_msg(m)),
-        'on_message_tail':  lambda self, id, m: self.on_message_tail(id, _msg(m)[2] if m else None),
+        'on_message_tail':  lambda self, id, t: self.on_message_tail(id, _tail(t) if t else None),
         'on_message_push':  lambda self, id, m, parent: self.on_message_push(id, parent, *_msg(m)),
         'on_message_data':  lambda self, id, data, size: self.on_message_data(id, ffi.unpack(data, size)),
         'on_frame':         lambda self, frame: self.on_frame(frame),

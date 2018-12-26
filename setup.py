@@ -27,7 +27,7 @@ def make_ffi(root):
                 int on_stream_end    (void *, uint32_t);
                 int on_flow_increase (void *, uint32_t);
                 int on_message_head  (void *, uint32_t, const struct cno_message_t *);
-                int on_message_tail  (void *, uint32_t, const struct cno_message_t *);
+                int on_message_tail  (void *, uint32_t, const struct cno_tail_t *);
                 int on_message_push  (void *, uint32_t, const struct cno_message_t *, uint32_t);
                 int on_message_data  (void *, uint32_t, const char *, size_t);
                 int on_frame         (void *, const struct cno_frame_t *);

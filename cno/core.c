@@ -309,13 +309,13 @@ static int cno_h2_on_invalid_stream(struct cno_connection_t *c, struct cno_frame
 // Handle an END_STREAM flag, valid on HEADERS and DATA frames.
 static int cno_h2_on_end_stream(struct cno_connection_t *c,
                                 struct cno_stream_t     *s,
-                                struct cno_message_t    *trailers)
+                                struct cno_message_t    *m)
 {
     // FIXME what if the sum of DATA's frames length is 1 greater than content-length?
     if (s->remaining_payload && s->remaining_payload != (uint64_t) -1)
         // Had content-length which does not match up to the sum of data frame's lengths.
         return cno_h2_rst(c, s, CNO_RST_PROTOCOL_ERROR);
-    if (CNO_FIRE(c, on_message_tail, s->id, trailers))
+    if (CNO_FIRE(c, on_message_tail, s->id, m ? &((struct cno_tail_t){m->headers, m->headers_len}) : NULL))
         return CNO_ERROR_UP();
     return cno_stream_end_by_read(c, s);
 }
@@ -1113,16 +1113,16 @@ static int cno_when_h1_tail(struct cno_connection_t *c) {
 
 static int cno_when_h1_trailers(struct cno_connection_t *c) {
     struct cno_header_t headers[CNO_MAX_HEADERS];
-    struct cno_message_t m = { 0, {}, {}, headers, CNO_MAX_HEADERS };
+    struct cno_tail_t t = { headers, CNO_MAX_HEADERS };
     struct phr_header headers_phr[CNO_MAX_HEADERS];
-    int ok = phr_parse_headers(c->buffer.data, c->buffer.size, headers_phr, &m.headers_len, 0);
+    int ok = phr_parse_headers(c->buffer.data, c->buffer.size, headers_phr, &t.headers_len, 0);
     if (ok == -1)
         return CNO_ERROR(PROTOCOL, "HTTP/1.x trailers invalid");
     if (ok == -2 && c->buffer.size >= (CNO_MAX_CONTINUATIONS + 1) * c->settings[CNO_LOCAL].max_frame_size)
         return CNO_ERROR(PROTOCOL, "HTTP/1.x message too big");
     if (ok == -2)
         return CNO_OK;
-    for (size_t i = 0; i < m.headers_len; i++) {
+    for (size_t i = 0; i < t.headers_len; i++) {
         if (!headers_phr[i].name)
             return CNO_ERROR(PROTOCOL, "HTTP/1.x line folding rejected");
         headers[i] = (struct cno_header_t) {
@@ -1132,7 +1132,7 @@ static int cno_when_h1_trailers(struct cno_connection_t *c) {
     }
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, c->last_stream[CNO_REMOTE]);
     // See comment on stream existence in `cno_when_h1_body`.
-    if (CNO_FIRE(c, on_message_tail, s->id, &m) || cno_stream_end_by_read(c, s))
+    if (CNO_FIRE(c, on_message_tail, s->id, &t) || cno_stream_end_by_read(c, s))
         return CNO_ERROR_UP();
     cno_buffer_dyn_shift(&c->buffer, (size_t) ok);
     return CNO_STATE_H1_HEAD;
@@ -1372,6 +1372,21 @@ static int cno_h2_write_head(struct cno_connection_t *c, struct cno_stream_t *s,
     return cno_buffer_dyn_clear(&enc), CNO_OK;
 }
 
+static int cno_check_headers(const struct cno_header_t *h, size_t size, int trailers) {
+    for (; size--; h++) {
+        if (h->name.size == 0)
+            return CNO_ERROR(ASSERTION, "attempting to send a header with no name");
+        if (trailers && h->name.data[0] == ':')
+            return CNO_ERROR(ASSERTION, "pseudo-header in trailers");
+        for (uint8_t *p = (uint8_t *) h->name.data, *e = p + h->name.size; p != e; p++)
+            if (*p != ':' && CNO_HEADER_TRANSFORM[*p] != *p)
+                // Only in h2, actually; h1 is case-insensitive. Better be conservative, though.
+                // (Also, there are some case-sensitive comparisons in `cno_h1_write_head`.)
+                return CNO_ERROR(ASSERTION, "invalid character '%c' in header name; should be a lowercase letter", *p);
+    }
+    return CNO_OK;
+}
+
 int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_message_t *m, int final) {
     if (c->state == CNO_STATE_CLOSED || sid > c->goaway[!cno_stream_is_local(c, sid)])
         return CNO_ERROR(DISCONNECT, "connection closed");
@@ -1383,12 +1398,8 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
         return CNO_ERROR(ASSERTION, "1xx codes cannot end the stream");
     if (m->code == 101 && c->mode == CNO_HTTP2)
         return CNO_ERROR(ASSERTION, "cannot switch protocols over an http2 connection");
-    for (const struct cno_header_t *h = m->headers, *he = h + m->headers_len; h != he; h++)
-        for (const char *p = h->name.data, *e = p + h->name.size; p != e; p++)
-            if (isupper(*p))
-                // Only in h2, actually; h1 is case-insensitive. Better be conservative, though.
-                // (Also, there are some case-sensitive comparisons in `cno_h1_write_head`.)
-                return CNO_ERROR(ASSERTION, "header names should be lowercase");
+    if (cno_check_headers(m->headers, m->headers_len, 0))
+        return CNO_ERROR_UP();
 
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
     if (c->client && !s && !(s = cno_stream_new(c, sid, CNO_LOCAL)))
@@ -1495,6 +1506,44 @@ int cno_write_data(struct cno_connection_t *c, uint32_t sid, const char *data, s
     if (final && cno_stream_end_by_write(c, s))
         return CNO_ERROR_UP();
     return (int)size;
+}
+
+int cno_write_tail(struct cno_connection_t *c, uint32_t sid, const struct cno_tail_t *t) {
+    if (!t || !t->headers_len)
+        // When I said "equivalent", I meant it: even the frame is DATA instead of HEADERS.
+        return cno_write_data(c, sid, NULL, 0, 1);
+
+    if (c->state == CNO_STATE_CLOSED)
+        return CNO_ERROR(DISCONNECT, "connection closed");
+    if (cno_check_headers(t->headers, t->headers_len, 1))
+        return CNO_ERROR_UP();
+
+    struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
+    if (!s)
+        return CNO_ERROR(INVALID_STREAM, "this stream is closed");
+    if (s->w_state == CNO_STREAM_HEADERS)
+        return CNO_ERROR(ASSERTION, "did not send headers on this stream");
+    if (s->w_state == CNO_STREAM_CLOSED)
+        return CNO_ERROR(ASSERTION, "already finished writing on this stream");
+
+    if (c->mode == CNO_HTTP2) {
+        struct cno_buffer_dyn_t enc = {};
+        if (cno_hpack_encode(&c->encoder, &enc, t->headers, t->headers_len)
+         || cno_frame_write_head(c, &(struct cno_frame_t){ CNO_FRAME_HEADERS,
+                CNO_FLAG_END_STREAM | CNO_FLAG_END_HEADERS, s->id, CNO_BUFFER_VIEW(enc) }))
+            // Irrecoverable (compression state desync). FIXME: see `cno_write_push`.
+            return cno_buffer_dyn_clear(&enc), CNO_ERROR_UP();
+        cno_buffer_dyn_clear(&enc);
+    } else if ((c->client || !s->head_response) && s->writing_chunked) {
+        if (CNO_WRITEV(c, CNO_BUFFER_STRING("0\r\n")))
+            return CNO_ERROR_UP();
+        for (const struct cno_header_t *it = t->headers, *end = it + t->headers_len; it != end; ++it)
+            if (CNO_WRITEV(c, it->name, CNO_BUFFER_STRING(": "), it->value, CNO_BUFFER_STRING("\r\n")))
+                return CNO_ERROR_UP();
+        if (CNO_WRITEV(c, CNO_BUFFER_STRING("\r\n")))
+            return CNO_ERROR_UP();
+    }
+    return cno_stream_end_by_write(c, s);
 }
 
 int cno_write_ping(struct cno_connection_t *c, const char data[8]) {
