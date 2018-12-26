@@ -1569,7 +1569,7 @@ int cno_open_flow(struct cno_connection_t *c, uint32_t sid, uint32_t delta) {
         return CNO_OK;
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
     // Disregard changes in reset streams' window size.
-    if (sid && !s)
+    if (sid && (!s || s->r_state == CNO_STREAM_CLOSED))
         return CNO_OK;
     if (cno_frame_write(c, &(struct cno_frame_t){ CNO_FRAME_WINDOW_UPDATE, 0, sid, PACK(I32(delta)) }))
         return CNO_ERROR_UP();
