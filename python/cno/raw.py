@@ -139,7 +139,7 @@ class Connection:
         return self.__throw(cno_write_data(self.__c, i, ffi.from_buffer(data), len(data), is_final))
 
     def write_reset(self, i, code):
-        self.__throw(self.__c.state != CNO_STATE_CLOSED and cno_write_reset(self.__c, i, code))
+        self.__throw(cno_write_reset(self.__c, i, code))
 
     def write_ping(self, data):
         assert len(data) == 8
