@@ -948,6 +948,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
 
     int upgrade = 0;
     int upgradeToH2 = 0;
+    int closeDelimited = c->client && !cno_is_informational(m.code);
     struct cno_header_t *it = headers;
     if (!c->client) {
         *it++ = (struct cno_header_t) { CNO_BUFFER_STRING(":scheme"), CNO_BUFFER_STRING("unknown"), 0 };
@@ -990,6 +991,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
                 return CNO_ERROR(PROTOCOL, "multiple content-lengths");
             if ((s->remaining_payload = cno_parse_uint(it->value)) == (uint64_t) -1)
                 return CNO_ERROR(PROTOCOL, "invalid content-length");
+            closeDelimited = 0;
         } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("transfer-encoding"))) {
             if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("identity")))
                 continue; // (This value is probably not actually allowed.)
@@ -997,6 +999,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
             // (This part is a bit non-compatible with h2. Proxies should probably decode TEs.)
             s->remaining_payload = (uint64_t) -1;
             s->reading_chunked = 1;
+            closeDelimited = 0;
             if (!cno_remove_chunked_te(&it->value))
                 continue;
         }
@@ -1009,7 +1012,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
             return CNO_ERROR(PROTOCOL, "informational response with a payload");
         if (m.code == 204 || m.code == 304 || s->head_response)
             // See equivalent code in `cno_h2_on_message`.
-            s->remaining_payload = 0;
+            s->remaining_payload = closeDelimited = 0;
     } else {
         // Upgrading in response to a request with payload requires reading h1 while writing h2,
         // which interacts poorly with cancellation (i.e. not at all; client should continue uploading).
@@ -1035,7 +1038,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
         return CNO_STATE_H1_HEAD;
 
     s->r_state = CNO_STREAM_DATA;
-    return c->state == CNO_STATE_H1_UPGRADED || m.code == 101 ? CNO_STATE_H1_UPGRADED
+    return c->state == CNO_STATE_H1_UPGRADED || m.code == 101 || closeDelimited ? CNO_STATE_H1_UPGRADED
          : s->remaining_payload ? CNO_STATE_H1_BODY : CNO_STATE_H1_TAIL;
 }
 
