@@ -126,7 +126,7 @@ struct cno_vtable_t {
     // shortly afterwards.
     int (*on_stream_start)(void *, uint32_t id);
     // Either a response has been sent/received fully, or the stream has been reset.
-    int (*on_stream_end)(void *, uint32_t id);
+    int (*on_stream_end)(void *, uint32_t id, uint32_t code, enum CNO_PEER_KIND);
     // The other side has signaled that it is willing to accept more data.
     // There is a global limit (shared between all streams) and one for each stream;
     // `cno_write_data` will send as much data as the lowest of the two allows.

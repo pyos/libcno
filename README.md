@@ -54,7 +54,7 @@ Event receivers must be defined as methods of `Connection` subclasses.
 | --------------------------------------- | ------------------------------------------------------------------ |
 | `on_writev(iov, iovcnt)`                | `def on_writev(self, chunks)`                                      |
 | `on_stream_start(stream)`               | `def on_stream_start(self, stream)`                                |
-| `on_stream_end(stream)`                 | `def on_stream_end(self, stream)`                                  |
+| `on_stream_end(stream, code, side)`     | `def on_stream_end(self, stream, code, side)`                      |
 | `on_flow_increase(stream)`              | `def on_flow_increase(self, stream)`                               |
 | `on_message_head(stream, msg)`          | `def on_message_head(self, stream, code, method, path, headers)`   |
 | `on_message_tail(stream, msg)`          | `def on_message_tail(self, stream, trailers)`                      |

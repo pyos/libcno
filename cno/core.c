@@ -92,7 +92,7 @@ static inline void cno_stream_decref(struct cno_stream_t **sp) {
 // Remove the stream from the map. Further write operations will fail with INVALID_STREAM.
 // Unless recorded otherwise through `cno_stream_end_by_write`, receiving a frame on this
 // stream is a protocol error.
-static int cno_stream_end(struct cno_connection_t *c, struct cno_stream_t *s) {
+static int cno_stream_end(struct cno_connection_t *c, struct cno_stream_t *s, uint32_t code, enum CNO_PEER_KIND side) {
     // Read the stream ID before removing the map's reference in case the caller does not hold one.
     uint32_t sid = s->id;
     struct cno_stream_t **sp = &c->streams[sid % CNO_STREAM_BUCKETS];
@@ -103,7 +103,7 @@ static int cno_stream_end(struct cno_connection_t *c, struct cno_stream_t *s) {
     *sp = s->next;
     cno_stream_decref(&s);
     c->stream_count[cno_stream_is_local(c, sid)]--;
-    if (CNO_FIRE(c, on_stream_end, sid))
+    if (CNO_FIRE(c, on_stream_end, sid, code, side))
         return CNO_ERROR_UP();
     return c->goaway[CNO_REMOTE] == (uint32_t)-1 && c->goaway[CNO_LOCAL] == (uint32_t)-1 ? CNO_OK
          // Seems to be a recurring pattern...
@@ -140,7 +140,7 @@ static struct cno_stream_t *cno_stream_new(struct cno_connection_t *c, uint32_t 
     c->streams[sid % CNO_STREAM_BUCKETS] = s;
     c->stream_count[local]++;
     if (CNO_FIRE(c, on_stream_start, sid)) {
-        cno_stream_end(c, s);
+        cno_stream_end(c, s, CNO_RST_INTERNAL_ERROR, CNO_LOCAL);
         cno_stream_decref(&s);
         return (void)CNO_ERROR_UP(), NULL;
     }
@@ -256,7 +256,7 @@ static int cno_stream_end_by_write(struct cno_connection_t *c, struct cno_stream
     if (s->r_state != CNO_STREAM_CLOSED)
         return CNO_OK;
     cno_h2_just_ended(c, s->id, s->r_state);
-    return cno_stream_end(c, s);
+    return cno_stream_end(c, s, CNO_RST_NO_ERROR, CNO_LOCAL);
 }
 
 // Inverse of `cno_stream_end_by_write`: switch to closed read-state, close if also in
@@ -269,7 +269,7 @@ static int cno_stream_end_by_read(struct cno_connection_t *c, struct cno_stream_
         c->last_stream[CNO_REMOTE] += 2;
     if (s->w_state != CNO_STREAM_CLOSED)
         return CNO_OK;
-    return cno_stream_end(c, s);
+    return cno_stream_end(c, s, CNO_RST_NO_ERROR, CNO_REMOTE);
 }
 
 // Call `on_writev` with an RST_STREAM frame for a stream that is not in the map.
@@ -281,7 +281,7 @@ static int cno_h2_rst_by_id(struct cno_connection_t *c, uint32_t sid, uint32_t c
 
 // Call `on_writev` with an RST_STREAM frame for a currently open stream.
 static int cno_h2_rst(struct cno_connection_t *c, struct cno_stream_t *s, uint32_t code) {
-    return cno_h2_rst_by_id(c, s->id, code, s->r_state) || cno_stream_end(c, s);
+    return cno_h2_rst_by_id(c, s->id, code, s->r_state) || cno_stream_end(c, s, code, CNO_LOCAL);
 }
 
 // When receiving a frame on a stream that is not in the map, check if it was recently
@@ -646,8 +646,7 @@ static int cno_h2_on_rst(struct cno_connection_t *c,
         return cno_h2_fatal(c, CNO_RST_FRAME_SIZE_ERROR, "bad RST_STREAM");
     if (!s)
         return cno_h2_on_invalid_stream(c, f) ? CNO_ERROR_UP() : CNO_OK;
-    // TODO parse the error code and do something with it.
-    return cno_stream_end(c, s);
+    return cno_stream_end(c, s, read4(f->payload.data), CNO_REMOTE);
 }
 
 static int cno_h2_on_settings(struct cno_connection_t *c,
@@ -1187,7 +1186,7 @@ int cno_eof(struct cno_connection_t *c) {
         while (c->streams[i]) {
             wantR += (c->streams[i]->r_state != CNO_STREAM_CLOSED);
             wantW += (c->streams[i]->w_state != CNO_STREAM_CLOSED);
-            if (cno_stream_end(c, c->streams[i]))
+            if (cno_stream_end(c, c->streams[i], CNO_RST_CANCEL, CNO_LOCAL))
                 return CNO_ERROR_UP();
         }
     }

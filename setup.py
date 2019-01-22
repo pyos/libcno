@@ -24,7 +24,7 @@ def make_ffi(root):
                 int on_writev        (void *, const struct cno_buffer_t *, size_t);
                 int on_close         (void *);
                 int on_stream_start  (void *, uint32_t);
-                int on_stream_end    (void *, uint32_t);
+                int on_stream_end    (void *, uint32_t, uint32_t, enum CNO_PEER_KIND);
                 int on_flow_increase (void *, uint32_t);
                 int on_message_head  (void *, uint32_t, const struct cno_message_t *);
                 int on_message_tail  (void *, uint32_t, const struct cno_tail_t *);

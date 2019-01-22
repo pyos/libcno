@@ -50,7 +50,7 @@ except NameError:
         'on_writev':        lambda self, iov, cnt: self.on_writev([ffi.unpack(iov[i].data, iov[i].size) for i in range(cnt) if iov[i].size]),
         'on_close':         lambda self: self.on_close(),
         'on_stream_start':  lambda self, id: self.on_stream_start(id),
-        'on_stream_end':    lambda self, id: self.on_stream_end(id),
+        'on_stream_end':    lambda self, id, code, side: self.on_stream_end(id, code, side),
         'on_flow_increase': lambda self, id: self.on_flow_increase(id),
         'on_message_head':  lambda self, id, m: self.on_message_head(id, m.code, *_msg(m)),
         'on_message_tail':  lambda self, id, t: self.on_message_tail(id, _tail(t) if t else None),

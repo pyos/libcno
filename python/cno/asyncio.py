@@ -140,7 +140,7 @@ class Connection (raw.Connection, asyncio.Protocol):
         self._data.pop(i).feed_eof()
         self._push.pop(i).close()
 
-    def on_stream_end(self, i):
+    def on_stream_end(self, i, code, side):
         data = self._data.pop(i, None)
         push = self._push.pop(i, None)
         task = self._coro.pop(i, None)
@@ -245,8 +245,8 @@ class Server (Connection):
                 raise
             self._have_buffered_data = True
 
-    def on_stream_end(self, i):
-        super().on_stream_end(i)
+    def on_stream_end(self, i, code, side):
+        super().on_stream_end(i, code, side)
         if self._have_buffered_data:
             self.data_received(b'')
 
