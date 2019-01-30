@@ -841,7 +841,7 @@ static int cno_when_h2_settings(struct cno_connection_t *c) {
 static int cno_when_h2_frame(struct cno_connection_t *c) {
     while (c->buffer.size >= 9) {
         uint8_t *base = (uint8_t *) c->buffer.data;
-        size_t offset = (read4(c->buffer.data) >> 8) + 9;
+        size_t offset = (read4(base) >> 8) + 9;
         if (c->settings[CNO_LOCAL].max_frame_size < offset - 9)
             return cno_h2_fatal(c, CNO_RST_FRAME_SIZE_ERROR, "frame too big");
 
@@ -863,13 +863,22 @@ static int cno_when_h2_frame(struct cno_connection_t *c) {
                     return cno_h2_fatal(c, CNO_RST_PROTOCOL_ERROR, "invalid CONTINUATION stream");
                 f.flags |= base[offset + 4];
             }
+            if (c->buffer.size < offset)
+                return CNO_OK;
+            // XXX might be better to concatenate right after validating, but that could trip up
+            //     the single frame length check if more data is needed afterwards.
+            for (size_t size, p = f.payload.size + 9; p < offset; p += size + 9, f.payload.size += size)
+                memmove(&base[f.payload.size + 9], &base[p + 9], size = read4(&base[p]) >> 8);
+        } else if (c->buffer.size < offset) {
+            if (f.type != CNO_FRAME_DATA || f.flags & CNO_FLAG_PADDED || c->buffer.size == 9)
+                return CNO_OK;
+            // Have *some* data, might as well split the frame in two.
+            struct cno_buffer_t h = PACK(I24(offset - c->buffer.size), I8(f.type), I8(f.flags), I32(f.stream));
+            memmove(base, &base[9], offset = c->buffer.size - 9);
+            memmove(&base[offset], h.data, h.size);
+            f.flags &= ~CNO_FLAG_END_STREAM;
+            f.payload = (struct cno_buffer_t){c->buffer.data, offset};
         }
-        if (c->buffer.size < offset)
-            return CNO_OK;
-        // XXX might be better to concatenate right after validating, but that could trip up
-        //     the length check if more data is needed afterwards.
-        for (size_t size, p = f.payload.size + 9; p < offset; p += size + 9, f.payload.size += size)
-            memmove(&base[f.payload.size + 9], &base[p + 9], size = read4(&base[p]) >> 8);
 
         if (CNO_FIRE(c, on_frame, &f))
             return CNO_ERROR_UP();
