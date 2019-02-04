@@ -126,7 +126,8 @@ static int cno_hpack_lookup_inverse(struct cno_hpack_t *state, const struct cno_
 #undef TRY
 }
 
-// Format: the value as 1 byte if less than mask, else {mask, 0x80 | <7 bits>, ..., <last 7 bits>} (little-endian).
+// Format: the value as 1 byte if less than mask, else {mask, 0x80 | <7 bits>, ...,
+// <last 7 bits>} (little-endian).
 static int cno_hpack_decode_uint(struct cno_buffer_t *source, uint8_t mask, size_t *out) {
     if (!source->size)
         return CNO_ERROR(PROTOCOL, "expected uint, got EOF");
@@ -150,13 +151,16 @@ static int cno_hpack_decode_uint(struct cno_buffer_t *source, uint8_t mask, size
 }
 
 // Format: 1 bit is a flag for Huffman encoding, then a varint for length, then raw data.
-static int cno_hpack_decode_string(struct cno_buffer_t *source, struct cno_buffer_t *out, int *borrow) {
+// In HPACK, mask is always 0xFF, i.e. a string starts on a byte boundary. QPACK allows
+// unaligned strings.
+static int cno_hpack_decode_string(struct cno_buffer_t *source, uint8_t mask,
+                                   struct cno_buffer_t *out, int *borrow) {
     if (!source->size)
         return CNO_ERROR(PROTOCOL, "expected string, got EOF");
-    const uint8_t huffman = (* (const uint8_t *) source->data) & 0x80;
+    const uint8_t huffman = (* (const uint8_t *) source->data) & (mask ^ (mask >> 1));
 
     size_t length = 0;
-    if (cno_hpack_decode_uint(source, 0x7F, &length))
+    if (cno_hpack_decode_uint(source, mask >> 1, &length))
         return CNO_ERROR_UP();
     if (length > source->size)
         return CNO_ERROR(PROTOCOL, "expected %zu octets, got %zu", length, source->size);
@@ -221,7 +225,7 @@ static int cno_hpack_decode_one(struct cno_hpack_t  *state,
 
     if (index == 0) {
         int borrow = 0;
-        if (cno_hpack_decode_string(source, &target->name, &borrow))
+        if (cno_hpack_decode_string(source, 0xFF, &target->name, &borrow))
             return CNO_ERROR_UP();
         if (!borrow)
             target->flags |= CNO_HEADER_OWNS_NAME;
@@ -231,7 +235,7 @@ static int cno_hpack_decode_one(struct cno_hpack_t  *state,
     }
 
     int borrow = 0;
-    if (cno_hpack_decode_string(source, &target->value, &borrow))
+    if (cno_hpack_decode_string(source, 0xFF, &target->value, &borrow))
         return CNO_ERROR_UP();
     if (!borrow)
         target->flags |= CNO_HEADER_OWNS_VALUE;
