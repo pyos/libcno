@@ -286,16 +286,18 @@ static int cno_hpack_encode_uint(struct cno_buffer_dyn_t *buf, uint8_t prefix, u
     return cno_buffer_dyn_concat(buf, (struct cno_buffer_t) { (char *) tmp, ptr - tmp });
 }
 
-static int cno_hpack_encode_string(struct cno_buffer_dyn_t *buf, const struct cno_buffer_t s) {
+static int cno_hpack_encode_string(struct cno_buffer_dyn_t *buf, uint8_t prefix, uint8_t mask,
+                                   const struct cno_buffer_t s) {
     size_t total = 0;
     for (const uint8_t *p = (const uint8_t *) s.data, *e = p + s.size; p != e; p++)
         total += CNO_HUFFMAN_LEN[*p];
     total = (total + 7) / 8;
 
     if (total >= s.size)
-        return cno_hpack_encode_uint(buf, 0, 0x7F, s.size) || cno_buffer_dyn_concat(buf, s);
+        return cno_hpack_encode_uint(buf, prefix, mask >> 1, s.size) || cno_buffer_dyn_concat(buf, s);
 
-    if (cno_hpack_encode_uint(buf, 0x80, 0x7F, total) || cno_buffer_dyn_reserve(buf, buf->size + total))
+    if (cno_hpack_encode_uint(buf, prefix | (mask ^ (mask >> 1)), mask >> 1, total)
+     || cno_buffer_dyn_reserve(buf, buf->size + total))
         return CNO_ERROR_UP();
 
     uint8_t *out = (uint8_t *) buf->data + buf->size;
@@ -334,10 +336,10 @@ static int cno_hpack_encode_one(struct cno_hpack_t *state, struct cno_buffer_dyn
         : cno_hpack_encode_uint(buf, 0x40, 0x3F, index) || cno_hpack_insert(state, h))
             return CNO_ERROR_UP();
 
-    if (!index && cno_hpack_encode_string(buf, h->name))
+    if (!index && cno_hpack_encode_string(buf, 0, 0xFF, h->name))
         return CNO_ERROR_UP();
 
-    return cno_hpack_encode_string(buf, h->value);
+    return cno_hpack_encode_string(buf, 0, 0xFF, h->value);
 }
 
 int cno_hpack_encode(struct cno_hpack_t *state, struct cno_buffer_dyn_t *buf,
