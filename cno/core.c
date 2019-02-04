@@ -66,12 +66,19 @@ static uint64_t cno_parse_uint(struct cno_buffer_t value) {
 
 // Each character that is valid in a header's name is mapped to its lowercase version. All other
 // characters are mapped to 0. (Headers names are ASCII-only. Should be Latin-1, but screw that.)
-static const char CNO_HEADER_TRANSFORM[] =
+static const char CNO_HEADER_TRANSFORM[256] =
     "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0!\0#$%&'\0\0*+\0-.\0"
     "0123456789\0\0\0\0\0\0\0abcdefghijklmnopqrstuvwxyz\0\0\0^_`abcdefghijklmnopqrstuvwxyz"
     "\0|\0~\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
     "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
     "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+
+static int cno_check_no_ctl(const struct cno_buffer_t buf) {
+    for (uint8_t *p = (uint8_t *) buf.data, *e = p + buf.size; p != e; p++)
+        if (*p < ' ')
+            return CNO_ERROR(ASSERTION, "invalid byte '%d' in header value", *p);
+    return CNO_OK;
+}
 
 // Even streams are server-intitiated (pushes), odd streams are client-initiated (requests).
 static inline int cno_stream_is_local(const struct cno_connection_t *c, uint32_t sid) {
@@ -350,6 +357,8 @@ static int cno_h2_on_message(struct cno_connection_t *c,
     int has_authority = 0;
     int has_protocol = 0;
     for (struct cno_header_t *h = it; h-- != m->headers;) {
+        if (cno_check_no_ctl(h->value))
+            return cno_h2_rst(c, s, CNO_RST_PROTOCOL_ERROR);
         if (is_response) {
             if (cno_buffer_eq(h->name, CNO_BUFFER_STRING(":status")) && !m->code)
                 if ((m->code = cno_parse_uint(h->value)) < 0x10000) // kind of an arbitrary limit, really
@@ -382,6 +391,8 @@ static int cno_h2_on_message(struct cno_connection_t *c,
 
     s->remaining_payload = (uint64_t) -1;
     for (it = first_non_pseudo; it != end; ++it) {
+        if (cno_check_no_ctl(it->value))
+            return cno_h2_rst(c, s, CNO_RST_PROTOCOL_ERROR);
         // >All pseudo-header fields MUST appear in the header block before regular
         // >header fields. [...] However, header field names MUST be converted
         // >to lowercase prior to their encoding in HTTP/2.
@@ -1394,6 +1405,8 @@ static int cno_check_headers(const struct cno_header_t *h, size_t size, int trai
                 // Only in h2, actually; h1 is case-insensitive. Better be conservative, though.
                 // (Also, there are some case-sensitive comparisons in `cno_h1_write_head`.)
                 return CNO_ERROR(ASSERTION, "invalid character '%c' in header name; should be a lowercase letter", *p);
+        if (cno_check_no_ctl(h->value))
+            return CNO_ERROR_UP();
     }
     return CNO_OK;
 }
@@ -1409,7 +1422,7 @@ int cno_write_head(struct cno_connection_t *c, uint32_t sid, const struct cno_me
         return CNO_ERROR(ASSERTION, "1xx codes cannot end the stream");
     if (m->code == 101 && c->mode == CNO_HTTP2)
         return CNO_ERROR(ASSERTION, "cannot switch protocols over an http2 connection");
-    if (cno_check_headers(m->headers, m->headers_len, 0))
+    if (cno_check_no_ctl(m->method) || cno_check_no_ctl(m->path) || cno_check_headers(m->headers, m->headers_len, 0))
         return CNO_ERROR_UP();
 
     struct cno_stream_t * CNO_STREAM_REF s = cno_stream_find(c, sid);
