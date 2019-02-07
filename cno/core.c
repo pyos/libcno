@@ -943,7 +943,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
             return CNO_ERROR_UP();
     }
 
-    struct cno_header_t headers[CNO_MAX_HEADERS + 3]; // + :scheme and :authority and maybe connection
+    struct cno_header_t headers[CNO_MAX_HEADERS + 2]; // + :scheme and :authority
     struct cno_message_t m = { 0, {}, {}, headers, CNO_MAX_HEADERS };
     struct phr_header headers_phr[CNO_MAX_HEADERS];
 
@@ -965,6 +965,7 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
         // HTTP/1.0 is probably not really supported either tbh.
         return CNO_ERROR(PROTOCOL, "HTTP/1.%d not supported", minor);
 
+    int finalRequest = (minor == 0);
     int upgrade = 0;
     int upgradeToH2 = 0;
     int closeDelimited = c->client && !cno_is_informational(m.code);
@@ -973,9 +974,6 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
         *it++ = (struct cno_header_t) { CNO_BUFFER_STRING(":scheme"), CNO_BUFFER_STRING("unknown"), 0 };
         *it++ = (struct cno_header_t) { CNO_BUFFER_STRING(":authority"), CNO_BUFFER_STRING("unknown"), 0 };
     }
-    if (minor == 0)
-        // HTTP/1.0 clients *can* specify `connection: keep-alive`, but screw that.
-        *it++ = (struct cno_header_t) { CNO_BUFFER_STRING("connection"), CNO_BUFFER_STRING("close"), 0 };
     for (size_t i = 0; i < m.headers_len; i++) {
         if (!headers_phr[i].name)
             return CNO_ERROR(PROTOCOL, "HTTP/1.x line folding rejected");
@@ -1021,10 +1019,24 @@ static int cno_when_h1_head(struct cno_connection_t *c) {
             closeDelimited = 0;
             if (!cno_remove_chunked_te(&it->value))
                 continue;
+        } else if (cno_buffer_eq(it->name, CNO_BUFFER_STRING("connection"))) {
+            // XXX actually supposed to be a comma-separated list; does anyone
+            //     use anything other than "close", "keep-alive", and "upgrade"?
+            if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("close"))) {
+                finalRequest = 1;
+                continue;
+            } else if (cno_buffer_eq(it->value, CNO_BUFFER_STRING("keep-alive"))) {
+                finalRequest = 0;
+                continue;
+            }
         }
         it++;
     }
     m.headers_len = it - m.headers;
+
+    if (finalRequest && c->goaway[CNO_REMOTE] > c->last_stream[CNO_REMOTE])
+        // Call `on_close` when this stream terminates.
+        c->goaway[CNO_REMOTE] = c->last_stream[CNO_REMOTE];
 
     if (c->client) {
         if (s->remaining_payload && cno_is_informational(m.code))
