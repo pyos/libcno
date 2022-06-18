@@ -37,8 +37,10 @@ if len(sys.argv) == 4:
     import ssl
     sctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     sctx.load_cert_chain(certfile=sys.argv[2], keyfile=sys.argv[3])
-    sctx.set_npn_protocols(['h2', 'http/1.1'])
-    sctx.set_alpn_protocols(['h2', 'http/1.1'])
+    if ssl.HAS_NPN:
+        sctx.set_npn_protocols(['h2', 'http/1.1'])
+    if ssl.HAS_ALPN:
+        sctx.set_alpn_protocols(['h2', 'http/1.1'])
 
 loop = asyncio.new_event_loop()
 loop.run_until_complete(main(loop, '', int(sys.argv[1]), ssl=sctx))
