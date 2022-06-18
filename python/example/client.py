@@ -12,20 +12,25 @@ def origin(url):
     return parsed.hostname, parsed.port, parsed.scheme
 
 
-async def main(*urls):
+async def main(loop, *urls):
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
 
     tasks = []
+    conns = []
     for _, g in itertools.groupby(sorted(urls, key=origin), key=origin):
         g = list(g)
-        conn = await cno.connect(loop, g[0], ssl_ctx=ctx)
+        conn = await cno.connect(loop, g[0], ssl_ctx=ctx,
+            force_http2=g[0].startswith('h2c:') or g[0].startswith('h2:'))
+        conns.append(conn)
         for url in g:
             path = urllib.parse.urlparse(url).path
             tasks.append(asyncio.ensure_future(print_response([('GET', url)], conn.request('GET', path))))
     for task in tasks:
         await task
+    for conn in conns:
+        conn.close()
 
 
 async def print_response(chain, rsp):
@@ -50,5 +55,5 @@ async def print_response(chain, rsp):
 if len(sys.argv) < 2:
     exit('usage: {0} <url> ...'.format(sys.argv[0]))
 
-loop = asyncio.get_event_loop()
-loop.run_until_complete(main(*sys.argv[1:]))
+loop = asyncio.new_event_loop()
+loop.run_until_complete(main(loop, *sys.argv[1:]))

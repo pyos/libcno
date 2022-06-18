@@ -40,5 +40,5 @@ if len(sys.argv) == 4:
     sctx.set_npn_protocols(['h2', 'http/1.1'])
     sctx.set_alpn_protocols(['h2', 'http/1.1'])
 
-loop = asyncio.get_event_loop()
+loop = asyncio.new_event_loop()
 loop.run_until_complete(main(loop, '', int(sys.argv[1]), ssl=sctx))

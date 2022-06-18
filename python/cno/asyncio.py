@@ -83,15 +83,10 @@ class Push:
 
     @property
     async def response(self):
-        return (await asyncio.shield(self._promise, loop=self.conn.loop))
+        return (await asyncio.shield(self._promise))
 
     def cancel(self, code=raw.CNO_RST_CANCEL):
         self.conn.write_reset(self.stream, code)
-
-
-def _cancel_and_ignore(task):
-    task.cancel()
-    task.add_done_callback(lambda t: t.exception())
 
 
 class Connection (raw.Connection, asyncio.Protocol):
@@ -104,7 +99,7 @@ class Connection (raw.Connection, asyncio.Protocol):
         self._flow = {} # stream id -> flow control future
         self._stop = False
         self._force_h2 = force_http2
-        self._stream_end = asyncio.Event(loop=loop)
+        self._stream_end = asyncio.Event()
 
     def connection_made(self, transport):
         self.transport = transport
@@ -130,8 +125,8 @@ class Connection (raw.Connection, asyncio.Protocol):
         self.transport.close()
 
     def on_stream_start(self, i):
-        self._data[i] = asyncio.StreamReader(loop=self.loop)
-        self._push[i] = Channel(loop=self.loop)
+        self._data[i] = asyncio.StreamReader()
+        self._push[i] = Channel()
 
     def on_message_data(self, i, data):
         self._data[i].feed_data(data)
@@ -147,7 +142,7 @@ class Connection (raw.Connection, asyncio.Protocol):
         flow = self._flow.pop(i, None)
         data and data.feed_eof()
         push and push.close()
-        task and _cancel_and_ignore(task)
+        task and task.cancel()
         flow and flow.cancel()
         self._stream_end.set()
         self._stream_end.clear()
@@ -259,7 +254,7 @@ async def connect(loop, url, ssl_ctx=None, ssl_hostname=None, **kwargs) -> Clien
     port = 80
     if isinstance(url, str):
         url = urllib.parse.urlparse(url)
-    if url.scheme == 'https':
+    if url.scheme in ('h2', 'https'):
         if ssl is None:
             raise NotImplementedError('SSL not supported by Python')
         if ssl_ctx is None:
